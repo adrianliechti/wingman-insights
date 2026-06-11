@@ -1,6 +1,14 @@
-version: '3'
+version: "3"
+
+vars:
+  REPOSITORY: ghcr.io/adrianliechti/wingman-insights
 
 tasks:
+  publish:
+    desc: Build and push multi-arch Docker image
+    cmds:
+      - docker buildx build . --push --platform linux/amd64,linux/arm64 --tag {{.REPOSITORY}}
+
   build:
     desc: Build frontend then Go binary
     deps: [web-build]

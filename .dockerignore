@@ -1,0 +1,6 @@
+.git
+insights
+insights.db
+insights.db.wal
+web/node_modules
+web/dist

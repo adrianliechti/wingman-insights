@@ -1,0 +1,65 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build frontend then Go binary
+    deps: [web-build]
+    cmds:
+      - go build -o insights .
+
+  web-install:
+    desc: Install frontend dependencies
+    dir: web
+    cmds:
+      - npm install
+    status:
+      - test -d node_modules
+
+  web-build:
+    desc: Build React frontend with Vite
+    deps: [web-install]
+    dir: web
+    cmds:
+      - npm run build
+
+  pricing-update:
+    desc: Refresh the embedded models.dev pricing catalog
+    cmds:
+      - curl -fsSL -o internal/pricing/models.json https://models.dev/api.json
+
+  dev:
+    desc: Run Go backend (:4318) + Vite dev server (:5173); develop against :5173
+    deps: [dev-backend, dev-web]
+
+  dev-backend:
+    internal: true
+    cmds:
+      # go:embed web/dist must exist to compile; in dev the real UI is
+      # served by Vite, which proxies /api and /v1 to this backend.
+      - mkdir -p web/dist
+      - test -f web/dist/index.html || printf '<!doctype html><p>dev stub — use the Vite dev server on :5173</p>' > web/dist/index.html
+      - go run .
+
+  dev-web:
+    internal: true
+    deps: [web-install]
+    dir: web
+    cmds:
+      - npm run dev
+
+  run:
+    desc: Build and run the server
+    deps: [build]
+    cmds:
+      - ./insights
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f insights insights.db insights.db.wal
+      - rm -rf web/dist
+
+  demo:
+    desc: Generate 24h of demo data and send to the server
+    cmds:
+      - go run ./cmd/demogen -duration={{.DURATION | default "24h"}} -interval={{.INTERVAL | default "5m"}}

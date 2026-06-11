@@ -7,12 +7,15 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"time"
 
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
 	metrics "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resource "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -100,15 +103,26 @@ func main() {
 	start := now.Add(-*dur)
 	demoStart, demoEnd = start, now
 
-	var total int
+	var total, traces int
 	for t := start; t.Before(now); t = t.Add(*step) {
 		req := buildBatch(t)
 		if err := send(req); err != nil {
 			log.Fatalf("send at %s: %v", t.Format(time.RFC3339), err)
 		}
 		total++
+
+		// A sample of intervals also emits traces (agent → chat → tool).
+		if rand.Float64() < 0.4 {
+			treq := buildTraces(t)
+			if len(treq.ResourceSpans) > 0 {
+				if err := sendTraces(treq); err != nil {
+					log.Fatalf("send traces at %s: %v", t.Format(time.RFC3339), err)
+				}
+				traces++
+			}
+		}
 	}
-	log.Printf("sent %d batches covering %s", total, *dur)
+	log.Printf("sent %d metric batches and %d trace batches covering %s", total, traces, *dur)
 }
 
 func activeUsers(t time.Time) []userDef {
@@ -162,6 +176,8 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 				outputTokens := jitter(m.avgOut, 0.5) * factor
 				count := uint64(rand.IntN(10) + 1)
 				opDur := jitter(1.5, 0.6)
+				// Sessions rotate roughly every two hours per user.
+				sessionID := fmt.Sprintf("session-%s-%d", u.id, t.Unix()/7200)
 
 				baseAttrs := []*common.KeyValue{
 					kv("gen_ai.operation.name", op),
@@ -170,6 +186,7 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 					kv("gen_ai.response.model", m.model),
 					kv("user.id", u.id),
 					kv("user.email", u.email),
+					kv("session.id", sessionID),
 				}
 
 				// Token usage: input
@@ -208,6 +225,16 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 					opDur*0.2, opDur*3.0,
 					baseAttrs...,
 				))
+
+				// Time to first chunk for streaming chat
+				if op == "chat" {
+					ttfc := jitter(0.35, 0.6)
+					allMetrics = append(allMetrics, histo(
+						"gen_ai.client.operation.time_to_first_chunk", tsNano, count,
+						ttfc*float64(count), ttfc*0.3, ttfc*2.5,
+						baseAttrs...,
+					))
+				}
 			}
 		}
 
@@ -278,6 +305,152 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 		})
 	}
 	return &colmetrics.ExportMetricsServiceRequest{ResourceMetrics: rms}
+}
+
+var demoTools = []string{"web_search", "retrieve_documents", "execute_code", "summarize"}
+
+func randID(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(rand.IntN(256))
+	}
+	return b
+}
+
+// buildTraces emits agent-style traces like wingman-chat:
+// invoke_agent → chat {model} → execute_tool {tool}.
+func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
+	currentUsers := activeUsers(t)
+	if len(currentUsers) == 0 {
+		return &coltrace.ExportTraceServiceRequest{}
+	}
+	u := currentUsers[rand.IntN(len(currentUsers))]
+	m := modelDefs[rand.IntN(len(modelDefs))]
+	svc := pick(services)
+	sessionID := fmt.Sprintf("session-%s-%d", u.id, t.UnixNano()%97)
+
+	traceID := randID(16)
+	rootID := randID(8)
+	factor := spikeFactor(t, svc, u.id)
+
+	userAttrs := []*common.KeyValue{
+		kv("user.id", u.id),
+		kv("user.email", u.email),
+		kv("session.id", sessionID),
+	}
+
+	rootStart := t
+	cursor := rootStart
+	var spans []*tracepb.Span
+
+	chatCount := 1 + rand.IntN(3)
+	for range chatCount {
+		chatID := randID(8)
+		chatDur := time.Duration(jitter(1.8, 0.6) * float64(time.Second))
+		errType := ""
+		status := tracepb.Status_STATUS_CODE_OK
+		if rand.Float64() < 0.06 {
+			errType = pick([]string{"429", "500", "timeout"})
+			status = tracepb.Status_STATUS_CODE_ERROR
+		}
+		inTok := int64(jitter(m.avgIn, 0.5) * factor)
+		outTok := int64(jitter(m.avgOut, 0.5) * factor)
+
+		attrs := append([]*common.KeyValue{
+			kv("gen_ai.operation.name", "chat"),
+			kv("gen_ai.provider.name", m.provider),
+			kv("gen_ai.request.model", m.model),
+			kv("gen_ai.response.model", m.model),
+			kvInt("gen_ai.usage.input_tokens", inTok),
+			kvInt("gen_ai.usage.output_tokens", outTok),
+		}, userAttrs...)
+		if errType != "" {
+			attrs = append(attrs, kv("error.type", errType))
+		}
+		if m.provider == "anthropic" {
+			attrs = append(attrs, kvInt("gen_ai.usage.cache_read.input_tokens", int64(jitter(m.avgIn*0.4, 0.4))))
+		}
+
+		spans = append(spans, &tracepb.Span{
+			TraceId:           traceID,
+			SpanId:            chatID,
+			ParentSpanId:      rootID,
+			Name:              "chat " + m.model,
+			Kind:              tracepb.Span_SPAN_KIND_CLIENT,
+			StartTimeUnixNano: uint64(cursor.UnixNano()),
+			EndTimeUnixNano:   uint64(cursor.Add(chatDur).UnixNano()),
+			Attributes:        attrs,
+			Status:            &tracepb.Status{Code: status},
+		})
+
+		// Some chats trigger tool executions.
+		if rand.Float64() < 0.5 {
+			tool := pick(demoTools)
+			toolDur := time.Duration(jitter(0.4, 0.7) * float64(time.Second))
+			spans = append(spans, &tracepb.Span{
+				TraceId:           traceID,
+				SpanId:            randID(8),
+				ParentSpanId:      chatID,
+				Name:              "execute_tool " + tool,
+				Kind:              tracepb.Span_SPAN_KIND_INTERNAL,
+				StartTimeUnixNano: uint64(cursor.Add(chatDur / 3).UnixNano()),
+				EndTimeUnixNano:   uint64(cursor.Add(chatDur/3 + toolDur).UnixNano()),
+				Attributes: append([]*common.KeyValue{
+					kv("gen_ai.operation.name", "execute_tool"),
+					kv("gen_ai.provider.name", m.provider),
+					kv("gen_ai.tool.name", tool),
+					kv("gen_ai.tool.type", "function"),
+				}, userAttrs...),
+				Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+			})
+		}
+		cursor = cursor.Add(chatDur + time.Duration(jitter(0.3, 0.5)*float64(time.Second)))
+	}
+
+	root := &tracepb.Span{
+		TraceId:           traceID,
+		SpanId:            rootID,
+		Name:              "invoke_agent assistant",
+		Kind:              tracepb.Span_SPAN_KIND_INTERNAL,
+		StartTimeUnixNano: uint64(rootStart.UnixNano()),
+		EndTimeUnixNano:   uint64(cursor.UnixNano()),
+		Attributes: append([]*common.KeyValue{
+			kv("gen_ai.operation.name", "invoke_agent"),
+			kv("gen_ai.provider.name", "wingman"),
+			kv("gen_ai.agent.name", "assistant"),
+		}, userAttrs...),
+		Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+	}
+	spans = append([]*tracepb.Span{root}, spans...)
+
+	return &coltrace.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			Resource: &resource.Resource{
+				Attributes: []*common.KeyValue{kv("service.name", svc)},
+			},
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Scope: &common.InstrumentationScope{Name: "github.com/adrianliechti/wingman"},
+				Spans: spans,
+			}},
+		}},
+	}
+}
+
+func sendTraces(req *coltrace.ExportTraceServiceRequest) error {
+	data, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	url := strings.Replace(*endpoint, "/v1/metrics", "/v1/traces", 1)
+	resp, err := http.Post(url, "application/x-protobuf", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func send(req *colmetrics.ExportMetricsServiceRequest) error {

@@ -6,20 +6,14 @@ import (
 	"strings"
 
 	collogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
-// DiscardTraces and DiscardLogs accept OTLP exports and drop them. Senders
-// like wingman export traces and logs to the same OTLP endpoint as metrics;
-// without these routes every export would fail with a 404 and clutter the
-// senders' logs with retry errors.
-
-func DiscardTraces() http.Handler {
-	return discardHandler(&coltrace.ExportTraceServiceResponse{})
-}
-
+// DiscardLogs accepts OTLP log exports and drops them. Senders like wingman
+// export logs to the same OTLP endpoint as metrics and traces; without this
+// route every export would fail with a 404 and clutter the senders' logs
+// with retry errors.
 func DiscardLogs() http.Handler {
 	return discardHandler(&collogs.ExportLogsServiceResponse{})
 }

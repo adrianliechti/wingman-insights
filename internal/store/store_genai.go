@@ -20,6 +20,7 @@ type GenAIMetricRow struct {
 	ErrorType     string
 	EndUserID     string
 	EndUserEmail  string
+	SessionID     string
 	Count         int64
 	Sum           float64
 	MinVal        float64
@@ -83,8 +84,8 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_metrics
 		(received_at, time, service_name, metric_name, operation_name, provider_name,
 		 request_model, response_model, token_type, server_address, error_type,
-		 enduser_id, enduser_email, count, sum, min_val, max_val, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 enduser_id, enduser_email, session_id, count, sum, min_val, max_val, attributes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -95,7 +96,7 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.ServiceName, r.MetricName, r.OperationName,
 			r.ProviderName, r.RequestModel, r.ResponseModel, r.TokenType,
-			r.ServerAddress, r.ErrorType, r.EndUserID, r.EndUserEmail,
+			r.ServerAddress, r.ErrorType, r.EndUserID, r.EndUserEmail, r.SessionID,
 			r.Count, r.Sum, r.MinVal, r.MaxVal, string(attrs),
 		)
 		if err != nil {

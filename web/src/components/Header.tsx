@@ -15,10 +15,10 @@ const PRESETS: { label: string; value: RangeKey }[] = [
 
 const NAV = [
   { to: '/', label: 'Overview' },
-  { to: '/anomalies', label: 'Anomalies' },
-  { to: '/costs', label: 'Costs' },
-  { to: '/users', label: 'Users' },
-  { to: '/http', label: 'HTTP' },
+  { to: '/traces', label: 'Traces' },
+  { to: '/product', label: 'Product' },
+  { to: '/operations', label: 'Operations' },
+  { to: '/finops', label: 'FinOps' },
 ]
 
 function toLocalInput(iso: string): string {
@@ -66,7 +66,7 @@ export function Header() {
           <div className="flex items-center gap-2.5">
             <img src="/logo_light.svg" alt="" className="h-7 w-7 dark:hidden" />
             <img src="/logo_dark.svg" alt="" className="hidden h-7 w-7 dark:block" />
-            <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">Wingman Insights</h1>
+            <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">Insights</h1>
           </div>
           <nav className="flex rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
             {NAV.map((item) => (

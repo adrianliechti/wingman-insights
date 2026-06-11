@@ -91,6 +91,40 @@ func (s *Store) migrate() error {
 			attributes    JSON
 		)`,
 	}
+	stmts = append(stmts,
+		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS session_id VARCHAR",
+		"CREATE SEQUENCE IF NOT EXISTS genai_spans_id_seq",
+		`CREATE TABLE IF NOT EXISTS genai_spans (
+			id            BIGINT DEFAULT nextval('genai_spans_id_seq') PRIMARY KEY,
+			received_at   TIMESTAMP NOT NULL,
+			time          TIMESTAMP NOT NULL,
+			duration      DOUBLE,
+			trace_id      VARCHAR NOT NULL,
+			span_id       VARCHAR NOT NULL,
+			parent_span_id VARCHAR,
+			name          VARCHAR,
+			kind          VARCHAR,
+			status        VARCHAR,
+			service_name  VARCHAR,
+			operation_name VARCHAR,
+			provider_name VARCHAR,
+			request_model VARCHAR,
+			response_model VARCHAR,
+			agent_name    VARCHAR,
+			tool_name     VARCHAR,
+			user_id       VARCHAR,
+			user_email    VARCHAR,
+			session_id    VARCHAR,
+			error_type    VARCHAR,
+			finish_reasons VARCHAR,
+			input_tokens  BIGINT,
+			output_tokens BIGINT,
+			cache_read_tokens BIGINT,
+			cache_creation_tokens BIGINT,
+			reasoning_tokens BIGINT,
+			attributes    JSON
+		)`,
+	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", stmt[:40], err)

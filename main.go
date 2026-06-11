@@ -19,12 +19,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// OTLP ingest: metrics are stored; traces and logs are accepted and
+	// OTLP ingest: metrics and GenAI spans are stored; logs are accepted and
 	// discarded so senders pointing OTEL_EXPORTER_OTLP_ENDPOINT here don't
 	// log export failures.
-	ingestHandler := ingest.NewHandler(s)
-	mux.Handle("POST /v1/metrics", ingestHandler)
-	mux.Handle("POST /v1/traces", ingest.DiscardTraces())
+	mux.Handle("POST /v1/metrics", ingest.NewHandler(s))
+	mux.Handle("POST /v1/traces", ingest.NewTracesHandler(s))
 	mux.Handle("POST /v1/logs", ingest.DiscardLogs())
 
 	// Dashboard API

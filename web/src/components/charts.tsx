@@ -36,7 +36,7 @@ const GRID = 'rgba(107, 114, 128, 0.18)'
 
 // Chart.js legends render poorly (hollow rings, no spacing); ChartLegend
 // below replaces them, so the built-in legend is always off.
-export function chartOptions(extra?: { yFmt?: (v: number) => string }) {
+export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: boolean }) {
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -59,10 +59,12 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string }) {
     },
     scales: {
       x: {
+        stacked: extra?.stacked ?? false,
         ticks: { color: TICK, font: { size: 11 }, maxTicksLimit: 12 },
         grid: { color: GRID },
       },
       y: {
+        stacked: extra?.stacked ?? false,
         ticks: {
           color: TICK,
           font: { size: 11 },
@@ -105,6 +107,7 @@ export function groupSeries(
   points: TimeseriesPoint[],
   spanMs: number,
   specs?: Record<string, SeriesSpec>,
+  opts?: { stacked?: boolean },
 ) {
   const buckets = [...new Set(points.map((p) => p.bucket))].sort()
   const labels = specs ? Object.keys(specs) : [...new Set(points.map((p) => p.label ?? ''))]
@@ -121,16 +124,17 @@ export function groupSeries(
       .map((l, i) => {
         const spec = specs?.[l]
         const color = spec?.color ?? PALETTE[i % PALETTE.length]
+        const fill = opts?.stacked ? true : (spec?.fill ?? false)
         return {
           label: spec?.label ?? (l || 'value'),
           data: buckets.map((b) => series.get(l)?.get(b) ?? 0),
           borderColor: color,
-          backgroundColor: spec?.fill ? color + '14' : color,
-          fill: spec?.fill ?? false,
+          backgroundColor: fill ? color + (opts?.stacked ? '4d' : '14') : color,
+          fill,
           tension: 0.4,
-          pointRadius: 2,
+          pointRadius: opts?.stacked ? 0 : 2,
           pointHoverRadius: 5,
-          borderWidth: 2,
+          borderWidth: opts?.stacked ? 1 : 2,
         }
       }),
   }
@@ -144,6 +148,7 @@ export function TimeseriesPanel({
   height = 'h-64',
   loading,
   legend = true,
+  stacked = false,
 }: {
   points: TimeseriesPoint[] | null
   spanMs: number
@@ -152,17 +157,18 @@ export function TimeseriesPanel({
   height?: string
   loading?: boolean
   legend?: boolean
+  stacked?: boolean
 }) {
   if (loading) return <PanelMessage>Loading…</PanelMessage>
   if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
-  const { labels, datasets } = groupSeries(points, spanMs, specs)
+  const { labels, datasets } = groupSeries(points, spanMs, specs, { stacked })
   return (
     <div>
       {legend && datasets.length > 1 && (
         <ChartLegend items={datasets.map((d) => ({ label: d.label, color: d.borderColor }))} />
       )}
       <div className={height}>
-        <Line data={{ labels, datasets }} options={chartOptions({ yFmt })} />
+        <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked })} />
       </div>
     </div>
   )

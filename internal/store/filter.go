@@ -33,6 +33,30 @@ func (f Filter) genaiClause() (string, []any) {
 	return clause, args
 }
 
+// spansClause returns SQL conditions for genai_spans (user column is user_id
+// there, not enduser_id).
+func (f Filter) spansClause() (string, []any) {
+	var clause string
+	var args []any
+	if f.Service != "" {
+		clause += " AND service_name = ?"
+		args = append(args, f.Service)
+	}
+	if f.User != "" {
+		clause += " AND user_id = ?"
+		args = append(args, f.User)
+	}
+	if f.Provider != "" {
+		clause += " AND provider_name = ?"
+		args = append(args, f.Provider)
+	}
+	if f.Model != "" {
+		clause += " AND request_model = ?"
+		args = append(args, f.Model)
+	}
+	return clause, args
+}
+
 // httpClause returns SQL conditions for http_metrics. HTTP metrics carry no
 // user/model attributes, so only the service filter applies.
 func (f Filter) httpClause() (string, []any) {

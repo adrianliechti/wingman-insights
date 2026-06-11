@@ -71,7 +71,48 @@ export interface CostRow {
   cache_read_cost: number
   cache_creation_cost: number
   total_cost: number
+  cache_savings: number
   priced: boolean
+}
+
+export interface SessionStats {
+  sessions: number
+  avg_per_user: number
+  avg_tokens_per_session: number
+}
+
+export interface ToolStatRow {
+  tool_name: string
+  count: number
+  avg_duration: number
+  error_count: number
+}
+
+export interface WhatIfRow {
+  provider_name: string
+  request_model: string
+  input_tokens: number
+  output_tokens: number
+  current_cost: number
+  target_cost: number
+}
+
+export interface BudgetResponse {
+  budget: number
+  month_to_date: number
+  projected: number
+  month_elapsed: number
+}
+
+export interface PricingModel {
+  provider: string
+  model: string
+  price: {
+    input: number
+    output: number
+    cache_read: number
+    cache_write: number
+  }
 }
 
 export interface FilterUser {
@@ -84,6 +125,52 @@ export interface FilterOptions {
   users: FilterUser[]
   providers: string[]
   models: string[]
+}
+
+export interface SpanRow {
+  time: string
+  duration: number
+  trace_id: string
+  span_id: string
+  parent_span_id?: string
+  name: string
+  kind?: string
+  status?: string
+  service_name?: string
+  operation_name?: string
+  provider_name?: string
+  request_model?: string
+  response_model?: string
+  agent_name?: string
+  tool_name?: string
+  user_id?: string
+  user_email?: string
+  session_id?: string
+  error_type?: string
+  finish_reasons?: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  reasoning_tokens: number
+  cost: number
+  attributes?: Record<string, string>
+}
+
+export interface TraceSummary {
+  trace_id: string
+  name: string
+  time: string
+  duration: number
+  service_name?: string
+  user_id?: string
+  user_email?: string
+  session_id?: string
+  span_count: number
+  input_tokens: number
+  output_tokens: number
+  cost: number
+  has_error: boolean
 }
 
 export interface HTTPSummaryRow {

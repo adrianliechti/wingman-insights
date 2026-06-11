@@ -12,10 +12,12 @@ export function DataTable<T>({
   data,
   columns,
   initialSort,
+  onRowClick,
 }: {
   data: T[]
   columns: ColumnDef<T, any>[]
   initialSort?: SortingState
+  onRowClick?: (row: T) => void
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSort ?? [])
   const table = useReactTable({
@@ -65,7 +67,11 @@ export function DataTable<T>({
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
           {table.getRowModel().rows.map((row) => (
-            <tr key={row.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30">
+            <tr
+              key={row.id}
+              onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+              className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30 ${onRowClick ? 'cursor-pointer' : ''}`}
+            >
               {row.getVisibleCells().map((cell) => {
                 const align = (cell.column.columnDef.meta as any)?.align === 'right' ? 'text-right' : 'text-left'
                 return (

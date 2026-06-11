@@ -10,10 +10,10 @@ import type { DashSearch } from './dash'
 import { Header } from './components/Header'
 import { FilterBar } from './components/FilterBar'
 import { Overview } from './pages/Overview'
-import { Anomalies } from './pages/Anomalies'
-import { Costs } from './pages/Costs'
-import { Users } from './pages/Users'
-import { Http } from './pages/Http'
+import { Traces } from './pages/Traces'
+import { Product } from './pages/Product'
+import { Operations } from './pages/Operations'
+import { Finops } from './pages/Finops'
 
 function Layout() {
   const search = useSearch({ strict: false }) as DashSearch
@@ -37,10 +37,10 @@ const rootRoute = createRootRoute({
 
 const pages = [
   { path: '/', component: Overview },
-  { path: '/anomalies', component: Anomalies },
-  { path: '/costs', component: Costs },
-  { path: '/users', component: Users },
-  { path: '/http', component: Http },
+  { path: '/traces', component: Traces },
+  { path: '/product', component: Product },
+  { path: '/operations', component: Operations },
+  { path: '/finops', component: Finops },
 ]
 
 const routeTree = rootRoute.addChildren(

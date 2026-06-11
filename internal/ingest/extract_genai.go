@@ -25,6 +25,10 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 		if userEmail == "" {
 			userEmail = getStringAttr(attrs, "enduser.email")
 		}
+		sessionID := getStringAttr(attrs, "session.id")
+		if sessionID == "" {
+			sessionID = getStringAttr(attrs, "gen_ai.conversation.id")
+		}
 		rows = append(rows, store.GenAIMetricRow{
 			ReceivedAt:    now,
 			Time:          ts,
@@ -39,6 +43,7 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 			ErrorType:     getStringAttr(attrs, "error.type"),
 			EndUserID:     userID,
 			EndUserEmail:  userEmail,
+			SessionID:     sessionID,
 			Count:         count,
 			Sum:           sum,
 			MinVal:        min,

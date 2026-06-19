@@ -5,7 +5,10 @@ export function apiUrl(path: string, params: Params): string {
   for (const [key, value] of Object.entries(params)) {
     if (value) search.set(key, value)
   }
-  return `${path}?${search.toString()}`
+  // Drop the leading slash so the URL is relative and resolves against the
+  // document's <base href>: the /api endpoints live under the same UI base
+  // path (e.g. /insights/api/...). Only OTLP /v1 ingest stays at the root.
+  return `${path.replace(/^\//, '')}?${search.toString()}`
 }
 
 export async function apiGet<T>(path: string, params: Params): Promise<T> {

@@ -53,7 +53,12 @@ const routeTree = rootRoute.addChildren(
   ),
 )
 
-export const router = createRouter({ routeTree })
+const baseEl = document.querySelector('base')
+const basepath = baseEl
+  ? new URL(baseEl.href).pathname.replace(/\/$/, '') || '/'
+  : '/'
+
+export const router = createRouter({ routeTree, basepath })
 
 declare module '@tanstack/react-router' {
   interface Register {

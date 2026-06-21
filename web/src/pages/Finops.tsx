@@ -1,13 +1,14 @@
+import { useState } from 'react'
 import { Download } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useApi, useDash } from '../dash'
+import { useApi, useDash, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
-import { TimeseriesPanel } from '../components/charts'
-import { fmtCost, fmtTokens } from '../lib/format'
+import { ChartLegend, Doughnut, PALETTE, TimeseriesPanel } from '../components/charts'
+import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
 function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
   return [
@@ -26,8 +27,6 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
       meta: { align: 'right' },
       cell: (c) => <span className="text-pink-500 dark:text-pink-400">{fmtTokens(c.getValue())}</span>,
     },
-    { accessorKey: 'input_cost', header: 'Input $', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
-    { accessorKey: 'output_cost', header: 'Output $', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
     {
       accessorKey: 'cache_savings',
       header: 'Cache Saved',
@@ -79,25 +78,47 @@ const userColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
-const modelColumns: ColumnDef<CostRow, any>[] = [
-  { accessorKey: 'provider_name', header: 'Provider' },
-  {
-    accessorKey: 'request_model',
-    header: 'Model',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue()}</span>,
-  },
-  ...costCols(),
-]
+// SpendDoughnut shows cost share across a dimension (app or model).
+function SpendDoughnut({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRow) => string }) {
+  const sorted = [...rows].filter((r) => r.total_cost > 0).sort((a, b) => b.total_cost - a.total_cost)
+  if (sorted.length === 0) return <PanelMessage>No data</PanelMessage>
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="h-44 w-44">
+        <Doughnut
+          data={{
+            labels: sorted.map(labelOf),
+            datasets: [{ data: sorted.map((r) => r.total_cost), backgroundColor: PALETTE, borderWidth: 0 }],
+          }}
+          options={{
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: (ctx: any) => ` ${ctx.label}: ${fmtCost(ctx.parsed)}` } },
+            },
+          }}
+        />
+      </div>
+      <ChartLegend align="center" items={sorted.map((r, i) => ({ label: labelOf(r), color: PALETTE[i % PALETTE.length] }))} />
+    </div>
+  )
+}
 
 export function Finops() {
   const { spanMs } = useDash()
+  const prev = usePrevRange()
+  const [spendBy, setSpendBy] = useState<'model' | 'app'>('model')
   const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
+  const byApp = useApi<CostRow[]>('/api/genai/costs', { group_by: 'app' })
   const byModel = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
+  const byModelPrev = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model', ...prev })
   const budget = useApi<BudgetResponse>('/api/finops/budget')
-  const trend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries')
+  const trend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries', { by: spendBy })
 
   const models = byModel.data ?? []
   const total = models.reduce((acc, r) => acc + r.total_cost, 0)
+  const totalPrev = (byModelPrev.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
   const b = budget.data
 
@@ -105,7 +126,12 @@ export function Finops() {
     <div className="grid grid-cols-1 gap-5">
       <StatStrip
         stats={[
-          { label: 'Spend (range)', value: fmtCost(total), sub: 'models.dev pricing' },
+          {
+            label: 'Spend (range)',
+            value: fmtCost(total),
+            sub: 'models.dev pricing',
+            delta: { pct: pctChange(totalPrev, total), positiveIsGood: false },
+          },
           { label: 'Cache Savings', value: fmtCost(savings), sub: 'vs full input rate' },
           {
             label: 'Month to Date',
@@ -122,8 +148,49 @@ export function Finops() {
         ]}
       />
 
-      <Panel title="Spend" sub="Cost per interval, stacked by model">
+      <Panel
+        title="Spend over time"
+        sub={`Cost per interval, stacked by ${spendBy}`}
+        action={
+          <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">
+            {(['model', 'app'] as const).map((g) => (
+              <button
+                key={g}
+                onClick={() => setSpendBy(g)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+                  spendBy === g
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        }
+      >
         <TimeseriesPanel points={trend.data} spanMs={spanMs} yFmt={fmtCost} stacked loading={trend.loading} />
+      </Panel>
+
+      <Panel title="Spend share" sub="Distribution of spend across apps and models">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div>
+            <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By App</p>
+            {byApp.loading ? (
+              <PanelMessage>Loading…</PanelMessage>
+            ) : (
+              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.service_name || 'unattributed'} />
+            )}
+          </div>
+          <div>
+            <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By Model</p>
+            {byModel.loading ? (
+              <PanelMessage>Loading…</PanelMessage>
+            ) : (
+              <SpendDoughnut rows={models} labelOf={(r) => r.request_model || '—'} />
+            )}
+          </div>
+        </div>
       </Panel>
 
       <Panel
@@ -146,16 +213,6 @@ export function Finops() {
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable data={byUser.data!} columns={userColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
-        )}
-      </Panel>
-
-      <Panel title="Cost per Model">
-        {byModel.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
-        ) : models.length === 0 ? (
-          <PanelMessage>No data</PanelMessage>
-        ) : (
-          <DataTable data={models} columns={modelColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
         )}
       </Panel>
     </div>

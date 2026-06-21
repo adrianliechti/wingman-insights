@@ -14,6 +14,13 @@ export function fmtCost(n: number): string {
   return '$0'
 }
 
+// pctChange is the percent change from prev to cur, or null when there's no
+// prior baseline to compare against (so the UI can hide the delta).
+export function pctChange(prev: number, cur: number): number | null {
+  if (prev === 0) return cur === 0 ? 0 : null
+  return ((cur - prev) / prev) * 100
+}
+
 export function fmtDuration(seconds: number): string {
   if (seconds >= 1) return seconds.toFixed(2) + 's'
   if (seconds >= 0.001) return (seconds * 1000).toFixed(0) + 'ms'

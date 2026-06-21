@@ -1,11 +1,11 @@
 import type { ColumnDef } from '@tanstack/react-table'
-import { useApi, useDash } from '../dash'
+import { useApi, useDash, usePrevRange } from '../dash'
 import type { ActiveUsersRow, SessionStats, TimeseriesPoint, UserTokenSummaryRow } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { TimeseriesPanel } from '../components/charts'
-import { fmtTokens } from '../lib/format'
+import { fmtTokens, pctChange } from '../lib/format'
 
 interface UserAgg {
   enduser_id: string
@@ -80,9 +80,14 @@ const TOKEN_AVG_SPECS = {
 
 export function Product() {
   const { spanMs } = useDash()
+  const prev = usePrevRange()
   const active = useApi<ActiveUsersRow>('/api/genai/active-users')
+  const activePrev = useApi<ActiveUsersRow>('/api/genai/active-users', { to: prev.to })
   const activeSeries = useApi<TimeseriesPoint[]>('/api/genai/active-users-timeseries')
   const sessions = useApi<SessionStats>('/api/product/session-stats')
+  const sessionsPrev = useApi<SessionStats>('/api/product/session-stats', prev)
+  const interactions = useApi<{ count: number }>('/api/product/interactions')
+  const interactionsPrev = useApi<{ count: number }>('/api/product/interactions', prev)
   const sessionSeries = useApi<TimeseriesPoint[]>('/api/product/sessions-timeseries')
   const modelMix = useApi<TimeseriesPoint[]>('/api/product/model-mix')
   const operationMix = useApi<TimeseriesPoint[]>('/api/product/operation-mix')
@@ -101,17 +106,27 @@ export function Product() {
               label: 'Active Users',
               value: String(a?.dau ?? '—'),
               sub: `${a?.wau ?? '—'} weekly · ${a?.mau ?? '—'} monthly`,
+              delta: { pct: pctChange(activePrev.data?.dau ?? 0, a?.dau ?? 0), positiveIsGood: true },
             },
-            { label: 'Stickiness', value: `${stickiness}%`, sub: 'daily / monthly active' },
+            {
+              label: 'Interactions',
+              value: fmtTokens(interactions.data?.count ?? 0),
+              sub: 'LLM calls in range',
+              delta: {
+                pct: pctChange(interactionsPrev.data?.count ?? 0, interactions.data?.count ?? 0),
+                positiveIsGood: true,
+              },
+            },
             {
               label: 'Sessions',
               value: fmtTokens(sessions.data?.sessions ?? 0),
               sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(1)} per user`,
+              delta: {
+                pct: pctChange(sessionsPrev.data?.sessions ?? 0, sessions.data?.sessions ?? 0),
+                positiveIsGood: true,
+              },
             },
-            {
-              label: 'Tokens per Session',
-              value: fmtTokens(sessions.data?.avg_tokens_per_session ?? 0),
-            },
+            { label: 'Stickiness', value: `${stickiness}%`, sub: 'daily / monthly active' },
           ]}
         />
       </div>

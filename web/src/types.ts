@@ -60,6 +60,7 @@ export interface AnomalyPoint {
 export interface CostRow {
   enduser_id?: string
   enduser_email?: string
+  service_name?: string
   provider_name?: string
   request_model?: string
   input_tokens: number

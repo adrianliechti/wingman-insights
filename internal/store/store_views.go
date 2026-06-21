@@ -229,6 +229,37 @@ func (s *Store) QueryToolStats(ctx context.Context, from, to time.Time, f Filter
 	return result, rows.Err()
 }
 
+// QueryInteractions counts LLM inference operations (spans carrying token usage)
+// in the range — the "interactions" product KPI.
+func (s *Store) QueryInteractions(ctx context.Context, from, to time.Time, f Filter) (int64, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	var n int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0)
+		  AND time >= ? AND time <= ?`+clause, args...).Scan(&n)
+	return n, err
+}
+
+// QueryThroughputTimeseries is generation throughput — output tokens per second
+// of model time — per bucket, from span durations.
+func (s *Store) QueryThroughputTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{interval, from, to}, fargs...)
+	return s.queryTimeseries(ctx, `
+		SELECT
+			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			'' as label,
+			CASE WHEN SUM(duration) > 0 THEN SUM(output_tokens) / SUM(duration) ELSE 0 END as value,
+			COUNT(*) as count
+		FROM genai_spans
+		WHERE output_tokens > 0 AND duration > 0 AND time >= ? AND time <= ?`+clause+`
+		GROUP BY bucket
+		ORDER BY bucket
+	`, args...)
+}
+
 // queryTimeseries runs a query whose SELECT matches TimeseriesPoint columns.
 func (s *Store) queryTimeseries(ctx context.Context, query string, args ...any) ([]TimeseriesPoint, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)

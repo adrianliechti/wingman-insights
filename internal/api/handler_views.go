@@ -9,7 +9,7 @@ import (
 
 func (h *Handler) costTimeseries(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	rows, err := h.store.QueryCostTimeseries(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -67,9 +67,29 @@ func (h *Handler) sessionStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, stats)
 }
 
+func (h *Handler) interactions(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	n, err := h.store.QueryInteractions(r.Context(), from, to, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]int64{"count": n})
+}
+
 func (h *Handler) latencyPercentiles(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryLatencyPercentiles(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+func (h *Handler) throughput(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryThroughputTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return

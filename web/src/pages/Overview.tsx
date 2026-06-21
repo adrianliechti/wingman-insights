@@ -1,7 +1,10 @@
-import { CircleCheck } from 'lucide-react'
+import { AlertTriangle, CircleCheck } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
 import { useApi, useDash } from '../dash'
+import type { DashSearch } from '../dash'
 import type {
   ActiveUsersRow,
+  AnomalyPoint,
   CostRow,
   GenAIErrorRow,
   ModelDistributionRow,
@@ -85,6 +88,7 @@ export function Overview() {
   const summary = useApi<TokenSummaryRow[]>('/api/genai/token-summary')
   const costs = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
   const active = useApi<ActiveUsersRow>('/api/genai/active-users')
+  const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomalies', { group_by: 'user' })
   const operations = useApi<OperationRow[]>('/api/genai/operations')
   const errors = useApi<GenAIErrorRow[]>('/api/genai/errors')
   const duration = useApi<TimeseriesPoint[]>('/api/genai/operation-duration-timeseries')
@@ -101,6 +105,7 @@ export function Overview() {
   const requests = rows.filter((r) => r.token_type === 'input').reduce((acc, r) => acc + r.total_requests, 0)
   const spend = (costs.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const saved = (costs.data ?? []).reduce((acc, r) => acc + r.cache_savings, 0)
+  const flagged = anomalies.data ?? []
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -122,6 +127,24 @@ export function Overview() {
           ]}
         />
       </div>
+
+      {flagged.length > 0 && (
+        <Link
+          to="/operations"
+          search={(prev: DashSearch) => prev}
+          className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 transition-colors hover:bg-amber-100 lg:col-span-2 dark:border-amber-500/30 dark:bg-amber-500/10 dark:hover:bg-amber-500/15"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
+            {flagged.length} consumption {flagged.length === 1 ? 'anomaly' : 'anomalies'}
+          </span>
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            top: <span className="font-mono">{flagged[0].group_key || '—'}</span> at{' '}
+            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(1)}× expected
+          </span>
+          <span className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400">View →</span>
+        </Link>
+      )}
 
       <TokenChart className="lg:col-span-2" />
 

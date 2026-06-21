@@ -19,6 +19,7 @@ import (
 type CostRow struct {
 	EndUserID    string `json:"enduser_id,omitempty"`
 	EndUserEmail string `json:"enduser_email,omitempty"`
+	ServiceName  string `json:"service_name,omitempty"`
 	ProviderName string `json:"provider_name,omitempty"`
 	RequestModel string `json:"request_model,omitempty"`
 
@@ -53,11 +54,12 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		SELECT
 			COALESCE(user_id, '') as enduser_id,
 			COALESCE(NULLIF(MAX(user_email), ''), '') as enduser_email,
+			COALESCE(service_name, '') as service_name,
 			COALESCE(provider_name, '') as provider_name,
 			COALESCE(request_model, '') as request_model,`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
-		GROUP BY user_id, provider_name, request_model
+		GROUP BY user_id, service_name, provider_name, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -66,9 +68,9 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 
 	var result []CostRow
 	for rows.Next() {
-		var user, email, provider, model string
+		var user, email, service, provider, model string
 		var p tokenParts
-		if err := rows.Scan(&user, &email, &provider, &model,
+		if err := rows.Scan(&user, &email, &service, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
@@ -76,6 +78,7 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		r := CostRow{
 			EndUserID:           user,
 			EndUserEmail:        email,
+			ServiceName:         service,
 			ProviderName:        provider,
 			RequestModel:        model,
 			InputTokens:         p.Uncached, // billed (non-cached) input
@@ -119,6 +122,13 @@ func AggregateCostsByModel(rows []CostRow) []CostRow {
 	})
 }
 
+// AggregateCostsByApp collapses a cost breakdown to one row per app (service).
+func AggregateCostsByApp(rows []CostRow) []CostRow {
+	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
+		return r.ServiceName, CostRow{ServiceName: r.ServiceName}
+	})
+}
+
 func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []CostRow {
 	byKey := make(map[string]*CostRow)
 	for _, r := range rows {
@@ -150,20 +160,25 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 	return result
 }
 
-// QueryCostTimeseries returns spend per time bucket and model, priced via the
-// models.dev catalog. Sourced from the partition counters (or spans) so cached
-// tokens are priced correctly.
-func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+// QueryCostTimeseries returns spend per time bucket, stacked by request_model
+// (groupBy "model", default) or service_name (groupBy "app"). Priced from spans
+// so cached tokens are billed at their own rate.
+func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
+	labelCol := "request_model"
+	if groupBy == "app" {
+		labelCol = "service_name"
+	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			COALESCE(`+labelCol+`, '') as label,
 			COALESCE(provider_name, '') as provider_name,
 			COALESCE(request_model, '') as request_model,`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
-		GROUP BY bucket, provider_name, request_model
+		GROUP BY bucket, label, provider_name, request_model
 		ORDER BY bucket
 	`, args...)
 	if err != nil {
@@ -173,15 +188,15 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 
 	type key struct {
 		bucket time.Time
-		model  string
+		label  string
 	}
 	costs := make(map[key]float64)
 	var order []key
 	for rows.Next() {
 		var bucket time.Time
-		var provider, model string
+		var label, provider, model string
 		var p tokenParts
-		if err := rows.Scan(&bucket, &provider, &model,
+		if err := rows.Scan(&bucket, &label, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
@@ -189,7 +204,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 		if !priced {
 			continue
 		}
-		k := key{bucket, model}
+		k := key{bucket, label}
 		if _, seen := costs[k]; !seen {
 			order = append(order, k)
 		}
@@ -201,7 +216,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 
 	result := make([]TimeseriesPoint, 0, len(order))
 	for _, k := range order {
-		result = append(result, TimeseriesPoint{Bucket: k.bucket, Label: k.model, Value: costs[k]})
+		result = append(result, TimeseriesPoint{Bucket: k.bucket, Label: k.label, Value: costs[k]})
 	}
 	return result, nil
 }

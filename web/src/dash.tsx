@@ -109,6 +109,15 @@ export function useDash(): DashState {
   return ctx
 }
 
+// usePrevRange returns the equal-length window immediately before the active
+// range — pass it to useApi as `extra` for period-over-period comparison.
+export function usePrevRange(): { from: string; to: string } {
+  const { from, to } = useDash()
+  const f = new Date(from).getTime()
+  const span = new Date(to).getTime() - f
+  return { from: new Date(f - span).toISOString(), to: from }
+}
+
 // useApi fetches an endpoint with the global time range and filters applied;
 // `extra` adds or overrides query params per call.
 export function useApi<T>(path: string, extra?: Params) {

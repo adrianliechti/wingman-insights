@@ -114,6 +114,7 @@ export function Operations() {
   const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomalies', { group_by: groupBy })
   const percentiles = useApi<TimeseriesPoint[]>('/api/ops/latency-percentiles')
   const ttfc = useApi<TimeseriesPoint[]>('/api/ops/ttfc-timeseries')
+  const throughput = useApi<TimeseriesPoint[]>('/api/ops/throughput')
   const errorRate = useApi<TimeseriesPoint[]>('/api/ops/error-rate')
   const tools = useApi<ToolStatRow[]>('/api/ops/tools')
   const httpRequests = useApi<TimeseriesPoint[]>('/api/http/requests-timeseries')
@@ -203,6 +204,16 @@ export function Operations() {
           spanMs={spanMs}
           yFmt={(v) => fmtDuration(v)}
           loading={ttfc.loading}
+        />
+      </Panel>
+
+      <Panel title="Throughput" sub="Output tokens per second of model time">
+        <TimeseriesPanel
+          points={throughput.data}
+          spanMs={spanMs}
+          specs={{ '': { label: 'Tokens/sec', color: '#22d3ee', fill: true } }}
+          yFmt={(v) => fmtTokens(v) + '/s'}
+          loading={throughput.loading}
         />
       </Panel>
 

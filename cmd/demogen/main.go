@@ -475,19 +475,24 @@ func send(req *colmetrics.ExportMetricsServiceRequest) error {
 	return nil
 }
 
+// histo emits a delta histogram for one interval — the shape wingman's insights
+// metric exporter produces. The datapoint covers (StartTime, Time] = one step,
+// so summing datapoints over a window yields the true total.
 func histo(name string, tsNano, count uint64, sum, min, max float64, attrs ...*common.KeyValue) *metrics.Metric {
+	startNano := tsNano - uint64((*step).Nanoseconds())
 	return &metrics.Metric{
 		Name: name,
 		Data: &metrics.Metric_Histogram{
 			Histogram: &metrics.Histogram{
 				AggregationTemporality: metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA,
 				DataPoints: []*metrics.HistogramDataPoint{{
-					Attributes:   attrs,
-					TimeUnixNano: tsNano,
-					Count:        count,
-					Sum:          &sum,
-					Min:          &min,
-					Max:          &max,
+					Attributes:        attrs,
+					StartTimeUnixNano: startNano,
+					TimeUnixNano:      tsNano,
+					Count:             count,
+					Sum:               &sum,
+					Min:               &min,
+					Max:               &max,
 				}},
 			},
 		},

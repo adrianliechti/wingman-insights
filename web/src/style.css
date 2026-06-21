@@ -1,3 +1,12 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Paint the root element so Safari's overscroll (rubber-band) area at the top
+   and bottom shows the theme background instead of white. */
+html {
+  background-color: var(--color-gray-50);
+}
+html.dark {
+  background-color: var(--color-gray-950);
+}

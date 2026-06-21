@@ -102,6 +102,26 @@ func (h *Handler) cacheEfficiency(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+func (h *Handler) tokenComposition(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryTokenComposition(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+func (h *Handler) reasoningShare(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryReasoningShare(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
 func (h *Handler) genaiErrors(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryGenAIErrors(r.Context(), from, to, parseFilter(r))

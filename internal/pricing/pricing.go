@@ -6,7 +6,6 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -31,6 +30,23 @@ func (p Price) TokenCost(tokenType string, n float64) float64 {
 		"cache_creation": p.CacheWrite,
 	}[tokenType]
 	return n / 1_000_000 * perMillion
+}
+
+// Cost prices a full token breakdown for one request (or an aggregate),
+// accounting for provider-managed cache. Per the OTel GenAI semconv,
+// gen_ai.usage.input_tokens is the inclusive prompt total — it already contains
+// cacheRead + cacheCreation — so only the non-cached remainder is billed at the
+// input rate, while cached tokens bill at their own (cheaper) rates. Reasoning
+// tokens are billed within output and are not added separately.
+func (p Price) Cost(input, output, cacheRead, cacheCreation float64) float64 {
+	regular := input - cacheRead - cacheCreation
+	if regular < 0 {
+		regular = 0
+	}
+	return p.TokenCost("input", regular) +
+		p.TokenCost("cache_read", cacheRead) +
+		p.TokenCost("cache_creation", cacheCreation) +
+		p.TokenCost("output", output)
 }
 
 type catalogModel struct {
@@ -79,50 +95,6 @@ func load() {
 			}
 		}
 	}
-}
-
-// ModelInfo is a catalog entry exposed for what-if comparisons.
-type ModelInfo struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Price    Price  `json:"price"`
-}
-
-// catalogProviders are the canonical (non-router) providers listed for
-// what-if model comparisons.
-var catalogProviders = map[string]bool{
-	"anthropic": true, "openai": true, "google": true, "google-vertex": true,
-	"mistral": true, "deepseek": true, "groq": true, "cohere": true,
-	"xai": true, "amazon-bedrock": true, "azure": true, "meta": true,
-}
-
-// ListModels returns priced models from canonical providers, for use as
-// what-if targets.
-func ListModels() []ModelInfo {
-	once.Do(load)
-	var result []ModelInfo
-	var catalog map[string]catalogProvider
-	if err := json.Unmarshal(modelsJSON, &catalog); err != nil {
-		return result
-	}
-	for provider, p := range catalog {
-		if !catalogProviders[provider] {
-			continue
-		}
-		for model, m := range p.Models {
-			if m.Cost == nil {
-				continue
-			}
-			result = append(result, ModelInfo{Provider: provider, Model: model, Price: *m.Cost})
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Provider != result[j].Provider {
-			return result[i].Provider < result[j].Provider
-		}
-		return result[i].Model < result[j].Model
-	})
-	return result
 }
 
 // Lookup resolves a price for a (provider, model) pair as reported via OTel

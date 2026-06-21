@@ -46,11 +46,6 @@ type TopRouteRow struct {
 	TotalRequests int64  `json:"total_requests"`
 }
 
-type MethodDistributionRow struct {
-	Method        string `json:"method"`
-	TotalRequests int64  `json:"total_requests"`
-}
-
 func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -181,39 +176,6 @@ func (s *Store) QueryHTTPRequestsTimeseries(ctx context.Context, from, to time.T
 	return result, rows.Err()
 }
 
-func (s *Store) QueryHTTPErrorRateTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	clause, fargs := f.httpClause()
-	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			time_bucket(CAST(? AS INTERVAL), time) as bucket,
-			'' as label,
-			CASE WHEN SUM(count) > 0
-				THEN 100.0 * SUM(CASE WHEN status_code >= 400 THEN count ELSE 0 END) / SUM(count)
-				ELSE 0 END as value,
-			COALESCE(SUM(count), 0) as count
-		FROM http_metrics
-		WHERE metric_name LIKE 'http.%.request.duration'
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY bucket
-		ORDER BY bucket
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
-}
-
 func (s *Store) QueryHTTPErrorsByCode(ctx context.Context, from, to time.Time, f Filter) ([]HTTPErrorsByCodeRow, error) {
 	clause, fargs := f.httpClause()
 	args := append([]any{from, to}, fargs...)
@@ -272,35 +234,6 @@ func (s *Store) QueryTopRoutes(ctx context.Context, from, to time.Time, limit in
 	for rows.Next() {
 		var r TopRouteRow
 		if err := rows.Scan(&r.Method, &r.Route, &r.TotalRequests); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
-}
-
-func (s *Store) QueryMethodDistribution(ctx context.Context, from, to time.Time, f Filter) ([]MethodDistributionRow, error) {
-	clause, fargs := f.httpClause()
-	args := append([]any{from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(method, '') as method,
-			COALESCE(SUM(count), 0) as total_requests
-		FROM http_metrics
-		WHERE metric_name LIKE 'http.%.request.duration'
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY method
-		ORDER BY total_requests DESC
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []MethodDistributionRow
-	for rows.Next() {
-		var r MethodDistributionRow
-		if err := rows.Scan(&r.Method, &r.TotalRequests); err != nil {
 			return nil, err
 		}
 		result = append(result, r)

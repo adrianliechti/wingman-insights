@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -12,6 +11,11 @@ import (
 // CostRow is token consumption priced via the models.dev catalog. Costs are
 // USD. Priced is false when no price is known for (provider, model) — token
 // counts are still reported so nothing is silently dropped.
+//
+// Cost is sourced from spans, the only signal that carries the per-request cache
+// breakdown (gen_ai.usage.cache_*.input_tokens). InputTokens here is the billed,
+// non-cached remainder (inclusive input minus cache), so the four token columns
+// form a disjoint ledger that lines up with the four cost columns.
 type CostRow struct {
 	EndUserID    string `json:"enduser_id,omitempty"`
 	EndUserEmail string `json:"enduser_email,omitempty"`
@@ -22,6 +26,9 @@ type CostRow struct {
 	OutputTokens        float64 `json:"output_tokens"`
 	CacheReadTokens     float64 `json:"cache_read_tokens"`
 	CacheCreationTokens float64 `json:"cache_creation_tokens"`
+	// ReasoningTokens is a subset of OutputTokens (billed within output, so no
+	// separate cost) — reported for visibility into "thinking" overhead.
+	ReasoningTokens float64 `json:"reasoning_tokens"`
 
 	InputCost         float64 `json:"input_cost"`
 	OutputCost        float64 `json:"output_cost"`
@@ -36,76 +43,64 @@ type CostRow struct {
 	Priced bool `json:"priced"`
 }
 
-// QueryCostBreakdown returns priced token usage per (user, provider, model).
-// It is the base data for the per-user / per-model cost views and the CSV report.
+// QueryCostBreakdown returns priced token usage per (user, provider, model),
+// sourced from the partition counters (or spans) so cached tokens are priced at
+// their own rate. Base data for the per-user / per-model cost views and the CSV.
 func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Filter) ([]CostRow, error) {
-	clause, fargs := f.genaiClause()
+	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(enduser_id, '') as enduser_id,
-			COALESCE(enduser_email, '') as enduser_email,
+			COALESCE(user_id, '') as enduser_id,
+			COALESCE(NULLIF(MAX(user_email), ''), '') as enduser_email,
 			COALESCE(provider_name, '') as provider_name,
-			COALESCE(request_model, '') as request_model,
-			COALESCE(token_type, '') as token_type,
-			COALESCE(SUM(sum), 0) as tokens
-		FROM genai_metrics
-		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY enduser_id, enduser_email, provider_name, request_model, token_type
+			COALESCE(request_model, '') as request_model,`+spansPartCols+`
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		GROUP BY user_id, provider_name, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	byKey := make(map[string]*CostRow)
-	prices := make(map[string]pricing.Price)
+	var result []CostRow
 	for rows.Next() {
-		var user, email, provider, model, tokenType string
-		var tokens float64
-		if err := rows.Scan(&user, &email, &provider, &model, &tokenType, &tokens); err != nil {
+		var user, email, provider, model string
+		var p tokenParts
+		if err := rows.Scan(&user, &email, &provider, &model,
+			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
-		key := user + "\x00" + provider + "\x00" + model
-		r, ok := byKey[key]
-		if !ok {
-			price, priced := pricing.Lookup(provider, model)
-			r = &CostRow{EndUserID: user, EndUserEmail: email, ProviderName: provider, RequestModel: model, Priced: priced}
-			byKey[key] = r
-			prices[key] = price
+		price, priced := pricing.Lookup(provider, model)
+		r := CostRow{
+			EndUserID:           user,
+			EndUserEmail:        email,
+			ProviderName:        provider,
+			RequestModel:        model,
+			InputTokens:         p.Uncached, // billed (non-cached) input
+			OutputTokens:        p.Response + p.Reasoning,
+			CacheReadTokens:     p.CacheRead,
+			CacheCreationTokens: p.CacheWrite,
+			ReasoningTokens:     p.Reasoning,
+			Priced:              priced,
 		}
-		cost := 0.0
-		if r.Priced {
-			cost = prices[key].TokenCost(tokenType, tokens)
+		if priced {
+			r.InputCost = price.TokenCost("input", p.Uncached)
+			r.OutputCost = price.TokenCost("output", p.Response+p.Reasoning)
+			r.CacheReadCost = price.TokenCost("cache_read", p.CacheRead)
+			r.CacheCreationCost = price.TokenCost("cache_creation", p.CacheWrite)
+			r.TotalCost = r.InputCost + r.OutputCost + r.CacheReadCost + r.CacheCreationCost
+			// Savings = what the cache-read tokens would have cost at the full
+			// input rate, minus what they actually cost.
+			r.CacheSavings = price.TokenCost("input", p.CacheRead) - r.CacheReadCost
 		}
-		switch tokenType {
-		case "input":
-			r.InputTokens += tokens
-			r.InputCost += cost
-		case "output":
-			r.OutputTokens += tokens
-			r.OutputCost += cost
-		case "cache_read":
-			r.CacheReadTokens += tokens
-			r.CacheReadCost += cost
-			if r.Priced {
-				r.CacheSavings += prices[key].TokenCost("input", tokens) - cost
-			}
-		case "cache_creation":
-			r.CacheCreationTokens += tokens
-			r.CacheCreationCost += cost
-		}
-		r.TotalCost += cost
+		result = append(result, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	result := make([]CostRow, 0, len(byKey))
-	for _, r := range byKey {
-		result = append(result, *r)
-	}
 	sortCostRows(result)
 	return result, nil
 }
@@ -138,6 +133,7 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 		agg.OutputTokens += r.OutputTokens
 		agg.CacheReadTokens += r.CacheReadTokens
 		agg.CacheCreationTokens += r.CacheCreationTokens
+		agg.ReasoningTokens += r.ReasoningTokens
 		agg.InputCost += r.InputCost
 		agg.OutputCost += r.OutputCost
 		agg.CacheReadCost += r.CacheReadCost
@@ -155,21 +151,19 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 }
 
 // QueryCostTimeseries returns spend per time bucket and model, priced via the
-// models.dev catalog.
+// models.dev catalog. Sourced from the partition counters (or spans) so cached
+// tokens are priced correctly.
 func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	clause, fargs := f.genaiClause()
+	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(provider_name, '') as provider_name,
-			COALESCE(request_model, '') as request_model,
-			COALESCE(token_type, '') as token_type,
-			COALESCE(SUM(sum), 0) as tokens
-		FROM genai_metrics
-		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY bucket, provider_name, request_model, token_type
+			COALESCE(request_model, '') as request_model,`+spansPartCols+`
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		GROUP BY bucket, provider_name, request_model
 		ORDER BY bucket
 	`, args...)
 	if err != nil {
@@ -185,9 +179,10 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 	var order []key
 	for rows.Next() {
 		var bucket time.Time
-		var provider, model, tokenType string
-		var tokens float64
-		if err := rows.Scan(&bucket, &provider, &model, &tokenType, &tokens); err != nil {
+		var provider, model string
+		var p tokenParts
+		if err := rows.Scan(&bucket, &provider, &model,
+			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
 		price, priced := pricing.Lookup(provider, model)
@@ -198,7 +193,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 		if _, seen := costs[k]; !seen {
 			order = append(order, k)
 		}
-		costs[k] += price.TokenCost(tokenType, tokens)
+		costs[k] += p.cost(price)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -207,48 +202,6 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 	result := make([]TimeseriesPoint, 0, len(order))
 	for _, k := range order {
 		result = append(result, TimeseriesPoint{Bucket: k.bucket, Label: k.model, Value: costs[k]})
-	}
-	return result, nil
-}
-
-// WhatIfRow compares actual model spend against repricing the same token
-// volumes at a target model's rates.
-type WhatIfRow struct {
-	ProviderName string  `json:"provider_name"`
-	RequestModel string  `json:"request_model"`
-	InputTokens  float64 `json:"input_tokens"`
-	OutputTokens float64 `json:"output_tokens"`
-	CurrentCost  float64 `json:"current_cost"`
-	TargetCost   float64 `json:"target_cost"`
-}
-
-// QueryWhatIf reprices each model's observed token volumes at the target
-// (provider, model) rates.
-func (s *Store) QueryWhatIf(ctx context.Context, from, to time.Time, f Filter, targetProvider, targetModel string) ([]WhatIfRow, error) {
-	target, ok := pricing.Lookup(targetProvider, targetModel)
-	if !ok {
-		return nil, fmt.Errorf("no pricing for %s/%s", targetProvider, targetModel)
-	}
-	breakdown, err := s.QueryCostBreakdown(ctx, from, to, f)
-	if err != nil {
-		return nil, err
-	}
-	byModel := AggregateCostsByModel(breakdown)
-
-	result := make([]WhatIfRow, 0, len(byModel))
-	for _, r := range byModel {
-		targetCost := target.TokenCost("input", r.InputTokens) +
-			target.TokenCost("output", r.OutputTokens) +
-			target.TokenCost("cache_read", r.CacheReadTokens) +
-			target.TokenCost("cache_creation", r.CacheCreationTokens)
-		result = append(result, WhatIfRow{
-			ProviderName: r.ProviderName,
-			RequestModel: r.RequestModel,
-			InputTokens:  r.InputTokens,
-			OutputTokens: r.OutputTokens,
-			CurrentCost:  r.TotalCost,
-			TargetCost:   targetCost,
-		})
 	}
 	return result, nil
 }

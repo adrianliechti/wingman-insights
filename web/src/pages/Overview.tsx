@@ -69,6 +69,17 @@ const errorColumns: ColumnDef<GenAIErrorRow, any>[] = [
   { accessorKey: 'count', header: 'Count', meta: { align: 'right' } },
 ]
 
+// Token composition stacks the disjoint token partitions from spans: non-cached
+// input, cache read/write (subsets of input), output and reasoning (subset of
+// output). "Cache write" tracks the forthcoming read/write cache naming.
+const COMPOSITION_SPECS = {
+  input: { label: 'Input', color: '#818cf8', fill: true },
+  cache_read: { label: 'Cache read', color: '#22d3ee', fill: true },
+  cache_creation: { label: 'Cache write', color: '#fbbf24', fill: true },
+  output: { label: 'Output', color: '#34d399', fill: true },
+  reasoning: { label: 'Reasoning', color: '#f472b6', fill: true },
+}
+
 export function Overview() {
   const { spanMs } = useDash()
   const summary = useApi<TokenSummaryRow[]>('/api/genai/token-summary')
@@ -77,17 +88,19 @@ export function Overview() {
   const operations = useApi<OperationRow[]>('/api/genai/operations')
   const errors = useApi<GenAIErrorRow[]>('/api/genai/errors')
   const duration = useApi<TimeseriesPoint[]>('/api/genai/operation-duration-timeseries')
+  const composition = useApi<TimeseriesPoint[]>('/api/genai/token-composition')
   const cache = useApi<TimeseriesPoint[]>('/api/genai/cache-efficiency')
+  const reasoning = useApi<TimeseriesPoint[]>('/api/genai/reasoning-share')
 
   const rows = summary.data ?? []
   const totalsByType = (type: string) =>
     rows.filter((r) => r.token_type === type).reduce((acc, r) => acc + r.total_tokens, 0)
   const input = totalsByType('input')
   const output = totalsByType('output')
-  const cacheRead = totalsByType('cache_read')
   const total = rows.reduce((acc, r) => acc + r.total_tokens, 0)
   const requests = rows.filter((r) => r.token_type === 'input').reduce((acc, r) => acc + r.total_requests, 0)
   const spend = (costs.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
+  const saved = (costs.data ?? []).reduce((acc, r) => acc + r.cache_savings, 0)
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -97,9 +110,9 @@ export function Overview() {
             {
               label: 'Tokens',
               value: fmtTokens(total),
-              sub: `${fmtTokens(input)} in · ${fmtTokens(output)} out · ${fmtTokens(cacheRead)} cached`,
+              sub: `${fmtTokens(input)} in · ${fmtTokens(output)} out`,
             },
-            { label: 'Est. Cost', value: fmtCost(spend), sub: 'models.dev pricing' },
+            { label: 'Est. Cost', value: fmtCost(spend), sub: saved > 0 ? `${fmtCost(saved)} saved by cache` : 'models.dev pricing' },
             { label: 'Requests', value: fmtTokens(requests) },
             {
               label: 'Active Users',
@@ -111,6 +124,21 @@ export function Overview() {
       </div>
 
       <TokenChart className="lg:col-span-2" />
+
+      <Panel
+        title="Token Composition"
+        sub="Where tokens go — cache and reasoning broken out (from spans)"
+        className="lg:col-span-2"
+      >
+        <TimeseriesPanel
+          points={composition.data}
+          spanMs={spanMs}
+          specs={COMPOSITION_SPECS}
+          yFmt={fmtTokens}
+          stacked
+          loading={composition.loading}
+        />
+      </Panel>
 
       <Panel title="Models" sub="Requests per model and operation breakdown" className="lg:col-span-2">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[18rem_1fr]">
@@ -125,7 +153,7 @@ export function Overview() {
         </div>
       </Panel>
 
-      <Panel title="Operation Duration" sub="Average duration per model">
+      <Panel title="Operation Duration" sub="Average duration per model" className="lg:col-span-2">
         <TimeseriesPanel
           points={duration.data}
           spanMs={spanMs}
@@ -134,13 +162,23 @@ export function Overview() {
         />
       </Panel>
 
-      <Panel title="Cache Hit Rate" sub="Share of tokens served from cache">
+      <Panel title="Cache Hit Rate" sub="Share of input tokens served from cache">
         <TimeseriesPanel
           points={cache.data}
           spanMs={spanMs}
           yFmt={(v) => v.toFixed(0) + '%'}
           specs={{ '': { label: 'Cache read share', color: '#22d3ee', fill: true } }}
           loading={cache.loading}
+        />
+      </Panel>
+
+      <Panel title="Reasoning Share" sub="Share of output tokens spent on reasoning">
+        <TimeseriesPanel
+          points={reasoning.data}
+          spanMs={spanMs}
+          yFmt={(v) => v.toFixed(0) + '%'}
+          specs={{ '': { label: 'Reasoning share', color: '#f472b6', fill: true } }}
+          loading={reasoning.loading}
         />
       </Panel>
 

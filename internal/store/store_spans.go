@@ -48,17 +48,16 @@ type SpanRow struct {
 	Attributes map[string]string `json:"-"`
 }
 
-// price fills Cost from the span's token counts. Reasoning tokens are billed
-// inside output tokens by providers, so they are not added separately.
+// price fills Cost from the span's token counts. InputTokens is the inclusive
+// prompt total (includes cache), so pricing.Cost bills only the non-cached
+// remainder at the input rate; reasoning is billed within output.
 func (r *SpanRow) price() {
 	p, ok := pricing.Lookup(r.ProviderName, r.RequestModel)
 	if !ok {
 		return
 	}
-	r.Cost = p.TokenCost("input", float64(r.InputTokens)) +
-		p.TokenCost("output", float64(r.OutputTokens)) +
-		p.TokenCost("cache_read", float64(r.CacheRead)) +
-		p.TokenCost("cache_creation", float64(r.CacheCreation))
+	r.Cost = p.Cost(float64(r.InputTokens), float64(r.OutputTokens),
+		float64(r.CacheRead), float64(r.CacheCreation))
 }
 
 func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
@@ -113,51 +112,6 @@ const spanColumns = `time, duration, trace_id, span_id, COALESCE(parent_span_id,
 	COALESCE(session_id, ''), COALESCE(error_type, ''), COALESCE(finish_reasons, ''),
 	COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(cache_read_tokens, 0),
 	COALESCE(cache_creation_tokens, 0), COALESCE(reasoning_tokens, 0)`
-
-func scanSpan(scan func(...any) error) (SpanRow, error) {
-	var r SpanRow
-	err := scan(&r.Time, &r.Duration, &r.TraceID, &r.SpanID, &r.ParentSpanID,
-		&r.Name, &r.Kind, &r.Status, &r.ServiceName, &r.OperationName, &r.ProviderName,
-		&r.RequestModel, &r.ResponseModel, &r.AgentName, &r.ToolName, &r.UserID,
-		&r.UserEmail, &r.SessionID, &r.ErrorType, &r.FinishReasons,
-		&r.InputTokens, &r.OutputTokens, &r.CacheRead, &r.CacheCreation, &r.Reasoning)
-	return r, err
-}
-
-// QuerySpans lists recent GenAI spans, newest first. onlyErrors limits to
-// spans with an error status or error.type.
-func (s *Store) QuerySpans(ctx context.Context, from, to time.Time, f Filter, onlyErrors bool, limit int) ([]SpanRow, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	clause, fargs := f.spansClause()
-	query := `SELECT ` + spanColumns + `
-		FROM genai_spans
-		WHERE time >= ? AND time <= ?` + clause
-	args := append([]any{from, to}, fargs...)
-	if onlyErrors {
-		query += ` AND (status = 'error' OR (error_type IS NOT NULL AND error_type != ''))`
-	}
-	query += ` ORDER BY time DESC LIMIT ?`
-	args = append(args, limit)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []SpanRow
-	for rows.Next() {
-		r, err := scanSpan(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		r.price()
-		result = append(result, r)
-	}
-	return result, rows.Err()
-}
 
 // TraceSummary is one trace condensed to a list entry.
 type TraceSummary struct {
@@ -249,10 +203,8 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 		}
 		var cost float64
 		if price, ok := pricing.Lookup(provider, model); ok {
-			cost = price.TokenCost("input", float64(t.InputTokens)) +
-				price.TokenCost("output", float64(t.OutputTokens)) +
-				price.TokenCost("cache_read", float64(cacheRead)) +
-				price.TokenCost("cache_creation", float64(cacheCreation))
+			cost = price.Cost(float64(t.InputTokens), float64(t.OutputTokens),
+				float64(cacheRead), float64(cacheCreation))
 		}
 
 		a, ok := traces[t.TraceID]

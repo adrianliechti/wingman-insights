@@ -12,8 +12,6 @@ interface UserAgg {
   enduser_email: string
   input: number
   output: number
-  cache_creation: number
-  cache_read: number
   total: number
   requests: number
 }
@@ -28,8 +26,6 @@ function aggregate(rows: UserTokenSummaryRow[]): UserAgg[] {
         enduser_email: r.enduser_email,
         input: 0,
         output: 0,
-        cache_creation: 0,
-        cache_read: 0,
         total: 0,
         requests: 0,
       }
@@ -42,12 +38,6 @@ function aggregate(rows: UserTokenSummaryRow[]): UserAgg[] {
         break
       case 'output':
         u.output += r.total_tokens
-        break
-      case 'cache_creation':
-        u.cache_creation += r.total_tokens
-        break
-      case 'cache_read':
-        u.cache_read += r.total_tokens
         break
     }
     u.total += r.total_tokens
@@ -74,12 +64,6 @@ const userColumns: ColumnDef<UserAgg, any>[] = [
     header: 'Output',
     meta: { align: 'right' },
     cell: (c) => <span className="text-emerald-500 dark:text-emerald-400">{fmtTokens(c.getValue())}</span>,
-  },
-  {
-    accessorKey: 'cache_read',
-    header: 'Cache Read',
-    meta: { align: 'right' },
-    cell: (c) => <span className="text-cyan-500 dark:text-cyan-400">{fmtTokens(c.getValue())}</span>,
   },
   {
     accessorKey: 'total',

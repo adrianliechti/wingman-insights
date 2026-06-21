@@ -32,16 +32,6 @@ func (h *Handler) httpRequestsTimeseries(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, rows)
 }
 
-func (h *Handler) httpErrorRate(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryHTTPErrorRateTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
 func (h *Handler) httpErrorsByCode(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryHTTPErrorsByCode(r.Context(), from, to, parseFilter(r))
@@ -55,16 +45,6 @@ func (h *Handler) httpErrorsByCode(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) topRoutes(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryTopRoutes(r.Context(), from, to, 10, parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) methodDistribution(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryMethodDistribution(r.Context(), from, to, parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return

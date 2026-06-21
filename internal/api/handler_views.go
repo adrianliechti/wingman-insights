@@ -5,8 +5,6 @@ import (
 	"os"
 	"strconv"
 	"time"
-
-	"insights/internal/pricing"
 )
 
 func (h *Handler) costTimeseries(w http.ResponseWriter, r *http.Request) {
@@ -109,21 +107,6 @@ func (h *Handler) toolStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
-func (h *Handler) whatIf(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	q := r.URL.Query()
-	rows, err := h.store.QueryWhatIf(r.Context(), from, to, parseFilter(r),
-		q.Get("target_provider"), q.Get("target_model"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) pricingModels(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, pricing.ListModels())
-}
 
 type budgetResponse struct {
 	Budget       float64 `json:"budget"`

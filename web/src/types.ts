@@ -66,6 +66,7 @@ export interface CostRow {
   output_tokens: number
   cache_read_tokens: number
   cache_creation_tokens: number
+  reasoning_tokens: number
   input_cost: number
   output_cost: number
   cache_read_cost: number
@@ -88,15 +89,6 @@ export interface ToolStatRow {
   error_count: number
 }
 
-export interface WhatIfRow {
-  provider_name: string
-  request_model: string
-  input_tokens: number
-  output_tokens: number
-  current_cost: number
-  target_cost: number
-}
-
 export interface BudgetResponse {
   budget: number
   month_to_date: number
@@ -104,16 +96,6 @@ export interface BudgetResponse {
   month_elapsed: number
 }
 
-export interface PricingModel {
-  provider: string
-  model: string
-  price: {
-    input: number
-    output: number
-    cache_read: number
-    cache_write: number
-  }
-}
 
 export interface FilterUser {
   id: string
@@ -193,7 +175,3 @@ export interface TopRouteRow {
   total_requests: number
 }
 
-export interface MethodDistributionRow {
-  method: string
-  total_requests: number
-}

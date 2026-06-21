@@ -119,21 +119,9 @@ func hasGenAIAttr(attrs []*common.KeyValue) bool {
 func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.SpanRow {
 	attrs := sp.Attributes
 
-	provider := getStringAttr(attrs, "gen_ai.system")
-	if provider == "" {
-		provider = getStringAttr(attrs, "gen_ai.provider.name")
-	}
-	userID := getStringAttr(attrs, "user.id")
-	if userID == "" {
-		userID = getStringAttr(attrs, "enduser.id")
-	}
-	userEmail := getStringAttr(attrs, "user.email")
-	if userEmail == "" {
-		userEmail = getStringAttr(attrs, "enduser.email")
-	}
-	// wingman stamps session.id; semconv defines gen_ai.conversation.id and
-	// MCP servers report mcp.session.id.
-	session := firstStringAttr(attrs, "session.id", "gen_ai.conversation.id", "mcp.session.id")
+	// gen_ai.conversation.id is the semconv-standard correlation id; session.id
+	// (general) and mcp.session.id (MCP servers) are fallbacks.
+	session := firstStringAttr(attrs, "gen_ai.conversation.id", "session.id", "mcp.session.id")
 
 	status := ""
 	switch sp.Status.GetCode() {
@@ -161,27 +149,24 @@ func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.Span
 		Status:        status,
 		ServiceName:   serviceName,
 		OperationName: getStringAttr(attrs, "gen_ai.operation.name"),
-		ProviderName:  provider,
+		ProviderName:  getStringAttr(attrs, "gen_ai.provider.name"),
 		RequestModel:  getStringAttr(attrs, "gen_ai.request.model"),
 		ResponseModel: getStringAttr(attrs, "gen_ai.response.model"),
 		AgentName:     getStringAttr(attrs, "gen_ai.agent.name"),
 		ToolName:      getStringAttr(attrs, "gen_ai.tool.name"),
-		UserID:        userID,
-		UserEmail:     userEmail,
+		UserID:        getStringAttr(attrs, "user.id"),
+		UserEmail:     getStringAttr(attrs, "user.email"),
 		SessionID:     session,
 		ErrorType:     getStringAttr(attrs, "error.type"),
 		FinishReasons: getStringArrayAttr(attrs, "gen_ai.response.finish_reasons"),
+		// gen_ai.usage.input_tokens is the inclusive prompt total; the cache
+		// counts below are subsets of it (priced separately at query time).
 		InputTokens:   getIntAttr(attrs, "gen_ai.usage.input_tokens"),
 		OutputTokens:  getIntAttr(attrs, "gen_ai.usage.output_tokens"),
-		// Both semconv generations are in the wild: wingman (Go) uses the
-		// snake suffix, wingman-chat (browser) the dotted form.
-		CacheRead: firstIntAttr(attrs,
-			"gen_ai.usage.cache_read_input_tokens", "gen_ai.usage.cache_read.input_tokens"),
-		CacheCreation: firstIntAttr(attrs,
-			"gen_ai.usage.cache_creation_input_tokens", "gen_ai.usage.cache_creation.input_tokens"),
-		Reasoning: firstIntAttr(attrs,
-			"gen_ai.usage.reasoning_output_tokens", "gen_ai.usage.reasoning.output_tokens"),
-		Attributes: attrsToMap(attrs),
+		CacheRead:     getIntAttr(attrs, "gen_ai.usage.cache_read.input_tokens"),
+		CacheCreation: getIntAttr(attrs, "gen_ai.usage.cache_creation.input_tokens"),
+		Reasoning:     getIntAttr(attrs, "gen_ai.usage.reasoning.output_tokens"),
+		Attributes:    attrsToMap(attrs),
 	}
 }
 
@@ -192,15 +177,6 @@ func firstStringAttr(attrs []*common.KeyValue, keys ...string) string {
 		}
 	}
 	return ""
-}
-
-func firstIntAttr(attrs []*common.KeyValue, keys ...string) int64 {
-	for _, key := range keys {
-		if v := getIntAttr(attrs, key); v != 0 {
-			return v
-		}
-	}
-	return 0
 }
 
 func getStringArrayAttr(attrs []*common.KeyValue, key string) string {

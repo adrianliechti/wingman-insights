@@ -74,6 +74,10 @@ function SpanDetail({ span }: { span: SpanRow }) {
         {totalTokens > 0 && (
           <Chip value={`${fmtTokens(span.input_tokens)} → ${fmtTokens(span.output_tokens)} (Σ ${fmtTokens(totalTokens)})`} />
         )}
+        {(span.cache_read_tokens > 0 || span.cache_creation_tokens > 0) && (
+          <Chip label="cache" value={`${fmtTokens(span.cache_read_tokens)} read · ${fmtTokens(span.cache_creation_tokens)} write`} />
+        )}
+        {span.reasoning_tokens > 0 && <Chip label="reasoning" value={fmtTokens(span.reasoning_tokens)} />}
         {span.response_model && <Chip value={span.response_model} />}
         {span.finish_reasons && <Chip label="finish" value={span.finish_reasons} />}
         {(span.status === 'error' || span.error_type) && <Chip tone="error" value={span.error_type || 'error'} />}

@@ -1,9 +1,8 @@
-import { useState } from 'react'
 import { Download } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
 import { apiUrl } from '../api'
-import type { BudgetResponse, CostRow, PricingModel, TimeseriesPoint, WhatIfRow } from '../types'
+import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -21,6 +20,12 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
       accessorFn: (r: T) => r.cache_read_tokens + r.cache_creation_tokens,
       cell: (c) => fmtTokens(c.getValue()),
     },
+    {
+      accessorKey: 'reasoning_tokens',
+      header: 'Reasoning',
+      meta: { align: 'right' },
+      cell: (c) => <span className="text-pink-500 dark:text-pink-400">{fmtTokens(c.getValue())}</span>,
+    },
     { accessorKey: 'input_cost', header: 'Input $', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
     { accessorKey: 'output_cost', header: 'Output $', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
     {
@@ -28,6 +33,17 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
       header: 'Cache Saved',
       meta: { align: 'right' },
       cell: (c) => <span className="text-emerald-600 dark:text-emerald-400">{fmtCost(c.getValue())}</span>,
+    },
+    {
+      id: 'effective_rate',
+      header: 'Eff. $/1M',
+      meta: { align: 'right' },
+      // Blended price per million billed tokens (reasoning is inside output).
+      accessorFn: (r: T) => {
+        const tokens = r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens
+        return tokens > 0 ? (r.total_cost / tokens) * 1_000_000 : 0
+      },
+      cell: (c) => <span className="text-gray-500 dark:text-gray-400">{fmtCost(c.getValue())}</span>,
     },
     {
       accessorKey: 'total_cost',
@@ -73,93 +89,6 @@ const modelColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
-function WhatIfPanel() {
-  const [target, setTarget] = useState('openai/gpt-4o-mini')
-  const models = useApi<PricingModel[]>('/api/finops/pricing-models')
-  const [provider, model] = target.includes('/')
-    ? [target.slice(0, target.indexOf('/')), target.slice(target.indexOf('/') + 1)]
-    : ['', target]
-  const whatIf = useApi<WhatIfRow[]>('/api/finops/what-if', {
-    target_provider: provider,
-    target_model: model,
-  })
-
-  const rows = whatIf.data ?? []
-  const current = rows.reduce((acc, r) => acc + r.current_cost, 0)
-  const repriced = rows.reduce((acc, r) => acc + r.target_cost, 0)
-  const delta = repriced - current
-
-  const columns: ColumnDef<WhatIfRow, any>[] = [
-    {
-      accessorKey: 'request_model',
-      header: 'Model',
-      cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue()}</span>,
-    },
-    { accessorKey: 'input_tokens', header: 'Input', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-    { accessorKey: 'output_tokens', header: 'Output', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-    { accessorKey: 'current_cost', header: 'Current', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
-    { accessorKey: 'target_cost', header: 'Repriced', meta: { align: 'right' }, cell: (c) => fmtCost(c.getValue()) },
-    {
-      id: 'delta',
-      header: 'Delta',
-      meta: { align: 'right' },
-      accessorFn: (r) => r.target_cost - r.current_cost,
-      cell: (c) => {
-        const v = c.getValue() as number
-        return (
-          <span className={v < 0 ? 'text-emerald-600 dark:text-emerald-400' : v > 0 ? 'text-red-500 dark:text-red-400' : ''}>
-            {v < 0 ? '−' : '+'}
-            {fmtCost(Math.abs(v))}
-          </span>
-        )
-      },
-    },
-  ]
-
-  return (
-    <Panel
-      title="What-if: switch model"
-      sub="Observed token volumes repriced at the target model's rates"
-      action={
-        <div className="flex items-center gap-2">
-          <input
-            list="pricing-models"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            className="w-64 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 font-mono text-xs text-gray-700 outline-none dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
-            placeholder="provider/model"
-          />
-          <datalist id="pricing-models">
-            {(models.data ?? []).map((m) => (
-              <option key={`${m.provider}/${m.model}`} value={`${m.provider}/${m.model}`} />
-            ))}
-          </datalist>
-          {rows.length > 0 && (
-            <span
-              className={`text-xs font-semibold tabular-nums ${
-                delta < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'
-              }`}
-            >
-              {delta < 0 ? '−' : '+'}
-              {fmtCost(Math.abs(delta))}
-            </span>
-          )}
-        </div>
-      }
-    >
-      {whatIf.error ? (
-        <PanelMessage>No pricing for "{target}" — pick a model from the list</PanelMessage>
-      ) : whatIf.loading ? (
-        <PanelMessage>Loading…</PanelMessage>
-      ) : rows.length === 0 ? (
-        <PanelMessage>No data</PanelMessage>
-      ) : (
-        <DataTable data={rows} columns={columns} initialSort={[{ id: 'current_cost', desc: true }]} />
-      )}
-    </Panel>
-  )
-}
-
 export function Finops() {
   const { spanMs } = useDash()
   const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
@@ -196,8 +125,6 @@ export function Finops() {
       <Panel title="Spend" sub="Cost per interval, stacked by model">
         <TimeseriesPanel points={trend.data} spanMs={spanMs} yFmt={fmtCost} stacked loading={trend.loading} />
       </Panel>
-
-      <WhatIfPanel />
 
       <Panel
         title="Cost per User"

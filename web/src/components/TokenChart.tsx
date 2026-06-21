@@ -4,11 +4,11 @@ import { ChartLegend, Line, chartOptions, groupSeries } from './charts'
 import { Panel, PanelMessage } from './Panel'
 import { fmtTokens } from '../lib/format'
 
+// The token.usage metric only carries input/output per the OTel semconv;
+// cache breakdown lives on spans (see the cost views and Cache Hit Rate panel).
 const TOKEN_SPECS = {
   input: { label: 'Input', color: '#818cf8', fill: true },
   output: { label: 'Output', color: '#34d399', fill: true },
-  cache_creation: { label: 'Cache Creation', color: '#fbbf24', fill: true },
-  cache_read: { label: 'Cache Read', color: '#22d3ee', fill: true },
 }
 
 // TokenChart plots token usage per type and overlays red markers on buckets

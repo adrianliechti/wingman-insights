@@ -30,6 +30,7 @@ type modelDef struct {
 	model    string
 	avgIn    float64
 	avgOut   float64
+	reasons  bool // emits reasoning (thinking) tokens as a subset of output
 }
 
 type userDef struct {
@@ -40,11 +41,11 @@ type userDef struct {
 var (
 	services  = []string{"chat-api", "agent-service", "embedding-worker"}
 	modelDefs = []modelDef{
-		{"openai", "gpt-4o", 800, 400},
-		{"openai", "gpt-4o-mini", 500, 250},
-		{"anthropic", "claude-sonnet-4-20250514", 1200, 600},
-		{"anthropic", "claude-haiku-4-5", 400, 200},
-		{"google", "gemini-2.0-flash", 600, 300},
+		{"openai", "gpt-4o", 800, 400, false},
+		{"openai", "gpt-4o-mini", 500, 250, false},
+		{"anthropic", "claude-sonnet-4-20250514", 1200, 600, true},
+		{"anthropic", "claude-haiku-4-5", 400, 200, false},
+		{"gcp.gemini", "gemini-2.0-flash", 600, 300, true},
 	}
 	users = []userDef{
 		{"user-001", "alice@example.com"},
@@ -111,15 +112,14 @@ func main() {
 		}
 		total++
 
-		// A sample of intervals also emits traces (agent → chat → tool).
-		if rand.Float64() < 0.4 {
-			treq := buildTraces(t)
-			if len(treq.ResourceSpans) > 0 {
-				if err := sendTraces(treq); err != nil {
-					log.Fatalf("send traces at %s: %v", t.Format(time.RFC3339), err)
-				}
-				traces++
+		// Emit agent traces (agent → chat → tool) per active user. Spans carry
+		// the per-request cache breakdown that cost/cache analytics read from.
+		treq := buildTraces(t)
+		if len(treq.ResourceSpans) > 0 {
+			if err := sendTraces(treq); err != nil {
+				log.Fatalf("send traces at %s: %v", t.Format(time.RFC3339), err)
 			}
+			traces++
 		}
 	}
 	log.Printf("sent %d metric batches and %d trace batches covering %s", total, traces, *dur)
@@ -163,7 +163,7 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 		for _, m := range modelDefs {
 			op := pick(operations)
 			// Only certain operations for certain models
-			if m.provider == "google" {
+			if m.provider == "gcp.gemini" {
 				op = "generate_content"
 			}
 			if svc == "embedding-worker" {
@@ -172,52 +172,39 @@ func buildBatch(t time.Time) *colmetrics.ExportMetricsServiceRequest {
 
 			for _, u := range currentUsers {
 				factor := spikeFactor(t, svc, u.id)
-				inputTokens := jitter(m.avgIn, 0.5) * factor
 				outputTokens := jitter(m.avgOut, 0.5) * factor
 				count := uint64(rand.IntN(10) + 1)
 				opDur := jitter(1.5, 0.6)
 				// Sessions rotate roughly every two hours per user.
 				sessionID := fmt.Sprintf("session-%s-%d", u.id, t.Unix()/7200)
 
+				// The token.usage histogram carries the inclusive input/output
+				// totals (cache is a subset of input, matching wingman). The
+				// per-request cache and reasoning breakdown lives on spans
+				// (gen_ai.usage.*), not metrics.
+				cacheCreation, cacheRead := cacheTokens(m, op, m.avgIn*factor)
+				inputTokens := jitter(m.avgIn, 0.5)*factor + cacheCreation + cacheRead
+
 				baseAttrs := []*common.KeyValue{
 					kv("gen_ai.operation.name", op),
-					kv("gen_ai.system", m.provider),
+					kv("gen_ai.provider.name", m.provider),
 					kv("gen_ai.request.model", m.model),
 					kv("gen_ai.response.model", m.model),
 					kv("user.id", u.id),
 					kv("user.email", u.email),
-					kv("session.id", sessionID),
+					kv("gen_ai.conversation.id", sessionID),
 				}
 
-				// Token usage: input
 				allMetrics = append(allMetrics, histo(
 					"gen_ai.client.token.usage", tsNano, count, inputTokens*float64(count),
 					inputTokens*0.3, inputTokens*2.0,
-					append(baseAttrs, kv("gen_ai.token.type", "input"))...,
+					withAttr(baseAttrs, kv("gen_ai.token.type", "input"))...,
 				))
-
-				// Token usage: output
 				allMetrics = append(allMetrics, histo(
 					"gen_ai.client.token.usage", tsNano, count, outputTokens*float64(count),
 					outputTokens*0.3, outputTokens*2.0,
-					append(baseAttrs, kv("gen_ai.token.type", "output"))...,
+					withAttr(baseAttrs, kv("gen_ai.token.type", "output"))...,
 				))
-
-				// Cache tokens for Anthropic chat operations (~30% of requests)
-				if m.provider == "anthropic" && op == "chat" && rand.Float64() < 0.3 {
-					cacheTok := jitter(m.avgIn*0.4, 0.3)
-					allMetrics = append(allMetrics, histo(
-						"gen_ai.client.token.usage", tsNano, count, cacheTok*float64(count),
-						cacheTok*0.2, cacheTok*1.5,
-						append(baseAttrs, kv("gen_ai.token.type", "cache_creation"))...,
-					))
-					cacheRead := jitter(m.avgIn*0.6, 0.3)
-					allMetrics = append(allMetrics, histo(
-						"gen_ai.client.token.usage", tsNano, count, cacheRead*float64(count),
-						cacheRead*0.2, cacheRead*1.5,
-						append(baseAttrs, kv("gen_ai.token.type", "cache_read"))...,
-					))
-				}
 
 				// Operation duration
 				allMetrics = append(allMetrics, histo(
@@ -317,17 +304,32 @@ func randID(n int) []byte {
 	return b
 }
 
-// buildTraces emits agent-style traces like wingman-chat:
+// buildTraces emits one agent-style trace per active user, like wingman-chat:
 // invoke_agent → chat {model} → execute_tool {tool}.
 func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
-	currentUsers := activeUsers(t)
-	if len(currentUsers) == 0 {
-		return &coltrace.ExportTraceServiceRequest{}
+	var rms []*tracepb.ResourceSpans
+	for _, u := range activeUsers(t) {
+		svc := pick(services)
+		spans := buildUserTrace(t, u, svc)
+		if len(spans) == 0 {
+			continue
+		}
+		rms = append(rms, &tracepb.ResourceSpans{
+			Resource: &resource.Resource{
+				Attributes: []*common.KeyValue{kv("service.name", svc)},
+			},
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Scope: &common.InstrumentationScope{Name: "github.com/adrianliechti/wingman"},
+				Spans: spans,
+			}},
+		})
 	}
-	u := currentUsers[rand.IntN(len(currentUsers))]
+	return &coltrace.ExportTraceServiceRequest{ResourceSpans: rms}
+}
+
+func buildUserTrace(t time.Time, u userDef, svc string) []*tracepb.Span {
 	m := modelDefs[rand.IntN(len(modelDefs))]
-	svc := pick(services)
-	sessionID := fmt.Sprintf("session-%s-%d", u.id, t.UnixNano()%97)
+	sessionID := fmt.Sprintf("session-%s-%d", u.id, t.Unix()/7200)
 
 	traceID := randID(16)
 	rootID := randID(8)
@@ -336,7 +338,7 @@ func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
 	userAttrs := []*common.KeyValue{
 		kv("user.id", u.id),
 		kv("user.email", u.email),
-		kv("session.id", sessionID),
+		kv("gen_ai.conversation.id", sessionID),
 	}
 
 	rootStart := t
@@ -353,8 +355,18 @@ func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
 			errType = pick([]string{"429", "500", "timeout"})
 			status = tracepb.Status_STATUS_CODE_ERROR
 		}
-		inTok := int64(jitter(m.avgIn, 0.5) * factor)
 		outTok := int64(jitter(m.avgOut, 0.5) * factor)
+		// Cache reads/creations are a subset of the inclusive input total.
+		cacheCreation, cacheRead := cacheTokens(m, "chat", m.avgIn*factor)
+		inTok := int64(jitter(m.avgIn, 0.5)*factor) + int64(cacheCreation) + int64(cacheRead)
+		// Reasoning is a subset of the inclusive output total.
+		var reasoning int64
+		if m.reasons && rand.Float64() < 0.6 {
+			reasoning = int64(jitter(m.avgOut*0.45, 0.4) * factor)
+			if reasoning >= outTok {
+				reasoning = outTok * 3 / 4
+			}
+		}
 
 		attrs := append([]*common.KeyValue{
 			kv("gen_ai.operation.name", "chat"),
@@ -364,11 +376,17 @@ func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
 			kvInt("gen_ai.usage.input_tokens", inTok),
 			kvInt("gen_ai.usage.output_tokens", outTok),
 		}, userAttrs...)
+		if cacheRead > 0 {
+			attrs = append(attrs, kvInt("gen_ai.usage.cache_read.input_tokens", int64(cacheRead)))
+		}
+		if cacheCreation > 0 {
+			attrs = append(attrs, kvInt("gen_ai.usage.cache_creation.input_tokens", int64(cacheCreation)))
+		}
+		if reasoning > 0 {
+			attrs = append(attrs, kvInt("gen_ai.usage.reasoning.output_tokens", reasoning))
+		}
 		if errType != "" {
 			attrs = append(attrs, kv("error.type", errType))
-		}
-		if m.provider == "anthropic" {
-			attrs = append(attrs, kvInt("gen_ai.usage.cache_read.input_tokens", int64(jitter(m.avgIn*0.4, 0.4))))
 		}
 
 		spans = append(spans, &tracepb.Span{
@@ -421,19 +439,7 @@ func buildTraces(t time.Time) *coltrace.ExportTraceServiceRequest {
 		}, userAttrs...),
 		Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
 	}
-	spans = append([]*tracepb.Span{root}, spans...)
-
-	return &coltrace.ExportTraceServiceRequest{
-		ResourceSpans: []*tracepb.ResourceSpans{{
-			Resource: &resource.Resource{
-				Attributes: []*common.KeyValue{kv("service.name", svc)},
-			},
-			ScopeSpans: []*tracepb.ScopeSpans{{
-				Scope: &common.InstrumentationScope{Name: "github.com/adrianliechti/wingman"},
-				Spans: spans,
-			}},
-		}},
-	}
+	return append([]*tracepb.Span{root}, spans...)
 }
 
 func sendTraces(req *coltrace.ExportTraceServiceRequest) error {
@@ -474,7 +480,7 @@ func histo(name string, tsNano, count uint64, sum, min, max float64, attrs ...*c
 		Name: name,
 		Data: &metrics.Metric_Histogram{
 			Histogram: &metrics.Histogram{
-				AggregationTemporality: metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+				AggregationTemporality: metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA,
 				DataPoints: []*metrics.HistogramDataPoint{{
 					Attributes:   attrs,
 					TimeUnixNano: tsNano,
@@ -486,6 +492,24 @@ func histo(name string, tsNano, count uint64, sum, min, max float64, attrs ...*c
 			},
 		},
 	}
+}
+
+// cacheTokens returns (cacheCreation, cacheRead) for a request — non-zero only
+// for Anthropic chat ~30% of the time, mirroring provider-managed prompt caching.
+// base is the request's typical input size; both are subsets of it.
+func cacheTokens(m modelDef, op string, base float64) (float64, float64) {
+	if m.provider != "anthropic" || op != "chat" || rand.Float64() >= 0.3 {
+		return 0, 0
+	}
+	return jitter(base*0.4, 0.3), jitter(base*0.6, 0.3)
+}
+
+// withAttr returns a fresh slice of base + extra, never aliasing base's backing
+// array (so successive histo() calls don't clobber each other's attributes).
+func withAttr(base []*common.KeyValue, extra ...*common.KeyValue) []*common.KeyValue {
+	out := make([]*common.KeyValue, 0, len(base)+len(extra))
+	out = append(out, base...)
+	return append(out, extra...)
 }
 
 func kv(key, val string) *common.KeyValue {

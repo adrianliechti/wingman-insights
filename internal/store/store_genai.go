@@ -83,8 +83,9 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_metrics
 		(received_at, time, service_name, metric_name, operation_name, provider_name,
-		 request_model, response_model, token_type, server_address, error_type,
-		 enduser_id, enduser_email, session_id, count, sum, min_val, max_val, attributes)
+		 request_model, response_model, token_type,
+		 server_address, error_type, enduser_id, enduser_email, session_id,
+		 count, sum, min_val, max_val, attributes)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
@@ -96,7 +97,8 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.ServiceName, r.MetricName, r.OperationName,
 			r.ProviderName, r.RequestModel, r.ResponseModel, r.TokenType,
-			r.ServerAddress, r.ErrorType, r.EndUserID, r.EndUserEmail, r.SessionID,
+			r.ServerAddress, r.ErrorType,
+			r.EndUserID, r.EndUserEmail, r.SessionID,
 			r.Count, r.Sum, r.MinVal, r.MaxVal, string(attrs),
 		)
 		if err != nil {
@@ -350,20 +352,22 @@ func (s *Store) QueryModelDistribution(ctx context.Context, from, to time.Time, 
 	return result, rows.Err()
 }
 
-func (s *Store) QueryCacheEfficiency(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	clause, fargs := f.genaiClause()
+// bucketParts is the five token partitions aggregated into one time bucket.
+type bucketParts struct {
+	Bucket time.Time
+	Parts  tokenParts
+}
+
+// queryPartitionTimeseries aggregates the five token partitions per bucket from
+// whichever source has data (partition counters, else spans). Cache hit rate,
+// reasoning share and token composition are all derived from it.
+func (s *Store) queryPartitionTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]bucketParts, error) {
+	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			time_bucket(CAST(? AS INTERVAL), time) as bucket,
-			'' as label,
-			CASE WHEN SUM(sum) > 0
-				THEN 100.0 * SUM(CASE WHEN token_type = 'cache_read' THEN sum ELSE 0 END) / SUM(sum)
-				ELSE 0 END as value,
-			COALESCE(SUM(count), 0) as count
-		FROM genai_metrics
-		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND time >= ? AND time <= ?`+clause+`
+		SELECT time_bucket(CAST(? AS INTERVAL), time) as bucket,`+spansPartCols+`
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket
 		ORDER BY bucket
 	`, args...)
@@ -372,15 +376,75 @@ func (s *Store) QueryCacheEfficiency(ctx context.Context, from, to time.Time, in
 	}
 	defer rows.Close()
 
-	var result []TimeseriesPoint
+	var result []bucketParts
 	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
+		var b bucketParts
+		if err := rows.Scan(&b.Bucket, &b.Parts.Uncached, &b.Parts.CacheRead,
+			&b.Parts.CacheWrite, &b.Parts.Response, &b.Parts.Reasoning); err != nil {
 			return nil, err
 		}
-		result = append(result, r)
+		result = append(result, b)
 	}
 	return result, rows.Err()
+}
+
+// QueryCacheEfficiency is the share of prompt tokens served from cache per
+// bucket: cache read / total input (uncached + read + write).
+func (s *Store) QueryCacheEfficiency(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TimeseriesPoint, 0, len(buckets))
+	for _, b := range buckets {
+		input := b.Parts.Uncached + b.Parts.CacheRead + b.Parts.CacheWrite
+		var v float64
+		if input > 0 {
+			v = 100 * b.Parts.CacheRead / input
+		}
+		result = append(result, TimeseriesPoint{Bucket: b.Bucket, Value: v})
+	}
+	return result, nil
+}
+
+// QueryReasoningShare is the share of output tokens spent on reasoning per
+// bucket: reasoning / total output (response + reasoning).
+func (s *Store) QueryReasoningShare(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TimeseriesPoint, 0, len(buckets))
+	for _, b := range buckets {
+		output := b.Parts.Response + b.Parts.Reasoning
+		var v float64
+		if output > 0 {
+			v = 100 * b.Parts.Reasoning / output
+		}
+		result = append(result, TimeseriesPoint{Bucket: b.Bucket, Value: v})
+	}
+	return result, nil
+}
+
+// QueryTokenComposition breaks token volume into its disjoint parts per bucket:
+// non-cached input, cache read, cache write, response output and reasoning. The
+// five series stack to the full token total.
+func (s *Store) QueryTokenComposition(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TimeseriesPoint, 0, len(buckets)*5)
+	for _, b := range buckets {
+		result = append(result,
+			TimeseriesPoint{Bucket: b.Bucket, Label: "input", Value: b.Parts.Uncached},
+			TimeseriesPoint{Bucket: b.Bucket, Label: "cache_read", Value: b.Parts.CacheRead},
+			TimeseriesPoint{Bucket: b.Bucket, Label: "cache_creation", Value: b.Parts.CacheWrite},
+			TimeseriesPoint{Bucket: b.Bucket, Label: "output", Value: b.Parts.Response},
+			TimeseriesPoint{Bucket: b.Bucket, Label: "reasoning", Value: b.Parts.Reasoning},
+		)
+	}
+	return result, nil
 }
 
 func (s *Store) QueryGenAIErrors(ctx context.Context, from, to time.Time, f Filter) ([]GenAIErrorRow, error) {

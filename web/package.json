@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@headlessui/react": "^2.2.10",
     "@tanstack/react-router": "^1.0.0",
     "@tanstack/react-table": "^8.21.0",
     "chart.js": "^4.5.1",

@@ -52,6 +52,16 @@ func (h *Handler) userSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+func (h *Handler) topConsumers(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryTopConsumers(r.Context(), from, to, 10, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
 func (h *Handler) activeUsers(w http.ResponseWriter, r *http.Request) {
 	_, to := parseTimeRange(r)
 	row, err := h.store.QueryActiveUsers(r.Context(), to, parseFilter(r))

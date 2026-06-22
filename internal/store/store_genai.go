@@ -239,6 +239,59 @@ func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f
 	return result, rows.Err()
 }
 
+type TopConsumerRow struct {
+	EndUserID     string  `json:"enduser_id"`
+	EndUserEmail  string  `json:"enduser_email"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   float64 `json:"total_tokens"`
+	TPM           float64 `json:"tpm"`
+}
+
+// QueryTopConsumers ranks end users by token volume in the range — the
+// "who to throttle when load spikes" leaderboard. TPM is tokens per minute
+// averaged over the range; requests count each operation once (input-token
+// rows, since every operation emits one input and one output row).
+func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit int, f Filter) ([]TopConsumerRow, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	clause, fargs := f.genaiClause()
+	args := append([]any{from, to}, fargs...)
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(enduser_id, '') as enduser_id,
+			COALESCE(enduser_email, '') as enduser_email,
+			COALESCE(SUM(CASE WHEN token_type = 'input' THEN count ELSE 0 END), 0) as total_requests,
+			COALESCE(SUM(sum), 0) as total_tokens
+		FROM genai_metrics
+		WHERE metric_name = 'gen_ai.client.token.usage'
+		  AND enduser_id IS NOT NULL AND enduser_id != ''
+		  AND time >= ? AND time <= ?`+clause+`
+		GROUP BY enduser_id, enduser_email
+		ORDER BY total_tokens DESC
+		LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	mins := to.Sub(from).Minutes()
+	var result []TopConsumerRow
+	for rows.Next() {
+		var r TopConsumerRow
+		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.TotalRequests, &r.TotalTokens); err != nil {
+			return nil, err
+		}
+		if mins > 0 {
+			r.TPM = r.TotalTokens / mins
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*ActiveUsersRow, error) {
 	clause, fargs := f.genaiClause()
 	sub := `(SELECT COUNT(DISTINCT enduser_id) FROM genai_metrics

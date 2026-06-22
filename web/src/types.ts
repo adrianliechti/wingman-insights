@@ -36,6 +36,14 @@ export interface ActiveUsersRow {
   mau: number
 }
 
+export interface TopConsumerRow {
+  enduser_id: string
+  enduser_email: string
+  total_requests: number
+  total_tokens: number
+  tpm: number
+}
+
 export interface ModelDistributionRow {
   provider_name: string
   request_model: string

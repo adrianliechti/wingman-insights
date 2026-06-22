@@ -8,6 +8,7 @@ import type {
   HTTPSummaryRow,
   TimeseriesPoint,
   ToolStatRow,
+  TopConsumerRow,
   TopRouteRow,
 } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
@@ -15,6 +16,31 @@ import { DataTable } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
 import { Bar, TimeseriesPanel, chartOptions } from '../components/charts'
 import { fmtDuration, fmtTime, fmtTokens } from '../lib/format'
+
+// avgPeak collapses a timeseries into the mean and max bucket total over the
+// window. Series split across labels (e.g. server/client) are summed within
+// each bucket first, so Peak is the busiest interval's combined total.
+function avgPeak(points?: TimeseriesPoint[] | null): { avg: number; peak: number } | null {
+  if (!points || points.length === 0) return null
+  const byBucket = new Map<string, number>()
+  for (const p of points) byBucket.set(p.bucket, (byBucket.get(p.bucket) ?? 0) + p.value)
+  const totals = [...byBucket.values()]
+  return {
+    avg: totals.reduce((a, b) => a + b, 0) / totals.length,
+    peak: Math.max(...totals),
+  }
+}
+
+function AvgPeak({ stats, fmt }: { stats: { avg: number; peak: number } | null; fmt: (v: number) => string }) {
+  if (!stats) return null
+  return (
+    <div className="whitespace-nowrap text-right text-xs text-gray-500">
+      <span className="tabular-nums">Avg {fmt(stats.avg)}</span>
+      <span className="mx-1.5 text-gray-300 dark:text-gray-700">·</span>
+      <span className="tabular-nums">Peak {fmt(stats.peak)}</span>
+    </div>
+  )
+}
 
 const DIRECTION_SPECS = {
   server: { label: 'Server (inbound)', color: '#818cf8', fill: true },
@@ -45,6 +71,18 @@ const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
       )
     },
   },
+]
+
+const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
+  {
+    id: 'user',
+    header: 'User',
+    accessorFn: (r) => r.enduser_email || r.enduser_id,
+    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
+  },
+  { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
+  { accessorKey: 'total_tokens', header: 'Tokens', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
+  { accessorKey: 'tpm', header: 'TPM', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) + '/min' },
 ]
 
 const routeColumns: ColumnDef<TopRouteRow, any>[] = [
@@ -112,6 +150,7 @@ export function Operations() {
   const { spanMs } = useDash()
   const [groupBy, setGroupBy] = useState('user')
   const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomalies', { group_by: groupBy })
+  const topConsumers = useApi<TopConsumerRow[]>('/api/ops/top-consumers')
   const percentiles = useApi<TimeseriesPoint[]>('/api/ops/latency-percentiles')
   const ttfc = useApi<TimeseriesPoint[]>('/api/ops/ttfc-timeseries')
   const throughput = useApi<TimeseriesPoint[]>('/api/ops/throughput')
@@ -178,6 +217,24 @@ export function Operations() {
         )}
       </Panel>
 
+      <Panel
+        title="Top Consumers"
+        sub="Heaviest users by token volume — who to throttle when load spikes (sortable by requests or TPM)"
+        className="lg:col-span-2"
+      >
+        {topConsumers.loading ? (
+          <PanelMessage>Loading…</PanelMessage>
+        ) : (topConsumers.data ?? []).length === 0 ? (
+          <PanelMessage>No data</PanelMessage>
+        ) : (
+          <DataTable
+            data={topConsumers.data!}
+            columns={consumerColumns}
+            initialSort={[{ id: 'total_tokens', desc: true }]}
+          />
+        )}
+      </Panel>
+
       <Panel title="Latency Percentiles" sub="Per-request durations from spans">
         <TimeseriesPanel
           points={percentiles.data}
@@ -207,7 +264,11 @@ export function Operations() {
         />
       </Panel>
 
-      <Panel title="Throughput" sub="Output tokens per second of model time">
+      <Panel
+        title="Throughput"
+        sub="Output tokens per second of model time"
+        action={<AvgPeak stats={avgPeak(throughput.data)} fmt={(v) => fmtTokens(v) + '/s'} />}
+      >
         <TimeseriesPanel
           points={throughput.data}
           spanMs={spanMs}
@@ -230,7 +291,12 @@ export function Operations() {
         )}
       </Panel>
 
-      <Panel title="HTTP Requests" sub="Inbound and outbound requests per interval" className="lg:col-span-2">
+      <Panel
+        title="HTTP Requests"
+        sub="Inbound and outbound requests per interval"
+        className="lg:col-span-2"
+        action={<AvgPeak stats={avgPeak(httpRequests.data)} fmt={fmtTokens} />}
+      >
         <TimeseriesPanel
           points={httpRequests.data}
           spanMs={spanMs}

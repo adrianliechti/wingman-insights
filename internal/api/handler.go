@@ -51,6 +51,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/ops/ttfc-timeseries", h.ttfcTimeseries)
 	mux.HandleFunc("GET /api/ops/error-rate", h.genaiErrorRate)
 	mux.HandleFunc("GET /api/ops/tools", h.toolStats)
+	mux.HandleFunc("GET /api/ops/top-consumers", h.topConsumers)
 	mux.HandleFunc("GET /api/http/summary", h.httpSummary)
 	mux.HandleFunc("GET /api/http/timeseries", h.httpTimeseries)
 	mux.HandleFunc("GET /api/http/requests-timeseries", h.httpRequestsTimeseries)

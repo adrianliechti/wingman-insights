@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"insights/internal/api"
 	"insights/internal/ingest"
@@ -16,6 +20,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("init store: %v", err)
 	}
+	// Closed last (deferred LIFO, after the server has drained below) so DuckDB
+	// flushes its WAL and closes the file intact — a hard kill mid-write can
+	// corrupt the database.
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -47,9 +54,31 @@ func main() {
 		addr = ":4318"
 	}
 
-	log.Printf("listening on %s (UI base path %q)", addr, basePath+"/")
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("listen: %v", err)
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	// Trap SIGINT/SIGTERM so we drain in-flight requests and close DuckDB
+	// cleanly instead of letting the default handler hard-kill the process.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("listening on %s (UI base path %q)", addr, basePath+"/")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	stop() // restore default handling: a second Ctrl-C force-quits
+	log.Println("shutting down…")
+
+	// Stop accepting connections and wait for active handlers (which may be
+	// writing to DuckDB) to finish before s.Close() runs.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown timed out, forcing close: %v", err)
+		srv.Close()
 	}
 }
 

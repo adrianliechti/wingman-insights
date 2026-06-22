@@ -56,9 +56,9 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
             {!row.priced && (
               <span
                 className="ml-1.5 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-                title="No pricing data for this model in models.dev"
+                title="No models.dev price for this model — tokens counted, cost excluded"
               >
-                partial
+                unpriced
               </span>
             )}
           </span>
@@ -77,6 +77,35 @@ const userColumns: ColumnDef<CostRow, any>[] = [
   { accessorKey: 'enduser_email', header: 'Email', cell: (c) => c.getValue() || '—' },
   ...costCols(),
 ]
+
+// SegToggle is a compact segmented control for switching a chart dimension.
+function SegToggle<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T
+  options: readonly T[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">
+      {options.map((g) => (
+        <button
+          key={g}
+          onClick={() => onChange(g)}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+            value === g
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+          }`}
+        >
+          {g}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 // SpendDoughnut shows cost share across a dimension (app or model).
 function SpendDoughnut({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRow) => string }) {
@@ -109,18 +138,28 @@ export function Finops() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
   const [spendBy, setSpendBy] = useState<'model' | 'app'>('model')
+  const [trendMetric, setTrendMetric] = useState<'cost' | 'tokens'>('cost')
   const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
   const byApp = useApi<CostRow[]>('/api/genai/costs', { group_by: 'app' })
   const byModel = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
   const byModelPrev = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model', ...prev })
   const budget = useApi<BudgetResponse>('/api/finops/budget')
   const trend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries', { by: spendBy })
+  const tokenTrend = useApi<TimeseriesPoint[]>('/api/finops/token-timeseries', { by: spendBy })
 
   const models = byModel.data ?? []
   const total = models.reduce((acc, r) => acc + r.total_cost, 0)
   const totalPrev = (byModelPrev.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
   const b = budget.data
+
+  // Share of token volume from models with no models.dev price — surfaced so the
+  // priced "Spend" figure isn't mistaken for total usage.
+  const rowTokens = (r: CostRow) =>
+    r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens
+  const allTokens = models.reduce((acc, r) => acc + rowTokens(r), 0)
+  const unpricedTokens = models.filter((r) => !r.priced).reduce((acc, r) => acc + rowTokens(r), 0)
+  const unpricedPct = allTokens > 0 ? (unpricedTokens / allTokens) * 100 : 0
 
   return (
     <div className="grid grid-cols-1 gap-5">
@@ -129,7 +168,7 @@ export function Finops() {
           {
             label: 'Spend (range)',
             value: fmtCost(total),
-            sub: 'models.dev pricing',
+            sub: unpricedPct >= 0.5 ? `⚠ ${unpricedPct.toFixed(0)}% of tokens unpriced` : 'models.dev pricing',
             delta: { pct: pctChange(totalPrev, total), positiveIsGood: false },
           },
           { label: 'Cache Savings', value: fmtCost(savings), sub: 'vs full input rate' },
@@ -150,26 +189,23 @@ export function Finops() {
 
       <Panel
         title="Spend over time"
-        sub={`Cost per interval, stacked by ${spendBy}`}
+        sub={`${trendMetric === 'cost' ? 'Cost' : 'Tokens'} per interval, stacked by ${spendBy}${
+          trendMetric === 'tokens' ? ' · includes unpriced models' : ''
+        }`}
         action={
-          <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">
-            {(['model', 'app'] as const).map((g) => (
-              <button
-                key={g}
-                onClick={() => setSpendBy(g)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
-                  spendBy === g
-                    ? 'bg-indigo-600 text-white'
-                    : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
-                }`}
-              >
-                {g}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <SegToggle value={trendMetric} options={['cost', 'tokens'] as const} onChange={setTrendMetric} />
+            <SegToggle value={spendBy} options={['model', 'app'] as const} onChange={setSpendBy} />
           </div>
         }
       >
-        <TimeseriesPanel points={trend.data} spanMs={spanMs} yFmt={fmtCost} stacked loading={trend.loading} />
+        <TimeseriesPanel
+          points={trendMetric === 'cost' ? trend.data : tokenTrend.data}
+          spanMs={spanMs}
+          yFmt={trendMetric === 'cost' ? fmtCost : fmtTokens}
+          stacked
+          loading={trendMetric === 'cost' ? trend.loading : tokenTrend.loading}
+        />
       </Panel>
 
       <Panel title="Spend share" sub="Distribution of spend across apps and models">

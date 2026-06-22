@@ -1,6 +1,6 @@
 import { useApi, useDash } from '../dash'
 import type { AnomalyPoint, TimeseriesPoint } from '../types'
-import { ChartLegend, Line, chartOptions, groupSeries } from './charts'
+import { ChartLegend, Line, PartialNote, chartOptions, groupSeries } from './charts'
 import { Panel, PanelMessage } from './Panel'
 import { fmtTokens } from '../lib/format'
 
@@ -14,7 +14,7 @@ const TOKEN_SPECS = {
 // TokenChart plots token usage per type and overlays red markers on buckets
 // where consumption spikes above the rolling baseline (z-score ≥ 3).
 export function TokenChart({ className }: { className?: string }) {
-  const { spanMs } = useDash()
+  const { spanMs, from, to } = useDash()
   const tokens = useApi<TimeseriesPoint[]>('/api/genai/token-timeseries')
   const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomaly-timeseries')
 
@@ -27,7 +27,7 @@ export function TokenChart({ className }: { className?: string }) {
   } else if (points.length === 0) {
     content = <PanelMessage>No data</PanelMessage>
   } else {
-    const { buckets, labels, datasets } = groupSeries(points, spanMs, TOKEN_SPECS)
+    const { buckets, labels, datasets, hasPartial, partialCount } = groupSeries(points, spanMs, TOKEN_SPECS, { from, to })
     const flagged = (anomalies.data ?? []).filter((a) => a.score >= 3)
     const markerData = buckets.map((b) => {
       const hits = flagged.filter((a) => a.bucket === b)
@@ -53,6 +53,7 @@ export function TokenChart({ className }: { className?: string }) {
         <div className="h-72">
           <Line data={{ labels, datasets: allDatasets }} options={chartOptions({ yFmt: fmtTokens })} />
         </div>
+        {hasPartial && <PartialNote count={partialCount} />}
       </div>
     )
   }

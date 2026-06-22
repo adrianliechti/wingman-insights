@@ -12,6 +12,7 @@ import {
 import { Line, Bar, Doughnut } from 'react-chartjs-2'
 import { fmtBucket } from '../lib/format'
 import type { TimeseriesPoint } from '../types'
+import { useDash } from '../dash'
 import { PanelMessage } from './Panel'
 
 ChartJS.register(
@@ -101,13 +102,32 @@ export interface SeriesSpec {
   fill?: boolean
 }
 
+// partialBuckets flags each bucket whose interval is not fully contained in
+// [from, to] — the leading bucket (clipped at the range start) and the trailing
+// one (still filling, since `to` is usually "now"). These render dashed so a
+// short final interval doesn't read as a real dip. Width is inferred from the
+// smallest gap between consecutive buckets (== the interval). Returns all-false
+// when the range or bucket spacing is unknown.
+function partialBuckets(buckets: string[], from?: string, to?: string): boolean[] {
+  if (!from || !to || buckets.length < 2) return buckets.map(() => false)
+  const ts = buckets.map((b) => new Date(b).getTime())
+  let width = Infinity
+  for (let i = 1; i < ts.length; i++) width = Math.min(width, ts[i] - ts[i - 1])
+  if (!isFinite(width) || width <= 0) return buckets.map(() => false)
+  const fromMs = new Date(from).getTime()
+  const toMs = new Date(to).getTime()
+  const eps = 1000
+  return ts.map((t) => t < fromMs - eps || t + width > toMs + eps)
+}
+
 // groupSeries pivots timeseries points (one row per bucket × label) into
-// chart.js datasets, one per label.
+// chart.js datasets, one per label. When opts.from/opts.to are supplied, the
+// leading/trailing partial intervals are drawn dashed and dimmed.
 export function groupSeries(
   points: TimeseriesPoint[],
   spanMs: number,
   specs?: Record<string, SeriesSpec>,
-  opts?: { stacked?: boolean },
+  opts?: { stacked?: boolean; from?: string; to?: string },
 ) {
   const buckets = [...new Set(points.map((p) => p.bucket))].sort()
   const labels = specs ? Object.keys(specs) : [...new Set(points.map((p) => p.label ?? ''))]
@@ -116,8 +136,13 @@ export function groupSeries(
     const m = series.get(p.label ?? '')
     if (m) m.set(p.bucket, (m.get(p.bucket) ?? 0) + p.value)
   }
+  const partial = partialBuckets(buckets, opts?.from, opts?.to)
+  const partialCount = partial.filter(Boolean).length
+  const hasPartial = partialCount > 0
   return {
     buckets,
+    hasPartial,
+    partialCount,
     labels: buckets.map((b) => fmtBucket(b, spanMs)),
     datasets: labels
       .filter((l) => [...(series.get(l)?.values() ?? [])].some((v) => v !== 0))
@@ -125,6 +150,7 @@ export function groupSeries(
         const spec = specs?.[l]
         const color = spec?.color ?? PALETTE[i % PALETTE.length]
         const fill = opts?.stacked ? true : (spec?.fill ?? false)
+        const basePoint = opts?.stacked ? 0 : 2
         return {
           label: spec?.label ?? (l || 'value'),
           data: buckets.map((b) => series.get(l)?.get(b) ?? 0),
@@ -132,12 +158,33 @@ export function groupSeries(
           backgroundColor: fill ? color + (opts?.stacked ? '4d' : '14') : color,
           fill,
           tension: 0.4,
-          pointRadius: opts?.stacked ? 0 : 2,
+          pointRadius: hasPartial
+            ? (ctx: any) => (partial[ctx.dataIndex] ? Math.max(basePoint - 1, 0) : basePoint)
+            : basePoint,
           pointHoverRadius: 5,
           borderWidth: opts?.stacked ? 1 : 2,
+          // Dash the segments touching a partial interval and dim their border.
+          ...(hasPartial && {
+            segment: {
+              borderDash: (ctx: any) =>
+                partial[ctx.p0DataIndex] || partial[ctx.p1DataIndex] ? [5, 4] : undefined,
+              borderColor: (ctx: any) =>
+                partial[ctx.p0DataIndex] || partial[ctx.p1DataIndex] ? color + '80' : undefined,
+            },
+          }),
         }
       }),
   }
+}
+
+// PartialNote captions a chart whose edge intervals are incomplete, naming how
+// many intervals are affected so a snapshot's clipped edges are quantified.
+export function PartialNote({ count }: { count: number }) {
+  return (
+    <p className="mt-1.5 text-right text-[10px] text-gray-400 dark:text-gray-500">
+      dashed = {count} incomplete interval{count === 1 ? '' : 's'}
+    </p>
+  )
 }
 
 export function TimeseriesPanel({
@@ -159,9 +206,10 @@ export function TimeseriesPanel({
   legend?: boolean
   stacked?: boolean
 }) {
+  const { from, to } = useDash()
   if (loading) return <PanelMessage>Loading…</PanelMessage>
   if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
-  const { labels, datasets } = groupSeries(points, spanMs, specs, { stacked })
+  const { labels, datasets, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from, to })
   return (
     <div>
       {legend && datasets.length > 1 && (
@@ -170,6 +218,7 @@ export function TimeseriesPanel({
       <div className={height}>
         <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked })} />
       </div>
+      {hasPartial && <PartialNote count={partialCount} />}
     </div>
   )
 }

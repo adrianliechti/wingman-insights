@@ -202,6 +202,8 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 		}
 		price, priced := pricing.Lookup(provider, model)
 		if !priced {
+			// No price → no cost line. Unpriced consumption is not lost: it is
+			// surfaced by QueryTokenVolumeTimeseries (the FinOps "Tokens" view).
 			continue
 		}
 		k := key{bucket, label}
@@ -219,6 +221,46 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 		result = append(result, TimeseriesPoint{Bucket: k.bucket, Label: k.label, Value: costs[k]})
 	}
 	return result, nil
+}
+
+// QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
+// request_model (groupBy "model", default) or service_name (groupBy "app").
+// Unlike QueryCostTimeseries this is consumption, not spend: it includes models
+// with no models.dev price, so unpriced usage stays visible. Volume is the
+// inclusive input + output total (cache and reasoning are subsets, not added
+// again).
+func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
+	labelCol := "request_model"
+	if groupBy == "app" {
+		labelCol = "service_name"
+	}
+	clause, fargs := f.spansClause()
+	args := append([]any{interval, from, to}, fargs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			COALESCE(`+labelCol+`, '') as label,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as value,
+			COUNT(*) as count
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		GROUP BY bucket, label
+		ORDER BY bucket
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []TimeseriesPoint
+	for rows.Next() {
+		var r TimeseriesPoint
+		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
 }
 
 func sortCostRows(rows []CostRow) {

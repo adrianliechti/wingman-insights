@@ -6,6 +6,7 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -58,47 +59,113 @@ type catalogProvider struct {
 }
 
 var (
-	once     sync.Once
-	byKey    map[string]Price // "provider/model"
-	byModel  map[string]Price // model id only, first canonical provider wins
+	once    sync.Once
+	byKey   map[string]Price    // "provider/model" exact
+	byModel map[string]Price    // model id only; canonical provider wins (deterministic)
+	provIDs map[string][]string // provider -> its model ids, longest first (best-effort match)
 )
 
-// providerAliases maps gen_ai.system / gen_ai.provider.name values to
-// models.dev provider keys where they differ.
+// providerPriority orders the providers consulted for provider-less and
+// best-effort matches. First-party houses come first so an ambiguous or
+// user-aliased model prices at the authoritative rate, not a random reseller's.
+// A model offered only by an unlisted provider is still matched exactly via
+// byKey (provider+model); it is just never guessed into.
+var providerPriority = []string{
+	"openai", "anthropic", "google", "google-vertex", "google-vertex-anthropic",
+	"xai", "mistral", "llama", "deepseek", "cohere", "perplexity",
+	"amazon-bedrock", "azure", "groq", "nvidia", "openrouter",
+}
+
+// providerAliases maps gen_ai.provider.name values to models.dev provider keys
+// where they differ. The primary source is wingman, which reports its provider
+// config Type (config/config_completer.go) — not OTel semconv names — so those
+// are mapped first. The semconv well-known values are kept as a defensive
+// fallback for any other OTLP source. Wingman types that already equal a
+// models.dev key (anthropic, google, openai, xai, mistral, llama, nvidia,
+// openrouter) need no entry; ollama / openai-compatible / custom have no
+// catalog and stay unpriced.
 var providerAliases = map[string]string{
-	"gcp.gemini":      "google",
-	"gcp.vertex_ai":   "google-vertex",
-	"aws.bedrock":     "amazon-bedrock",
-	"azure.ai.openai": "azure",
+	// wingman provider config types
+	"bedrock": "amazon-bedrock",
+	"gemini":  "google",
+	"nim":     "nvidia",
+	// OTel semconv well-known gen_ai.provider.name values
+	"gcp.gemini":         "google",
+	"gcp.gen_ai":         "google",
+	"gcp.vertex_ai":      "google-vertex",
+	"aws.bedrock":        "amazon-bedrock",
+	"azure.ai.openai":    "azure",
+	"azure.ai.inference": "azure",
+	"x_ai":               "xai",
+	"mistral_ai":         "mistral",
 }
 
 func load() {
 	var catalog map[string]catalogProvider
 	if err := json.Unmarshal(modelsJSON, &catalog); err != nil {
-		byKey, byModel = map[string]Price{}, map[string]Price{}
+		byKey, byModel, provIDs = map[string]Price{}, map[string]Price{}, map[string][]string{}
 		return
 	}
 	byKey = make(map[string]Price)
 	byModel = make(map[string]Price)
+	provIDs = make(map[string][]string)
 	for provider, p := range catalog {
+		lp := strings.ToLower(provider)
 		for model, m := range p.Models {
 			if m.Cost == nil {
 				continue
 			}
-			byKey[strings.ToLower(provider+"/"+model)] = *m.Cost
-			// For the provider-less index, prefer the entry from the model's
-			// own provider; routers (requesty, openrouter, ...) namespace ids
-			// with "provider/" so plain ids mostly come from canonical sources.
-			key := strings.ToLower(model)
-			if _, exists := byModel[key]; !exists || !strings.Contains(model, "/") {
-				byModel[key] = *m.Cost
+			lm := strings.ToLower(model)
+			byKey[lp+"/"+lm] = *m.Cost
+			provIDs[lp] = append(provIDs[lp], lm)
+		}
+	}
+	// Longest id first so a bounded-substring scan returns the most specific
+	// match (gpt-5.5 before gpt-5) on the first hit.
+	for _, ids := range provIDs {
+		sort.Slice(ids, func(i, j int) bool {
+			if len(ids[i]) != len(ids[j]) {
+				return len(ids[i]) > len(ids[j])
+			}
+			return ids[i] < ids[j]
+		})
+	}
+	// byModel is the provider-less exact index, resolved deterministically:
+	// priority houses first, then the rest alphabetically, first writer wins.
+	order := append([]string{}, providerPriority...)
+	order = append(order, remainingProviders()...)
+	for _, prov := range order {
+		for _, id := range provIDs[prov] {
+			if _, ok := byModel[id]; !ok {
+				byModel[id] = byKey[prov+"/"+id]
 			}
 		}
 	}
 }
 
+// remainingProviders returns the catalog providers not in providerPriority,
+// sorted, so byModel construction is fully deterministic.
+func remainingProviders() []string {
+	inPriority := make(map[string]bool, len(providerPriority))
+	for _, p := range providerPriority {
+		inPriority[p] = true
+	}
+	var rest []string
+	for p := range provIDs {
+		if !inPriority[p] {
+			rest = append(rest, p)
+		}
+	}
+	sort.Strings(rest)
+	return rest
+}
+
 // Lookup resolves a price for a (provider, model) pair as reported via OTel
-// gen_ai attributes. Falls back to a provider-agnostic model match.
+// gen_ai attributes. It tries, in order: an exact provider+model match, an
+// exact provider-less model match, then a best-effort match that recovers a
+// user-configured alias by finding the catalog model id embedded in it. The
+// alias may decorate the base id at either end — "gpt-5.5-se" (a regional
+// deployment suffix) and "se.gpt-5.5" both resolve to "gpt-5.5".
 func Lookup(provider, model string) (Price, bool) {
 	once.Do(load)
 	if model == "" {
@@ -109,11 +176,66 @@ func Lookup(provider, model string) (Price, bool) {
 		provider = alias
 	}
 	model = strings.ToLower(model)
+
 	if p, ok := byKey[provider+"/"+model]; ok {
 		return p, true
 	}
 	if p, ok := byModel[model]; ok {
 		return p, true
 	}
-	return Price{}, false
+	// Best-effort: the named provider is authoritative, so try its catalog
+	// first; otherwise take the longest (most specific) match among the
+	// priority houses. Re-scanning the named provider in the loop is harmless —
+	// it already missed above, so it can't match again.
+	if id, ok := longestBounded(provIDs[provider], model); ok {
+		return byKey[provider+"/"+id], true
+	}
+	var best Price
+	bestLen := 0
+	for _, prov := range providerPriority {
+		if id, ok := longestBounded(provIDs[prov], model); ok && len(id) > bestLen {
+			best, bestLen = byKey[prov+"/"+id], len(id)
+		}
+	}
+	return best, bestLen > 0
+}
+
+// longestBounded returns the longest id in ids (already sorted longest-first)
+// that occurs in model as a separator-anchored token — so "gpt-5.5" matches
+// "gpt-5.5-se" and "se.gpt-5.5" but "gpt-5" never matches "gpt-50". Ids shorter
+// than three chars are skipped to avoid spurious substring hits.
+func longestBounded(ids []string, model string) (string, bool) {
+	for _, id := range ids {
+		if len(id) >= 3 && boundedContains(model, id) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// boundedContains reports whether id appears in s delimited on both sides by a
+// separator or a string edge.
+func boundedContains(s, id string) bool {
+	for from := 0; ; {
+		i := strings.Index(s[from:], id)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(id)
+		leftOK := start == 0 || isSep(s[start-1])
+		rightOK := end == len(s) || isSep(s[end])
+		if leftOK && rightOK {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+func isSep(b byte) bool {
+	switch b {
+	case '-', '.', ':', '/', '@', '_', ' ':
+		return true
+	}
+	return false
 }

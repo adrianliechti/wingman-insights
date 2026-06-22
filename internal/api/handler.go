@@ -38,6 +38,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/traces", h.traceList)
 	mux.HandleFunc("GET /api/traces/{id}", h.traceByID)
 	mux.HandleFunc("GET /api/finops/cost-timeseries", h.costTimeseries)
+	mux.HandleFunc("GET /api/finops/token-timeseries", h.tokenVolumeTimeseries)
 	mux.HandleFunc("GET /api/finops/budget", h.budget)
 	mux.HandleFunc("GET /api/product/model-mix", h.modelMix)
 	mux.HandleFunc("GET /api/product/operation-mix", h.operationMix)

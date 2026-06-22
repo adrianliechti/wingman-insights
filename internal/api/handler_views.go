@@ -17,6 +17,16 @@ func (h *Handler) costTimeseries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+func (h *Handler) tokenVolumeTimeseries(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryTokenVolumeTimeseries(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
 func (h *Handler) modelMix(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryModelMixTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
@@ -126,7 +136,6 @@ func (h *Handler) toolStats(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, rows)
 }
-
 
 type budgetResponse struct {
 	Budget       float64 `json:"budget"`

@@ -137,6 +137,88 @@ func (h *Handler) toolStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+// userStats is the unified per-user table: requests, tokens, cost, active days,
+// top model and engagement segment.
+func (h *Handler) userStats(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryUserStats(r.Context(), from, to, 200, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// userSegments rolls users up into the four engagement segments with their
+// share of spend and consumption.
+func (h *Handler) userSegments(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryUserSegments(r.Context(), from, to, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// cohortRetention returns the weekly signup-cohort retention matrix (fixed
+// 12-week lookback, independent of the dashboard range).
+func (h *Handler) cohortRetention(w http.ResponseWriter, r *http.Request) {
+	_, to := parseTimeRange(r)
+	rows, err := h.store.QueryCohortRetention(r.Context(), to, 12, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// appAdoption ranks applications (service_name) by spend with their user reach.
+func (h *Handler) appAdoption(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryAppAdoption(r.Context(), from, to, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// modelPreference cross-tabs token volume by engagement segment and model.
+func (h *Handler) modelPreference(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryModelPreferenceBySegment(r.Context(), from, to, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// burst ranks users by peak requests-per-minute — the in-dashboard runaway/peak
+// signal.
+func (h *Handler) burst(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryUserBurst(r.Context(), from, to, 15, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// newVsReturning splits active users per bucket into first-ever (new) vs
+// previously-seen (returning).
+func (h *Handler) newVsReturning(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryNewVsReturningTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
 type budgetResponse struct {
 	Budget       float64 `json:"budget"`
 	MonthToDate  float64 `json:"month_to_date"`

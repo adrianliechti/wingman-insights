@@ -1,21 +1,11 @@
-import { useState } from 'react'
-import { AlertTriangle, CircleCheck } from 'lucide-react'
+import { CircleCheck } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
-import type {
-  AnomalyPoint,
-  HTTPErrorsByCodeRow,
-  HTTPSummaryRow,
-  TimeseriesPoint,
-  ToolStatRow,
-  TopConsumerRow,
-  TopRouteRow,
-} from '../types'
+import type { HTTPErrorsByCodeRow, HTTPSummaryRow, TimeseriesPoint, ToolStatRow } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { DataTable } from '../components/DataTable'
-import { TokenChart } from '../components/TokenChart'
 import { Bar, TimeseriesPanel, chartOptions } from '../components/charts'
-import { fmtDuration, fmtTime, fmtTokens } from '../lib/format'
+import { fmtDuration, fmtTokens } from '../lib/format'
 
 // avgPeak collapses a timeseries into the mean and max bucket total over the
 // window. Series split across labels (e.g. server/client) are summed within
@@ -47,6 +37,12 @@ const DIRECTION_SPECS = {
   client: { label: 'Client (outbound)', color: '#34d399', fill: true },
 }
 
+const PERCENTILE_SPECS = {
+  p50: { label: 'p50', color: '#34d399' },
+  p95: { label: 'p95', color: '#fbbf24' },
+  p99: { label: 'p99', color: '#ef4444' },
+}
+
 const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
   { accessorKey: 'direction', header: 'Direction' },
   { accessorKey: 'method', header: 'Method' },
@@ -72,55 +68,6 @@ const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
     },
   },
 ]
-
-const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
-  {
-    id: 'user',
-    header: 'User',
-    accessorFn: (r) => r.enduser_email || r.enduser_id,
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-  },
-  { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-  { accessorKey: 'total_tokens', header: 'Tokens', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-  { accessorKey: 'tpm', header: 'TPM', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) + '/min' },
-]
-
-const routeColumns: ColumnDef<TopRouteRow, any>[] = [
-  { accessorKey: 'method', header: 'Method' },
-  {
-    accessorKey: 'route',
-    header: 'Route',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue()}</span>,
-  },
-  { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-]
-
-const GROUPS = [
-  { value: 'user', label: 'By user' },
-  { value: 'service', label: 'By service' },
-  { value: 'model', label: 'By model' },
-]
-
-const PERCENTILE_SPECS = {
-  p50: { label: 'p50', color: '#34d399' },
-  p95: { label: 'p95', color: '#fbbf24' },
-  p99: { label: 'p99', color: '#ef4444' },
-}
-
-function Severity({ score }: { score: number }) {
-  const critical = score >= 5
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-        critical
-          ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-          : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-      }`}
-    >
-      {critical ? 'critical' : 'warning'}
-    </span>
-  )
-}
 
 const toolColumns: ColumnDef<ToolStatRow, any>[] = [
   {
@@ -148,9 +95,6 @@ const toolColumns: ColumnDef<ToolStatRow, any>[] = [
 
 export function Operations() {
   const { spanMs } = useDash()
-  const [groupBy, setGroupBy] = useState('user')
-  const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomalies', { group_by: groupBy })
-  const topConsumers = useApi<TopConsumerRow[]>('/api/ops/top-consumers')
   const percentiles = useApi<TimeseriesPoint[]>('/api/ops/latency-percentiles')
   const ttfc = useApi<TimeseriesPoint[]>('/api/ops/ttfc-timeseries')
   const throughput = useApi<TimeseriesPoint[]>('/api/ops/throughput')
@@ -159,82 +103,10 @@ export function Operations() {
   const httpRequests = useApi<TimeseriesPoint[]>('/api/http/requests-timeseries')
   const httpLatency = useApi<TimeseriesPoint[]>('/api/http/timeseries')
   const httpErrorsByCode = useApi<HTTPErrorsByCodeRow[]>('/api/http/errors-by-code')
-  const topRoutes = useApi<TopRouteRow[]>('/api/http/top-routes')
   const httpSummary = useApi<HTTPSummaryRow[]>('/api/http/summary')
-
-  const anomalyColumns: ColumnDef<AnomalyPoint, any>[] = [
-    { accessorKey: 'bucket', header: 'When', cell: (c) => fmtTime(c.getValue()) },
-    {
-      accessorKey: 'group_key',
-      header: groupBy === 'user' ? 'User' : groupBy === 'service' ? 'Service' : 'Model',
-      cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-    },
-    { accessorKey: 'token_type', header: 'Token Type' },
-    { accessorKey: 'tokens', header: 'Tokens', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-    { accessorKey: 'expected', header: 'Expected', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
-    {
-      id: 'deviation',
-      header: 'Deviation',
-      meta: { align: 'right' },
-      accessorFn: (r) => (r.expected > 0 ? r.tokens / r.expected : 0),
-      cell: (c) => <span className="font-medium text-gray-900 dark:text-white">×{(c.getValue() as number).toFixed(1)}</span>,
-    },
-    { accessorKey: 'score', header: 'Z-Score', meta: { align: 'right' }, cell: (c) => (c.getValue() as number).toFixed(1) },
-    { id: 'severity', header: 'Severity', accessorFn: (r) => r.score, cell: (c) => <Severity score={c.getValue()} /> },
-  ]
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      <TokenChart className="lg:col-span-2" />
-
-      <Panel
-        title="Detected Anomalies"
-        sub="Intervals where token consumption is ≥ 3σ above the rolling baseline"
-        className="lg:col-span-2"
-        action={
-          <select
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-700 outline-none dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
-          >
-            {GROUPS.map((g) => (
-              <option key={g.value} value={g.value}>
-                {g.label}
-              </option>
-            ))}
-          </select>
-        }
-      >
-        {anomalies.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
-        ) : (anomalies.data ?? []).length === 0 ? (
-          <PanelMessage>
-            <AlertTriangle className="h-4 w-4 opacity-50" />
-            No anomalies in this time range
-          </PanelMessage>
-        ) : (
-          <DataTable data={anomalies.data!} columns={anomalyColumns} initialSort={[{ id: 'score', desc: true }]} />
-        )}
-      </Panel>
-
-      <Panel
-        title="Top Consumers"
-        sub="Heaviest users by token volume — who to throttle when load spikes (sortable by requests or TPM)"
-        className="lg:col-span-2"
-      >
-        {topConsumers.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
-        ) : (topConsumers.data ?? []).length === 0 ? (
-          <PanelMessage>No data</PanelMessage>
-        ) : (
-          <DataTable
-            data={topConsumers.data!}
-            columns={consumerColumns}
-            initialSort={[{ id: 'total_tokens', desc: true }]}
-          />
-        )}
-      </Panel>
-
       <Panel title="Latency Percentiles" sub="Per-request durations from spans">
         <TimeseriesPanel
           points={percentiles.data}
@@ -256,12 +128,7 @@ export function Operations() {
       </Panel>
 
       <Panel title="Time to First Chunk" sub="Streaming responsiveness per model">
-        <TimeseriesPanel
-          points={ttfc.data}
-          spanMs={spanMs}
-          yFmt={(v) => fmtDuration(v)}
-          loading={ttfc.loading}
-        />
+        <TimeseriesPanel points={ttfc.data} spanMs={spanMs} yFmt={(v) => fmtDuration(v)} loading={ttfc.loading} />
       </Panel>
 
       <Panel
@@ -276,19 +143,6 @@ export function Operations() {
           yFmt={(v) => fmtTokens(v) + '/s'}
           loading={throughput.loading}
         />
-      </Panel>
-
-      <Panel title="Tools" sub="execute_tool spans per tool">
-        {tools.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
-        ) : (tools.data ?? []).length === 0 ? (
-          <PanelMessage>
-            <CircleCheck className="h-4 w-4 text-emerald-500" />
-            No tool calls in range
-          </PanelMessage>
-        ) : (
-          <DataTable data={tools.data!} columns={toolColumns} initialSort={[{ id: 'count', desc: true }]} />
-        )}
       </Panel>
 
       <Panel
@@ -329,9 +183,7 @@ export function Operations() {
             <Bar
               data={{
                 labels: httpErrorsByCode.data!.map((d) => String(d.status_code)),
-                datasets: [
-                  { data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: '#ef4444', borderRadius: 4 },
-                ],
+                datasets: [{ data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: '#ef4444', borderRadius: 4 }],
               }}
               options={chartOptions()}
             />
@@ -339,27 +191,26 @@ export function Operations() {
         )}
       </Panel>
 
-      <Panel title="Top Routes" sub="Most requested routes in range">
-        {topRoutes.loading ? (
+      <Panel title="Tools" sub="execute_tool spans per tool">
+        {tools.loading ? (
           <PanelMessage>Loading…</PanelMessage>
-        ) : (topRoutes.data ?? []).length === 0 ? (
-          <PanelMessage>No data</PanelMessage>
+        ) : (tools.data ?? []).length === 0 ? (
+          <PanelMessage>
+            <CircleCheck className="h-4 w-4 text-emerald-500" />
+            No tool calls in range
+          </PanelMessage>
         ) : (
-          <DataTable data={topRoutes.data!} columns={routeColumns} initialSort={[{ id: 'total_requests', desc: true }]} />
+          <DataTable data={tools.data!} columns={toolColumns} initialSort={[{ id: 'count', desc: true }]} />
         )}
       </Panel>
 
-      <Panel title="All Routes" sub="Latency and error rate per route">
+      <Panel title="Routes" sub="Latency and error rate per route" className="lg:col-span-2">
         {httpSummary.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (httpSummary.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable
-            data={httpSummary.data!}
-            columns={httpSummaryColumns}
-            initialSort={[{ id: 'total_requests', desc: true }]}
-          />
+          <DataTable data={httpSummary.data!} columns={httpSummaryColumns} initialSort={[{ id: 'total_requests', desc: true }]} />
         )}
       </Panel>
     </div>

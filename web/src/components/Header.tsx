@@ -15,10 +15,11 @@ const PRESETS: { label: string; value: RangeKey }[] = [
 
 const NAV = [
   { to: '/', label: 'Overview' },
-  { to: '/traces', label: 'Traces' },
-  { to: '/product', label: 'Product' },
-  { to: '/operations', label: 'Operations' },
+  { to: '/anomalies', label: 'Anomalies' },
+  { to: '/customers', label: 'Customers' },
   { to: '/finops', label: 'FinOps' },
+  { to: '/operations', label: 'Operations' },
+  { to: '/traces', label: 'Traces' },
 ]
 
 function toLocalInput(iso: string): string {

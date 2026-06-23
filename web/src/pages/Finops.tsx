@@ -78,6 +78,15 @@ const userColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
+const appColumns: ColumnDef<CostRow, any>[] = [
+  {
+    accessorKey: 'service_name',
+    header: 'Application',
+    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+  },
+  ...costCols(),
+]
+
 // SegToggle is a compact segmented control for switching a chart dimension.
 function SegToggle<T extends string>({
   value,
@@ -227,6 +236,16 @@ export function Finops() {
             )}
           </div>
         </div>
+      </Panel>
+
+      <Panel title="Cost per Application" sub="Priced token usage attributed via service.name">
+        {byApp.loading ? (
+          <PanelMessage>Loading…</PanelMessage>
+        ) : (byApp.data ?? []).length === 0 ? (
+          <PanelMessage>No data</PanelMessage>
+        ) : (
+          <DataTable data={byApp.data!} columns={appColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+        )}
       </Panel>
 
       <Panel

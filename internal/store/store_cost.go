@@ -263,6 +263,56 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 	return result, rows.Err()
 }
 
+// backfillSpanCost fills the cost / cache_savings columns for rows inserted
+// before those columns existed (NULL on every pre-existing row). It prices once
+// per distinct (provider, model) — a handful of UPDATEs, not one per row, using
+// the same arithmetic as pricing.Price.Cost — then zeroes anything still NULL
+// (unpriced models) so the columns are never NULL afterward and this is a no-op
+// on subsequent starts.
+func (s *Store) backfillSpanCost(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT COALESCE(provider_name, ''), COALESCE(request_model, '')
+		FROM genai_spans WHERE cost IS NULL`)
+	if err != nil {
+		return err
+	}
+	type pair struct{ provider, model string }
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.provider, &p.model); err != nil {
+			rows.Close()
+			return err
+		}
+		pairs = append(pairs, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, p := range pairs {
+		price, ok := pricing.Lookup(p.provider, p.model)
+		if !ok {
+			continue // swept to 0 below
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE genai_spans SET
+			cost = GREATEST(COALESCE(input_tokens,0) - COALESCE(cache_read_tokens,0) - COALESCE(cache_creation_tokens,0), 0)/1000000.0*?
+				+ COALESCE(cache_read_tokens,0)/1000000.0*?
+				+ COALESCE(cache_creation_tokens,0)/1000000.0*?
+				+ COALESCE(output_tokens,0)/1000000.0*?,
+			cache_savings = COALESCE(cache_read_tokens,0)/1000000.0*?
+			WHERE cost IS NULL AND COALESCE(provider_name,'') = ? AND COALESCE(request_model,'') = ?`,
+			price.Input, price.CacheRead, price.CacheWrite, price.Output,
+			price.Input-price.CacheRead,
+			p.provider, p.model); err != nil {
+			return err
+		}
+	}
+	// Unpriced models: make the columns non-NULL so they are not retried.
+	_, err = s.db.ExecContext(ctx, `UPDATE genai_spans SET cost = 0, cache_savings = 0 WHERE cost IS NULL`)
+	return err
+}
+
 func sortCostRows(rows []CostRow) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].TotalCost != rows[j].TotalCost {

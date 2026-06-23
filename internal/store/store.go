@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -242,11 +243,21 @@ func (s *Store) migrate() error {
 			reasoning_tokens BIGINT,
 			attributes    JSON
 		)`,
+		// cost / cache_savings are materialized from token counts + models.dev
+		// pricing at insert time (see SpanRow.costAndSavings) so the SQL anomaly
+		// engine and cost rollups aggregate spend without re-pricing on read.
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cost DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_savings DOUBLE",
 	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", stmt[:40], err)
 		}
+	}
+	// Price rows inserted before the cost columns existed (NULL on every existing
+	// row). No-op once every row is priced, so it stays cheap on later starts.
+	if err := s.backfillSpanCost(context.Background()); err != nil {
+		return fmt.Errorf("backfill span cost: %w", err)
 	}
 	return nil
 }

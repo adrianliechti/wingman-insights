@@ -184,3 +184,72 @@ export interface TopRouteRow {
   total_requests: number
 }
 
+// ScorePoint is one bucket of a single series scored against its rolling
+// baseline (cost anomalies, generic spike charts).
+export interface ScorePoint {
+  bucket: string
+  group_key: string
+  value: number
+  expected: number
+  score: number
+}
+
+// AnomalyFeedRow is one flagged (dimension, entity, metric) bucket in the
+// cross-dimension anomaly feed.
+export interface AnomalyFeedRow {
+  bucket: string
+  dimension: string // user | service | model
+  group_key: string
+  metric: string // cost | tokens
+  value: number
+  expected: number
+  score: number
+}
+
+export interface UserStatRow {
+  enduser_id: string
+  enduser_email: string
+  requests: number
+  tokens: number
+  cost: number
+  active_days: number
+  top_model: string
+  segment: string
+}
+
+export interface UserSegmentRow {
+  segment: string
+  users: number
+  requests: number
+  tokens: number
+  cost: number
+}
+
+export interface CohortCell {
+  cohort: string
+  week_offset: number
+  active: number
+}
+
+export interface AppAdoptionRow {
+  service_name: string
+  users: number
+  requests: number
+  tokens: number
+  cost: number
+}
+
+export interface ModelPreferenceRow {
+  segment: string
+  model: string
+  tokens: number
+}
+
+export interface BurstRow {
+  enduser_id: string
+  enduser_email: string
+  peak_rpm: number
+  total_requests: number
+  active_minutes: number
+}
+

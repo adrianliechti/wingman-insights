@@ -11,7 +11,8 @@ import { Header } from './components/Header'
 import { FilterBar } from './components/FilterBar'
 import { Overview } from './pages/Overview'
 import { Traces } from './pages/Traces'
-import { Product } from './pages/Product'
+import { Anomalies } from './pages/Anomalies'
+import { Customers } from './pages/Customers'
 import { Operations } from './pages/Operations'
 import { Finops } from './pages/Finops'
 
@@ -37,10 +38,11 @@ const rootRoute = createRootRoute({
 
 const pages = [
   { path: '/', component: Overview },
-  { path: '/traces', component: Traces },
-  { path: '/product', component: Product },
-  { path: '/operations', component: Operations },
+  { path: '/anomalies', component: Anomalies },
+  { path: '/customers', component: Customers },
   { path: '/finops', component: Finops },
+  { path: '/operations', component: Operations },
+  { path: '/traces', component: Traces },
 ]
 
 const routeTree = rootRoute.addChildren(

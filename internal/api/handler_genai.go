@@ -169,3 +169,44 @@ func (h *Handler) anomalyTimeseries(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, rows)
 }
+
+// costAnomalies lists buckets whose spend spikes above the rolling baseline,
+// grouped per user (default), service, model or overall — the spend counterpart
+// to anomalies.
+func (h *Handler) costAnomalies(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy == "" {
+		groupBy = "user"
+	}
+	rows, err := h.store.QueryCostAnomalies(r.Context(), from, to, parseInterval(r), groupBy, 3.0, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// costAnomalyTimeseries returns the full scored spend series (no grouping) for
+// the cost spike chart.
+func (h *Handler) costAnomalyTimeseries(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryCostAnomalies(r.Context(), from, to, parseInterval(r), "none", 0, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// anomalyFeed ranks the strongest spend and token anomalies across the user,
+// service and model dimensions into one cross-dimension feed.
+func (h *Handler) anomalyFeed(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryAnomalyFeed(r.Context(), from, to, parseInterval(r), 3.0, 50, parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}

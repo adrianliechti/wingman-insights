@@ -60,6 +60,23 @@ func (r *SpanRow) price() {
 		float64(r.CacheRead), float64(r.CacheCreation))
 }
 
+// costAndSavings prices the span for the materialized cost / cache_savings
+// columns. savings is what the cache-read tokens would have cost at the full
+// input rate minus what they actually cost. Both are 0 for an unpriced model.
+// Storing cost at insert freezes it at the price then in effect — the right
+// behavior for FinOps (cost as incurred) and what lets the SQL z-score engine
+// aggregate spend with a plain SUM(cost).
+func (r SpanRow) costAndSavings() (cost, savings float64) {
+	p, ok := pricing.Lookup(r.ProviderName, r.RequestModel)
+	if !ok {
+		return 0, 0
+	}
+	cost = p.Cost(float64(r.InputTokens), float64(r.OutputTokens),
+		float64(r.CacheRead), float64(r.CacheCreation))
+	savings = p.TokenCost("input", float64(r.CacheRead)) - p.TokenCost("cache_read", float64(r.CacheRead))
+	return cost, savings
+}
+
 func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -75,8 +92,8 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 		 status, service_name, operation_name, provider_name, request_model,
 		 response_model, agent_name, tool_name, user_id, user_email, session_id,
 		 error_type, finish_reasons, input_tokens, output_tokens, cache_read_tokens,
-		 cache_creation_tokens, reasoning_tokens, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 cache_creation_tokens, reasoning_tokens, attributes, cost, cache_savings)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -84,12 +101,14 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 
 	for _, r := range rows {
 		attrs, _ := json.Marshal(r.Attributes)
+		cost, savings := r.costAndSavings()
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.Duration, r.TraceID, r.SpanID, r.ParentSpanID,
 			r.Name, r.Kind, r.Status, r.ServiceName, r.OperationName, r.ProviderName,
 			r.RequestModel, r.ResponseModel, r.AgentName, r.ToolName, r.UserID,
 			r.UserEmail, r.SessionID, r.ErrorType, r.FinishReasons, r.InputTokens,
 			r.OutputTokens, r.CacheRead, r.CacheCreation, r.Reasoning, string(attrs),
+			cost, savings,
 		)
 		if err != nil {
 			return err

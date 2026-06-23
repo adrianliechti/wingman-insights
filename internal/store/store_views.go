@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
 )
 
@@ -257,6 +258,395 @@ func (s *Store) QueryThroughputTimeseries(ctx context.Context, from, to time.Tim
 		WHERE output_tokens > 0 AND duration > 0 AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket
 		ORDER BY bucket
+	`, args...)
+}
+
+// User engagement segments, classified by request rate (requests per day over
+// the range). Range-normalized so the same thresholds work for 24h and 30d.
+const (
+	segPower    = "power"
+	segFrequent = "frequent"
+	segRegular  = "regular"
+	segCasual   = "casual"
+)
+
+// segmentOrder lists segments most- to least-engaged for stable display.
+var segmentOrder = []string{segPower, segFrequent, segRegular, segCasual}
+
+func classifySegment(requests int64, rangeDays float64) string {
+	if rangeDays < 1 {
+		rangeDays = 1
+	}
+	switch perDay := float64(requests) / rangeDays; {
+	case perDay >= 15:
+		return segPower
+	case perDay >= 5:
+		return segFrequent
+	case perDay >= 1:
+		return segRegular
+	default:
+		return segCasual
+	}
+}
+
+func rangeDays(from, to time.Time) float64 {
+	if d := to.Sub(from).Hours() / 24; d >= 1 {
+		return d
+	}
+	return 1
+}
+
+// UserStatRow is one end user's activity in the range: the row behind the
+// unified per-user table and the input to segmentation.
+type UserStatRow struct {
+	EndUserID    string  `json:"enduser_id"`
+	EndUserEmail string  `json:"enduser_email"`
+	Requests     int64   `json:"requests"`
+	Tokens       float64 `json:"tokens"`
+	Cost         float64 `json:"cost"`
+	ActiveDays   int64   `json:"active_days"`
+	TopModel     string  `json:"top_model"`
+	Segment      string  `json:"segment"`
+}
+
+// QueryUserStats aggregates per-user requests, tokens, cost, active days and
+// most-used model from spans (the only source carrying materialized cost), and
+// tags each user with an engagement segment. limit <= 0 returns every user.
+func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit int, f Filter) ([]UserStatRow, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	q := `
+		SELECT
+			COALESCE(user_id, '') as enduser_id,
+			COALESCE(MAX(user_email), '') as enduser_email,
+			COUNT(*) as requests,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
+			COALESCE(SUM(cost), 0) as cost,
+			COUNT(DISTINCT CAST(time AS DATE)) as active_days,
+			COALESCE(mode(request_model), '') as top_model
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0)
+		  AND user_id IS NOT NULL AND user_id != ''
+		  AND time >= ? AND time <= ?` + clause + `
+		GROUP BY user_id
+		ORDER BY cost DESC, tokens DESC`
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	days := rangeDays(from, to)
+	var result []UserStatRow
+	for rows.Next() {
+		var r UserStatRow
+		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.Requests, &r.Tokens, &r.Cost, &r.ActiveDays, &r.TopModel); err != nil {
+			return nil, err
+		}
+		r.Segment = classifySegment(r.Requests, days)
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// UserSegmentRow is one engagement segment with its population and share of
+// spend / consumption.
+type UserSegmentRow struct {
+	Segment  string  `json:"segment"`
+	Users    int64   `json:"users"`
+	Requests int64   `json:"requests"`
+	Tokens   float64 `json:"tokens"`
+	Cost     float64 `json:"cost"`
+}
+
+// QueryUserSegments rolls the per-user stats up into the four engagement
+// segments, in most- to least-engaged order.
+func (s *Store) QueryUserSegments(ctx context.Context, from, to time.Time, f Filter) ([]UserSegmentRow, error) {
+	stats, err := s.QueryUserStats(ctx, from, to, 0, f)
+	if err != nil {
+		return nil, err
+	}
+	bySeg := map[string]*UserSegmentRow{}
+	for _, seg := range segmentOrder {
+		bySeg[seg] = &UserSegmentRow{Segment: seg}
+	}
+	for _, u := range stats {
+		r := bySeg[u.Segment]
+		r.Users++
+		r.Requests += u.Requests
+		r.Tokens += u.Tokens
+		r.Cost += u.Cost
+	}
+	result := make([]UserSegmentRow, 0, len(segmentOrder))
+	for _, seg := range segmentOrder {
+		result = append(result, *bySeg[seg])
+	}
+	return result, nil
+}
+
+// CohortCell is one (signup-week cohort, weeks-since-signup) bucket of the
+// retention matrix. Active at week_offset 0 is the cohort size.
+type CohortCell struct {
+	Cohort     time.Time `json:"cohort"`
+	WeekOffset int64     `json:"week_offset"`
+	Active     int64     `json:"active"`
+}
+
+// QueryCohortRetention builds a weekly signup-cohort retention matrix. Cohorts
+// are keyed by each user's first-ever activity week (full history), so it uses a
+// fixed `weeks` lookback ending at `to` rather than the dashboard range, which is
+// usually too short for cohorts.
+func (s *Store) QueryCohortRetention(ctx context.Context, to time.Time, weeks int, f Filter) ([]CohortCell, error) {
+	if weeks <= 0 || weeks > 53 {
+		weeks = 12
+	}
+	bound := to.AddDate(0, 0, -7*weeks)
+	clause, fargs := f.spansClause()
+	args := append([]any{to}, fargs...)
+	args = append(args, to)
+	args = append(args, fargs...)
+	args = append(args, bound)
+	rows, err := s.db.QueryContext(ctx, `
+		WITH first_seen AS (
+			SELECT user_id, MIN(time) AS first_ts
+			FROM genai_spans
+			WHERE user_id IS NOT NULL AND user_id != '' AND time <= ?`+clause+`
+			GROUP BY user_id
+		),
+		activity AS (
+			SELECT DISTINCT user_id, date_trunc('week', time) AS wk
+			FROM genai_spans
+			WHERE user_id IS NOT NULL AND user_id != '' AND time <= ?`+clause+`
+		)
+		SELECT
+			date_trunc('week', fs.first_ts) AS cohort,
+			CAST(date_diff('week', date_trunc('week', fs.first_ts), a.wk) AS BIGINT) AS week_offset,
+			COUNT(DISTINCT a.user_id) AS active
+		FROM first_seen fs JOIN activity a ON fs.user_id = a.user_id
+		WHERE date_trunc('week', fs.first_ts) >= date_trunc('week', CAST(? AS TIMESTAMP))
+		GROUP BY cohort, week_offset
+		ORDER BY cohort, week_offset
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []CohortCell
+	for rows.Next() {
+		var c CohortCell
+		if err := rows.Scan(&c.Cohort, &c.WeekOffset, &c.Active); err != nil {
+			return nil, err
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+// AppAdoptionRow is one application's (service_name's) footprint in the range:
+// distinct users, requests, tokens and spend.
+type AppAdoptionRow struct {
+	ServiceName string  `json:"service_name"`
+	Users       int64   `json:"users"`
+	Requests    int64   `json:"requests"`
+	Tokens      float64 `json:"tokens"`
+	Cost        float64 `json:"cost"`
+}
+
+// QueryAppAdoption ranks applications by spend, with their distinct-user reach —
+// the per-application lens (service_name is the app dimension).
+func (s *Store) QueryAppAdoption(ctx context.Context, from, to time.Time, f Filter) ([]AppAdoptionRow, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(service_name, '') as service_name,
+			COUNT(DISTINCT user_id) as users,
+			COUNT(*) as requests,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
+			COALESCE(SUM(cost), 0) as cost
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0)
+		  AND time >= ? AND time <= ?`+clause+`
+		GROUP BY service_name
+		ORDER BY cost DESC, tokens DESC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AppAdoptionRow
+	for rows.Next() {
+		var r AppAdoptionRow
+		if err := rows.Scan(&r.ServiceName, &r.Users, &r.Requests, &r.Tokens, &r.Cost); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// ModelPreferenceRow is the token volume one engagement segment sends to one
+// model — for the "do power users prefer premium models?" chart.
+type ModelPreferenceRow struct {
+	Segment string  `json:"segment"`
+	Model   string  `json:"model"`
+	Tokens  float64 `json:"tokens"`
+}
+
+// QueryModelPreferenceBySegment cross-tabs token volume by engagement segment and
+// model. Segments come from QueryUserStats; per-(user, model) volume is joined to
+// them in Go.
+func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time.Time, f Filter) ([]ModelPreferenceRow, error) {
+	stats, err := s.QueryUserStats(ctx, from, to, 0, f)
+	if err != nil {
+		return nil, err
+	}
+	segOf := make(map[string]string, len(stats))
+	for _, u := range stats {
+		segOf[u.EndUserID] = u.Segment
+	}
+
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(user_id, ''), COALESCE(request_model, ''),
+			COALESCE(SUM(input_tokens + output_tokens), 0)
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0)
+		  AND request_model IS NOT NULL AND request_model != ''
+		  AND user_id IS NOT NULL AND user_id != ''
+		  AND time >= ? AND time <= ?`+clause+`
+		GROUP BY user_id, request_model
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type key struct{ seg, model string }
+	agg := map[key]float64{}
+	for rows.Next() {
+		var user, model string
+		var tokens float64
+		if err := rows.Scan(&user, &model, &tokens); err != nil {
+			return nil, err
+		}
+		seg, ok := segOf[user]
+		if !ok {
+			continue
+		}
+		agg[key{seg, model}] += tokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]ModelPreferenceRow, 0, len(agg))
+	for k, v := range agg {
+		result = append(result, ModelPreferenceRow{Segment: k.seg, Model: k.model, Tokens: v})
+	}
+	// Stable order: segment (most-engaged first), then volume desc.
+	rank := map[string]int{segPower: 0, segFrequent: 1, segRegular: 2, segCasual: 3}
+	sort.Slice(result, func(i, j int) bool {
+		if rank[result[i].Segment] != rank[result[j].Segment] {
+			return rank[result[i].Segment] < rank[result[j].Segment]
+		}
+		return result[i].Tokens > result[j].Tokens
+	})
+	return result, nil
+}
+
+// BurstRow is one user's request-burst profile: the busiest one-minute window,
+// total requests and how many distinct active minutes — the in-dashboard
+// runaway/peak signal (an agent stuck hammering the gateway shows a high peak).
+type BurstRow struct {
+	EndUserID     string `json:"enduser_id"`
+	EndUserEmail  string `json:"enduser_email"`
+	PeakRPM       int64  `json:"peak_rpm"`
+	TotalRequests int64  `json:"total_requests"`
+	ActiveMinutes int64  `json:"active_minutes"`
+}
+
+// QueryUserBurst ranks users by their peak requests-per-minute in the range.
+func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit int, f Filter) ([]BurstRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 15
+	}
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+		WITH per_min AS (
+			SELECT user_id,
+				COALESCE(MAX(user_email), '') as email,
+				time_bucket(CAST('1 minute' AS INTERVAL), time) as minute,
+				COUNT(*) as reqs
+			FROM genai_spans
+			WHERE user_id IS NOT NULL AND user_id != ''
+			  AND time >= ? AND time <= ?`+clause+`
+			GROUP BY user_id, minute
+		)
+		SELECT user_id, MAX(email) as email,
+			MAX(reqs) as peak_rpm,
+			SUM(reqs) as total_reqs,
+			COUNT(*) as active_minutes
+		FROM per_min
+		GROUP BY user_id
+		ORDER BY peak_rpm DESC, total_reqs DESC
+		LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []BurstRow
+	for rows.Next() {
+		var r BurstRow
+		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.PeakRPM, &r.TotalRequests, &r.ActiveMinutes); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// QueryNewVsReturningTimeseries splits active users per bucket into those seen
+// for the first time ever in that bucket (new) and those active before (returning).
+func (s *Store) QueryNewVsReturningTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	clause, fargs := f.spansClause()
+	var args []any
+	args = append(args, fargs...)           // first_seen clause
+	args = append(args, interval, from, to) // activity bucket + range
+	args = append(args, fargs...)           // activity clause
+	args = append(args, interval)           // new/returning split
+	return s.queryTimeseries(ctx, `
+		WITH first_seen AS (
+			SELECT user_id, MIN(time) AS first_ts
+			FROM genai_spans
+			WHERE user_id IS NOT NULL AND user_id != ''`+clause+`
+			GROUP BY user_id
+		),
+		activity AS (
+			SELECT DISTINCT user_id, time_bucket(CAST(? AS INTERVAL), time) as bucket
+			FROM genai_spans
+			WHERE user_id IS NOT NULL AND user_id != ''
+			  AND time >= ? AND time <= ?`+clause+`
+		)
+		SELECT
+			a.bucket,
+			CASE WHEN time_bucket(CAST(? AS INTERVAL), fs.first_ts) >= a.bucket THEN 'new' ELSE 'returning' END as label,
+			COUNT(DISTINCT a.user_id) as value,
+			COUNT(DISTINCT a.user_id) as count
+		FROM activity a JOIN first_seen fs ON a.user_id = fs.user_id
+		GROUP BY a.bucket, label
+		ORDER BY a.bucket
 	`, args...)
 }
 

@@ -3,7 +3,10 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -20,14 +23,63 @@ type TimeseriesPoint struct {
 	Label  string    `json:"label,omitempty"`
 }
 
+// New opens the DuckDB database, recovering from on-disk corruption when it can.
+//
+// A hard kill (OOMKill, exceeded grace period) can leave the write-ahead log
+// half-written, so DuckDB fails to replay it on the next start. We recover in
+// steps that lose as little as possible:
+//
+//  1. Open normally — DuckDB replays a clean WAL by itself.
+//  2. If that fails with a corruption error, quarantine just the .wal and retry.
+//     The main file is consistent up to the last checkpoint, so only the
+//     unflushed tail is lost.
+//  3. If it still fails, the main file itself is unreadable: quarantine it too
+//     and start fresh.
+//
+// A lock error ("another process holds the file") is never treated as
+// corruption — deleting the file out from under a live writer would be the
+// worst outcome, so we surface it instead. Runtime invalidation ("database has
+// been invalidated") happens mid-request, not here; the process simply restarts.
 func New() (*Store, error) {
 	dbPath := os.Getenv("INSIGHTS_DB_PATH")
 	if dbPath == "" {
 		dbPath = "./insights.db"
 	}
-	db, err := sql.Open("duckdb", dbPath)
+
+	s, err := open(dbPath)
+	if err == nil {
+		return s, nil
+	}
+	if !isRecoverableCorruption(err) {
+		return nil, err
+	}
+
+	log.Printf("store: open failed (%v); quarantining WAL and retrying", err)
+	quarantine(dbPath + ".wal")
+	if s, retryErr := open(dbPath); retryErr == nil {
+		return s, nil
+	} else {
+		err = retryErr
+	}
+
+	log.Printf("store: still failing (%v); quarantining database and starting fresh", err)
+	quarantine(dbPath)
+	return open(dbPath)
+}
+
+// open opens and migrates the database at dbPath, forcing DuckDB to validate the
+// file and replay any WAL up front so corruption surfaces here rather than on
+// the first request.
+func open(dbPath string) (*Store, error) {
+	db, err := sql.Open("duckdb", dsn(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
+	}
+	// sql.Open is lazy; this first statement actually opens the file and triggers
+	// WAL replay.
+	if _, err := db.Exec("PRAGMA database_size"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("probe duckdb: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
@@ -37,7 +89,73 @@ func New() (*Store, error) {
 	return s, nil
 }
 
+// dsn appends optional DuckDB settings as query parameters. Set
+// INSIGHTS_DB_MEMORY_LIMIT (e.g. "1500MB") to a value below the pod's memory
+// limit: DuckDB otherwise sizes its budget from the host's RAM, not the cgroup,
+// and an OOMKill mid-checkpoint is a prime cause of WAL corruption.
+func dsn(dbPath string) string {
+	params := url.Values{}
+	if v := os.Getenv("INSIGHTS_DB_MEMORY_LIMIT"); v != "" {
+		params.Set("memory_limit", v)
+	}
+	if v := os.Getenv("INSIGHTS_DB_THREADS"); v != "" {
+		params.Set("threads", v)
+	}
+	if len(params) == 0 {
+		return dbPath
+	}
+	return dbPath + "?" + params.Encode()
+}
+
+// isRecoverableCorruption reports whether err means the on-disk file/WAL can't
+// be parsed (so quarantining and reopening is safe). Lock errors are explicitly
+// excluded: they mean another live process owns the file.
+func isRecoverableCorruption(err error) bool {
+	msg := strings.ToLower(err.Error())
+	// Lock conflict ("another process owns the file") — never quarantine. Match
+	// the specific phrases, not bare "lock", which also lives inside "block".
+	for _, lock := range []string{"lock on file", "set lock", "conflicting lock", "lock is held"} {
+		if strings.Contains(msg, lock) {
+			return false
+		}
+	}
+	for _, sig := range []string{
+		"not a valid duckdb",
+		"corrupt",
+		"checksum",
+		"wal", // "Failure while replaying WAL", "Could not read WAL", ...
+		"serialization",
+		"malformed",
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// quarantine renames a file aside (if it exists) so it can be inspected or
+// restored later, rather than deleting it outright.
+func quarantine(path string) {
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	dest := path + ".corrupt-" + time.Now().UTC().Format("20060102T150405Z")
+	if err := os.Rename(path, dest); err != nil {
+		log.Printf("store: could not quarantine %s: %v", path, err)
+		return
+	}
+	log.Printf("store: quarantined %s -> %s", path, dest)
+}
+
 func (s *Store) Close() error {
+	// Flush the WAL into the main file so a clean shutdown leaves nothing to
+	// replay next start. db.Close() does this too, but an explicit checkpoint
+	// makes it deterministic and gets the data durable before the shutdown grace
+	// period can run out. Best-effort: close regardless.
+	if _, err := s.db.Exec("CHECKPOINT"); err != nil {
+		log.Printf("store: checkpoint on close failed: %v", err)
+	}
 	return s.db.Close()
 }
 

@@ -13,14 +13,22 @@ export interface DashSearch {
   service?: string
   user?: string
   provider?: string
-  model?: string
+  models?: string[]
 }
 
 const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d', 'custom']
 
 export function validateSearch(search: Record<string, unknown>): DashSearch {
   const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
+  // parseSearch (router.tsx) always hands us a comma-joined string; tolerate an
+  // array too in case validateSearch is ever called with pre-parsed input.
+  const strList = (v: unknown) => {
+    const raw = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []
+    const result = [...new Set(raw.map((s) => String(s).trim()).filter(Boolean))]
+    return result.length > 0 ? result : undefined
+  }
   const range = str(search.range)
+  const models = strList(search.models)
   return {
     range: RANGE_KEYS.includes(range as RangeKey) ? (range as RangeKey) : undefined,
     from: str(search.from),
@@ -28,7 +36,7 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     service: str(search.service),
     user: str(search.user),
     provider: str(search.provider),
-    model: str(search.model),
+    models,
   }
 }
 
@@ -133,7 +141,7 @@ export function useApi<T>(path: string, extra?: Params) {
     service: search.service,
     user: search.user,
     provider: search.provider,
-    model: search.model,
+    models: search.models,
     ...extra,
   }
   const key = path + JSON.stringify(params) + refreshKey

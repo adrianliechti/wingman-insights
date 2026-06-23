@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"insights/internal/store"
@@ -83,8 +84,22 @@ func parseFilter(r *http.Request) store.Filter {
 		Service:  q.Get("service"),
 		User:     q.Get("user"),
 		Provider: q.Get("provider"),
-		Model:    q.Get("model"),
+		Models:   parseModels(q.Get("models")),
 	}
+}
+
+func parseModels(value string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		result = append(result, item)
+	}
+	return result
 }
 
 func parseInterval(r *http.Request) string {

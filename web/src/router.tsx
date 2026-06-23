@@ -58,7 +58,28 @@ const basepath = baseEl
   ? new URL(baseEl.href).pathname.replace(/\/$/, '') || '/'
   : '/'
 
-export const router = createRouter({ routeTree, basepath })
+function parseSearch(search: string): Record<string, unknown> {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of params.entries()) {
+    result[key] = value
+  }
+  return result
+}
+
+function stringifySearch(search: Record<string, unknown>): string {
+  const params: string[] = []
+  for (const [key, value] of Object.entries(search)) {
+    if (value === undefined) continue
+    const rawValue = Array.isArray(value) ? value.filter(Boolean).join(',') : String(value)
+    if (!rawValue) continue
+    const encodedValue = encodeURIComponent(rawValue).replaceAll('%2C', ',')
+    params.push(`${encodeURIComponent(key)}=${encodedValue}`)
+  }
+  return params.length > 0 ? `?${params.join('&')}` : ''
+}
+
+export const router = createRouter({ routeTree, basepath, parseSearch, stringifySearch })
 
 declare module '@tanstack/react-router' {
   interface Register {

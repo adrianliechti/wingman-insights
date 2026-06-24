@@ -13,6 +13,8 @@ import (
 type AnomalyPoint struct {
 	Bucket    time.Time `json:"bucket"`
 	GroupKey  string    `json:"group_key"`
+	Name      string    `json:"name,omitempty"` // resolved when group_by=user; else empty
+	Kind      string    `json:"kind,omitempty"`
 	TokenType string    `json:"token_type"`
 	Tokens    float64   `json:"tokens"`
 	Expected  float64   `json:"expected"`
@@ -104,6 +106,9 @@ func (s *Store) QueryTokenAnomalies(ctx context.Context, from, to time.Time, int
 		if err := rows.Scan(&r.Bucket, &r.GroupKey, &r.TokenType, &r.Tokens, &r.Expected, &r.Score); err != nil {
 			return nil, err
 		}
+		if groupBy == "user" {
+			_, r.Name, r.Kind = s.resolveUser(r.GroupKey, "")
+		}
 		result = append(result, r)
 	}
 	return result, rows.Err()
@@ -114,6 +119,8 @@ func (s *Store) QueryTokenAnomalies(ctx context.Context, from, to time.Time, int
 type ScorePoint struct {
 	Bucket   time.Time `json:"bucket"`
 	GroupKey string    `json:"group_key"`
+	Name     string    `json:"name,omitempty"` // resolved when group_by=user; else empty
+	Kind     string    `json:"kind,omitempty"`
 	Value    float64   `json:"value"`
 	Expected float64   `json:"expected"`
 	Score    float64   `json:"score"`
@@ -215,8 +222,17 @@ func (s *Store) QueryCostAnomalies(ctx context.Context, from, to time.Time, inte
 		return nil, fmt.Errorf("invalid group_by %q", groupBy)
 	}
 	clause, fargs := f.spansClause()
-	return s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
+	pts, err := s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
 		"(input_tokens > 0 OR output_tokens > 0)", groupCol, clause, fargs, from, to, interval, minScore)
+	if err != nil {
+		return nil, err
+	}
+	if groupBy == "user" {
+		for i := range pts {
+			_, pts[i].Name, pts[i].Kind = s.resolveUser(pts[i].GroupKey, "")
+		}
+	}
+	return pts, nil
 }
 
 // AnomalyFeedRow is one flagged (dimension, entity, metric) bucket in the unified
@@ -225,6 +241,8 @@ type AnomalyFeedRow struct {
 	Bucket    time.Time `json:"bucket"`
 	Dimension string    `json:"dimension"` // user | service | model
 	GroupKey  string    `json:"group_key"`
+	Name      string    `json:"name,omitempty"` // resolved when dimension=user; else empty
+	Kind      string    `json:"kind,omitempty"`
 	Metric    string    `json:"metric"` // cost | tokens
 	Value     float64   `json:"value"`
 	Expected  float64   `json:"expected"`
@@ -251,10 +269,14 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 			if p.GroupKey == "" {
 				continue // unattributed traffic isn't an actionable culprit
 			}
-			feed = append(feed, AnomalyFeedRow{
+			row := AnomalyFeedRow{
 				Bucket: p.Bucket, Dimension: dim, GroupKey: p.GroupKey,
 				Metric: metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
-			})
+			}
+			if dim == "user" {
+				_, row.Name, row.Kind = s.resolveUser(p.GroupKey, "")
+			}
+			feed = append(feed, row)
 		}
 	}
 

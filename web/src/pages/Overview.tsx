@@ -139,7 +139,7 @@ export function Overview() {
             {flagged.length} consumption {flagged.length === 1 ? 'anomaly' : 'anomalies'}
           </span>
           <span className="text-xs text-amber-700 dark:text-amber-400">
-            top: <span className="font-mono">{flagged[0].group_key || '—'}</span> at{' '}
+            top: <span>{flagged[0].name || flagged[0].group_key || '—'}</span> at{' '}
             {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(1)}× expected
           </span>
           <span className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400">View →</span>

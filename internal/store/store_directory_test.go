@@ -131,4 +131,22 @@ func TestDirectoryMapping(t *testing.T) {
 			t.Errorf("raw id %q should be folded into alice-obj, not listed separately", raw)
 		}
 	}
+
+	// 4) Traces resolve the span's user for display (here via email fallback).
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status, user_id, user_email, input_tokens, output_tokens)
+		VALUES (?, ?, 1.0, 'trace-1', 'span-1', 'root', 'ok', 'other-guid', 'alice@corp.com', 10, 5)`,
+		ts, ts); err != nil {
+		t.Fatalf("insert span: %v", err)
+	}
+	traces, err := s.QueryTraceList(ctx, from, to, Filter{}, false, 50)
+	if err != nil {
+		t.Fatalf("trace list: %v", err)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("traces = %d, want 1", len(traces))
+	}
+	if traces[0].UserName != "Alice" || traces[0].UserKind != "user" {
+		t.Errorf("trace user = name:%q kind:%q, want Alice/user", traces[0].UserName, traces[0].UserKind)
+	}
 }

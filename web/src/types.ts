@@ -61,6 +61,8 @@ export interface GenAIErrorRow {
 export interface AnomalyPoint {
   bucket: string
   group_key: string
+  name?: string
+  kind?: string
   token_type: string
   tokens: number
   expected: number
@@ -140,6 +142,8 @@ export interface SpanRow {
   tool_name?: string
   user_id?: string
   user_email?: string
+  user_name?: string
+  user_kind?: string
   session_id?: string
   error_type?: string
   finish_reasons?: string
@@ -160,6 +164,8 @@ export interface TraceSummary {
   service_name?: string
   user_id?: string
   user_email?: string
+  user_name?: string
+  user_kind?: string
   session_id?: string
   span_count: number
   input_tokens: number
@@ -193,6 +199,8 @@ export interface TopRouteRow {
 export interface ScorePoint {
   bucket: string
   group_key: string
+  name?: string
+  kind?: string
   value: number
   expected: number
   score: number
@@ -204,6 +212,8 @@ export interface AnomalyFeedRow {
   bucket: string
   dimension: string // user | service | model
   group_key: string
+  name?: string // resolved when dimension=user
+  kind?: string
   metric: string // cost | tokens
   value: number
   expected: number

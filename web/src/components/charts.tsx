@@ -9,7 +9,7 @@ import {
   Tooltip,
   Filler,
 } from 'chart.js'
-import { Line, Bar, Doughnut } from 'react-chartjs-2'
+import { Line, Bar, Doughnut, Pie } from 'react-chartjs-2'
 import { fmtBucket } from '../lib/format'
 import type { TimeseriesPoint } from '../types'
 import { useDash } from '../dash'
@@ -223,4 +223,4 @@ export function TimeseriesPanel({
   )
 }
 
-export { Line, Bar, Doughnut }
+export { Line, Bar, Doughnut, Pie }

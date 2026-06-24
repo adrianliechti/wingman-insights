@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 )
 
@@ -45,8 +46,9 @@ type OperationRow struct {
 }
 
 type UserTokenSummaryRow struct {
-	EndUserID     string  `json:"enduser_id"`
-	EndUserEmail  string  `json:"enduser_email"`
+	ID            string  `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name          string  `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind          string  `json:"kind,omitempty"` // user | application; empty if unresolved
 	RequestModel  string  `json:"request_model"`
 	TokenType     string  `json:"token_type"`
 	TotalTokens   float64 `json:"total_tokens"`
@@ -60,8 +62,8 @@ type ActiveUsersRow struct {
 }
 
 type ModelDistributionRow struct {
-	ProviderName string `json:"provider_name"`
-	RequestModel string `json:"request_model"`
+	ProviderName  string `json:"provider_name"`
+	RequestModel  string `json:"request_model"`
 	TotalRequests int64  `json:"total_requests"`
 }
 
@@ -211,7 +213,7 @@ func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			COALESCE(enduser_id, '') as enduser_id,
-			COALESCE(enduser_email, '') as enduser_email,
+			COALESCE(NULLIF(MAX(enduser_email), ''), '') as enduser_email,
 			COALESCE(request_model, '') as request_model,
 			COALESCE(token_type, '') as token_type,
 			COALESCE(SUM(sum), 0) as total_tokens,
@@ -220,28 +222,49 @@ func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f
 		WHERE metric_name = 'gen_ai.client.token.usage'
 		  AND time >= ? AND time <= ?
 		  AND enduser_id IS NOT NULL AND enduser_id != ''`+clause+`
-		GROUP BY enduser_id, enduser_email, request_model, token_type
-		ORDER BY total_tokens DESC
+		GROUP BY enduser_id, request_model, token_type
 	`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var result []UserTokenSummaryRow
+	// Fold raw ids that resolve to the same identity, keeping per-(model, token).
+	byKey := make(map[string]*UserTokenSummaryRow)
+	var order []string
 	for rows.Next() {
-		var r UserTokenSummaryRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.RequestModel, &r.TokenType, &r.TotalTokens, &r.TotalRequests); err != nil {
+		var rawID, email, model, tt string
+		var tokens float64
+		var reqs int64
+		if err := rows.Scan(&rawID, &email, &model, &tt, &tokens, &reqs); err != nil {
 			return nil, err
 		}
-		result = append(result, r)
+		id, name, kind := s.resolveUser(rawID, email)
+		key := id + "\x00" + model + "\x00" + tt
+		agg, ok := byKey[key]
+		if !ok {
+			agg = &UserTokenSummaryRow{ID: id, Name: name, Kind: kind, RequestModel: model, TokenType: tt}
+			byKey[key] = agg
+			order = append(order, key)
+		}
+		agg.TotalTokens += tokens
+		agg.TotalRequests += reqs
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]UserTokenSummaryRow, 0, len(order))
+	for _, k := range order {
+		result = append(result, *byKey[k])
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
+	return result, nil
 }
 
 type TopConsumerRow struct {
-	EndUserID     string  `json:"enduser_id"`
-	EndUserEmail  string  `json:"enduser_email"`
+	ID            string  `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name          string  `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind          string  `json:"kind,omitempty"` // user | application; empty if unresolved
 	TotalRequests int64   `json:"total_requests"`
 	TotalTokens   float64 `json:"total_tokens"`
 	TPM           float64 `json:"tpm"`
@@ -257,39 +280,67 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 	}
 	clause, fargs := f.genaiClause()
 	args := append([]any{from, to}, fargs...)
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
+	// With a directory, fold raw ids into one identity before taking the top N
+	// (a split user mustn't be cut off mid-merge). Without one, nothing merges,
+	// so let SQL rank and limit.
+	q := `
 		SELECT
 			COALESCE(enduser_id, '') as enduser_id,
-			COALESCE(enduser_email, '') as enduser_email,
+			COALESCE(NULLIF(MAX(enduser_email), ''), '') as enduser_email,
 			COALESCE(SUM(CASE WHEN token_type = 'input' THEN count ELSE 0 END), 0) as total_requests,
 			COALESCE(SUM(sum), 0) as total_tokens
 		FROM genai_metrics
 		WHERE metric_name = 'gen_ai.client.token.usage'
 		  AND enduser_id IS NOT NULL AND enduser_id != ''
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY enduser_id, enduser_email
-		ORDER BY total_tokens DESC
-		LIMIT ?
-	`, args...)
+		  AND time >= ? AND time <= ?` + clause + `
+		GROUP BY enduser_id`
+	if !s.resolving() {
+		q += " ORDER BY total_tokens DESC LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	mins := to.Sub(from).Minutes()
-	var result []TopConsumerRow
+	byID := make(map[string]*TopConsumerRow)
+	var order []string
 	for rows.Next() {
-		var r TopConsumerRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.TotalRequests, &r.TotalTokens); err != nil {
+		var rawID, email string
+		var reqs int64
+		var tokens float64
+		if err := rows.Scan(&rawID, &email, &reqs, &tokens); err != nil {
 			return nil, err
 		}
+		id, name, kind := s.resolveUser(rawID, email)
+		agg, ok := byID[id]
+		if !ok {
+			agg = &TopConsumerRow{ID: id, Name: name, Kind: kind}
+			byID[id] = agg
+			order = append(order, id)
+		}
+		agg.TotalRequests += reqs
+		agg.TotalTokens += tokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	mins := to.Sub(from).Minutes()
+	result := make([]TopConsumerRow, 0, len(order))
+	for _, id := range order {
+		r := byID[id]
 		if mins > 0 {
 			r.TPM = r.TotalTokens / mins
 		}
-		result = append(result, r)
+		result = append(result, *r)
 	}
-	return result, rows.Err()
+	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*ActiveUsersRow, error) {

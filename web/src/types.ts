@@ -22,8 +22,9 @@ export interface OperationRow {
 }
 
 export interface UserTokenSummaryRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   request_model: string
   token_type: string
   total_tokens: number
@@ -37,8 +38,9 @@ export interface ActiveUsersRow {
 }
 
 export interface TopConsumerRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   total_requests: number
   total_tokens: number
   tpm: number
@@ -66,8 +68,9 @@ export interface AnomalyPoint {
 }
 
 export interface CostRow {
-  enduser_id?: string
-  enduser_email?: string
+  id?: string
+  name?: string
+  kind?: string
   service_name?: string
   provider_name?: string
   request_model?: string
@@ -108,7 +111,8 @@ export interface BudgetResponse {
 
 export interface FilterUser {
   id: string
-  email: string
+  name?: string
+  kind?: string
 }
 
 export interface FilterOptions {
@@ -207,8 +211,9 @@ export interface AnomalyFeedRow {
 }
 
 export interface UserStatRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   requests: number
   tokens: number
   cost: number
@@ -246,8 +251,9 @@ export interface ModelPreferenceRow {
 }
 
 export interface BurstRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   peak_rpm: number
   total_requests: number
   active_minutes: number

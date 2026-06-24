@@ -88,14 +88,17 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 	return from, to
 }
 
-func parseFilter(r *http.Request) store.Filter {
+func (h *Handler) parseFilter(r *http.Request) store.Filter {
 	q := r.URL.Query()
-	return store.Filter{
+	f := store.Filter{
 		Service:  q.Get("service"),
 		User:     q.Get("user"),
 		Provider: q.Get("provider"),
 		Models:   parseModels(q.Get("models")),
 	}
+	// A selected user id may be a resolved (canonical) id; expand it to all of
+	// that principal's raw ids so the filter matches their telemetry rows.
+	return h.store.ExpandUserFilter(f)
 }
 
 func parseModels(value string) []string {

@@ -4,6 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
+import { KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -70,11 +71,11 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
 
 const userColumns: ColumnDef<CostRow, any>[] = [
   {
-    accessorKey: 'enduser_id',
+    accessorKey: 'id',
     header: 'User',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <UserCell r={c.row.original} />,
   },
-  { accessorKey: 'enduser_email', header: 'Email', cell: (c) => c.getValue() || '—' },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   ...costCols(),
 ]
 
@@ -150,7 +151,7 @@ const OTHER_COLOR = '#94a3b8'
 // Human label for an allocation consumer — the user.id it's attributed to.
 // Module-scope so its identity is stable across renders (keeps AllocationKey's
 // useMemo from busting).
-const userLabel = (r: CostRow) => r.enduser_id || 'unattributed'
+const userLabel = (r: CostRow) => r.name || r.id || 'unattributed'
 
 interface AllocSlice {
   label: string

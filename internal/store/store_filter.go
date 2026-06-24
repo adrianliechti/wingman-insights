@@ -2,13 +2,18 @@ package store
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"time"
 )
 
-// FilterUser pairs a user id with its most recent known email.
+// FilterUser is one selectable principal in the filter dropdown: its id (the
+// Entra object id when resolved, else the raw OTel id) and, when resolved, a
+// display name and kind.
 type FilterUser struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind string `json:"kind,omitempty"` // user | application; empty if unresolved
 }
 
 // FilterOptions are the distinct values available for dashboard filtering
@@ -79,18 +84,40 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 		WHERE enduser_id IS NOT NULL AND enduser_id != ''
 		  AND time >= ? AND time <= ?
 		GROUP BY enduser_id
-		ORDER BY enduser_id
 	`, from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	// Dedupe by resolved identity: every raw id of one principal collapses to a
+	// single entry whose value is the canonical id.
+	seen := make(map[string]int) // canonical id -> index in opts.Users
 	for rows.Next() {
-		var u FilterUser
-		if err := rows.Scan(&u.ID, &u.Email); err != nil {
+		var rawID, email string
+		if err := rows.Scan(&rawID, &email); err != nil {
 			return nil, err
 		}
-		opts.Users = append(opts.Users, u)
+		id, name, kind := s.resolveUser(rawID, email)
+		if i, ok := seen[id]; ok {
+			if opts.Users[i].Name == "" && name != "" {
+				opts.Users[i].Name, opts.Users[i].Kind = name, kind
+			}
+			continue
+		}
+		seen[id] = len(opts.Users)
+		opts.Users = append(opts.Users, FilterUser{ID: id, Name: name, Kind: kind})
 	}
-	return opts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	label := func(u FilterUser) string {
+		if u.Name != "" {
+			return u.Name
+		}
+		return u.ID
+	}
+	sort.Slice(opts.Users, func(i, j int) bool {
+		return strings.ToLower(label(opts.Users[i])) < strings.ToLower(label(opts.Users[j]))
+	})
+	return opts, nil
 }

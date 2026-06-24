@@ -4,6 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
 import type { AnomalyFeedRow, BurstRow, ScorePoint, TopConsumerRow } from '../types'
 import type { TimeseriesPoint } from '../types'
+import { KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -104,24 +105,16 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
 }
 
 const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
-  {
-    id: 'user',
-    header: 'User',
-    accessorFn: (r) => r.enduser_email || r.enduser_id,
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-  },
+  { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
   { accessorKey: 'total_tokens', header: 'Tokens', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
   { accessorKey: 'tpm', header: 'TPM', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) + '/min' },
 ]
 
 const burstColumns: ColumnDef<BurstRow, any>[] = [
-  {
-    id: 'user',
-    header: 'User',
-    accessorFn: (r) => r.enduser_email || r.enduser_id,
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-  },
+  { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   {
     accessorKey: 'peak_rpm',
     header: 'Peak / min',

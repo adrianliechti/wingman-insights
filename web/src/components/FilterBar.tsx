@@ -263,7 +263,7 @@ export function FilterBar() {
     [data?.services],
   )
   const userOptions = useMemo(
-    () => (data?.users ?? []).map((u) => ({ value: u.id, label: u.email || u.id })),
+    () => (data?.users ?? []).map((u) => ({ value: u.id, label: u.name || u.id })),
     [data?.users],
   )
   const providerOptions = useMemo(

@@ -28,12 +28,12 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 			EndUserEmail:  getStringAttr(attrs, "user.email"),
 			// gen_ai.conversation.id is the semconv-standard correlation id;
 			// session.id is a general fallback.
-			SessionID: firstStringAttr(attrs, "gen_ai.conversation.id", "session.id"),
-			Count:         count,
-			Sum:           sum,
-			MinVal:        min,
-			MaxVal:        max,
-			Attributes:    attrsToMap(attrs),
+			SessionID:  firstStringAttr(attrs, "gen_ai.conversation.id", "session.id"),
+			Count:      count,
+			Sum:        sum,
+			MinVal:     min,
+			MaxVal:     max,
+			Attributes: attrsToMap(attrs),
 		})
 	}
 	iterateDataPoints(m, processDP)

@@ -10,11 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"insights/pkg/directory"
+
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	dir directory.Directory // nil = no resolution; raw ids pass through
 }
 
 type TimeseriesPoint struct {

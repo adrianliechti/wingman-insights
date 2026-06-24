@@ -299,14 +299,15 @@ func rangeDays(from, to time.Time) float64 {
 // UserStatRow is one end user's activity in the range: the row behind the
 // unified per-user table and the input to segmentation.
 type UserStatRow struct {
-	EndUserID    string  `json:"enduser_id"`
-	EndUserEmail string  `json:"enduser_email"`
-	Requests     int64   `json:"requests"`
-	Tokens       float64 `json:"tokens"`
-	Cost         float64 `json:"cost"`
-	ActiveDays   int64   `json:"active_days"`
-	TopModel     string  `json:"top_model"`
-	Segment      string  `json:"segment"`
+	ID         string  `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name       string  `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind       string  `json:"kind,omitempty"` // user | application; empty if unresolved
+	Requests   int64   `json:"requests"`
+	Tokens     float64 `json:"tokens"`
+	Cost       float64 `json:"cost"`
+	ActiveDays int64   `json:"active_days"`
+	TopModel   string  `json:"top_model"`
+	Segment    string  `json:"segment"`
 }
 
 // QueryUserStats aggregates per-user requests, tokens, cost, active days and
@@ -315,6 +316,8 @@ type UserStatRow struct {
 func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit int, f Filter) ([]UserStatRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	// With a directory, fold raw ids into one identity before taking the top N.
+	// Without one, nothing merges, so let SQL rank and limit.
 	q := `
 		SELECT
 			COALESCE(user_id, '') as enduser_id,
@@ -328,10 +331,9 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 		WHERE (input_tokens > 0 OR output_tokens > 0)
 		  AND user_id IS NOT NULL AND user_id != ''
 		  AND time >= ? AND time <= ?` + clause + `
-		GROUP BY user_id
-		ORDER BY cost DESC, tokens DESC`
-	if limit > 0 {
-		q += " LIMIT ?"
+		GROUP BY user_id`
+	if limit > 0 && !s.resolving() {
+		q += " ORDER BY cost DESC, tokens DESC LIMIT ?"
 		args = append(args, limit)
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -341,16 +343,56 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 	defer rows.Close()
 
 	days := rangeDays(from, to)
-	var result []UserStatRow
+	byID := make(map[string]*UserStatRow)
+	topTokens := make(map[string]float64) // tokens of the alias contributing TopModel
+	var order []string
 	for rows.Next() {
-		var r UserStatRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.Requests, &r.Tokens, &r.Cost, &r.ActiveDays, &r.TopModel); err != nil {
+		var rawID, email, topModel string
+		var requests, activeDays int64
+		var tokens, cost float64
+		if err := rows.Scan(&rawID, &email, &requests, &tokens, &cost, &activeDays, &topModel); err != nil {
 			return nil, err
 		}
-		r.Segment = classifySegment(r.Requests, days)
-		result = append(result, r)
+		id, name, kind := s.resolveUser(rawID, email)
+		agg, ok := byID[id]
+		if !ok {
+			agg = &UserStatRow{ID: id, Name: name, Kind: kind}
+			byID[id] = agg
+			order = append(order, id)
+		}
+		agg.Requests += requests
+		agg.Tokens += tokens
+		agg.Cost += cost
+		// active_days and top_model can't be merged exactly post-aggregation:
+		// take the max distinct-day count and the heaviest alias's top model.
+		if activeDays > agg.ActiveDays {
+			agg.ActiveDays = activeDays
+		}
+		if tokens >= topTokens[id] {
+			topTokens[id] = tokens
+			agg.TopModel = topModel
+		}
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]UserStatRow, 0, len(order))
+	for _, id := range order {
+		r := byID[id]
+		r.Segment = classifySegment(r.Requests, days)
+		result = append(result, *r)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Cost != result[j].Cost {
+			return result[i].Cost > result[j].Cost
+		}
+		return result[i].Tokens > result[j].Tokens
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 // UserSegmentRow is one engagement segment with its population and share of
@@ -509,7 +551,7 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 	}
 	segOf := make(map[string]string, len(stats))
 	for _, u := range stats {
-		segOf[u.EndUserID] = u.Segment
+		segOf[u.ID] = u.Segment
 	}
 
 	clause, fargs := f.spansClause()
@@ -537,7 +579,9 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 		if err := rows.Scan(&user, &model, &tokens); err != nil {
 			return nil, err
 		}
-		seg, ok := segOf[user]
+		// Resolve the raw id to the same canonical id QueryUserStats keyed on.
+		id, _, _ := s.resolveUser(user, "")
+		seg, ok := segOf[id]
 		if !ok {
 			continue
 		}
@@ -566,8 +610,9 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 // total requests and how many distinct active minutes — the in-dashboard
 // runaway/peak signal (an agent stuck hammering the gateway shows a high peak).
 type BurstRow struct {
-	EndUserID     string `json:"enduser_id"`
-	EndUserEmail  string `json:"enduser_email"`
+	ID            string `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name          string `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind          string `json:"kind,omitempty"` // user | application; empty if unresolved
 	PeakRPM       int64  `json:"peak_rpm"`
 	TotalRequests int64  `json:"total_requests"`
 	ActiveMinutes int64  `json:"active_minutes"`
@@ -580,8 +625,9 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
+	// With a directory, fold raw ids into one identity before taking the top N.
+	// Without one, nothing merges, so let SQL rank and limit.
+	q := `
 		WITH per_min AS (
 			SELECT user_id,
 				COALESCE(MAX(user_email), '') as email,
@@ -589,7 +635,7 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 				COUNT(*) as reqs
 			FROM genai_spans
 			WHERE user_id IS NOT NULL AND user_id != ''
-			  AND time >= ? AND time <= ?`+clause+`
+			  AND time >= ? AND time <= ?` + clause + `
 			GROUP BY user_id, minute
 		)
 		SELECT user_id, MAX(email) as email,
@@ -597,24 +643,60 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 			SUM(reqs) as total_reqs,
 			COUNT(*) as active_minutes
 		FROM per_min
-		GROUP BY user_id
-		ORDER BY peak_rpm DESC, total_reqs DESC
-		LIMIT ?
-	`, args...)
+		GROUP BY user_id`
+	if !s.resolving() {
+		q += " ORDER BY peak_rpm DESC, total_reqs DESC LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var result []BurstRow
+	byID := make(map[string]*BurstRow)
+	var order []string
 	for rows.Next() {
-		var r BurstRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.PeakRPM, &r.TotalRequests, &r.ActiveMinutes); err != nil {
+		var rawID, email string
+		var peak, total, minutes int64
+		if err := rows.Scan(&rawID, &email, &peak, &total, &minutes); err != nil {
 			return nil, err
 		}
-		result = append(result, r)
+		id, name, kind := s.resolveUser(rawID, email)
+		agg, ok := byID[id]
+		if !ok {
+			agg = &BurstRow{ID: id, Name: name, Kind: kind}
+			byID[id] = agg
+			order = append(order, id)
+		}
+		// peak_rpm and active_minutes can't be merged exactly across aliases
+		// post-aggregation: take the worst peak and the max active-minute count.
+		if peak > agg.PeakRPM {
+			agg.PeakRPM = peak
+		}
+		if minutes > agg.ActiveMinutes {
+			agg.ActiveMinutes = minutes
+		}
+		agg.TotalRequests += total
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]BurstRow, 0, len(order))
+	for _, id := range order {
+		result = append(result, *byID[id])
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].PeakRPM != result[j].PeakRPM {
+			return result[i].PeakRPM > result[j].PeakRPM
+		}
+		return result[i].TotalRequests > result[j].TotalRequests
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 // QueryNewVsReturningTimeseries splits active users per bucket into those seen

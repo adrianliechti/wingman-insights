@@ -4,9 +4,14 @@ import "strings"
 
 // Filter narrows queries to a single app (service), user, provider and/or models.
 // Zero values mean "everyone / everything".
+//
+// User is a single raw id (exact match). Users is the alias-expanded form: when
+// a resolved (canonical) user is selected, ExpandUserFilter fills it with every
+// raw id of that principal for a case-insensitive IN match. At most one is set.
 type Filter struct {
 	Service  string
 	User     string
+	Users    []string
 	Provider string
 	Models   []string
 }
@@ -20,7 +25,12 @@ func (f Filter) genaiClause() (string, []any) {
 		clause += " AND service_name = ?"
 		args = append(args, f.Service)
 	}
-	if f.User != "" {
+	if len(f.Users) > 0 {
+		clause += " AND lower(enduser_id) IN (" + inPlaceholders(len(f.Users)) + ")"
+		for _, u := range f.Users {
+			args = append(args, u)
+		}
+	} else if f.User != "" {
 		clause += " AND enduser_id = ?"
 		args = append(args, f.User)
 	}
@@ -44,7 +54,12 @@ func (f Filter) spansClause() (string, []any) {
 		clause += " AND service_name = ?"
 		args = append(args, f.Service)
 	}
-	if f.User != "" {
+	if len(f.Users) > 0 {
+		clause += " AND lower(user_id) IN (" + inPlaceholders(len(f.Users)) + ")"
+		for _, u := range f.Users {
+			args = append(args, u)
+		}
+	} else if f.User != "" {
 		clause += " AND user_id = ?"
 		args = append(args, f.User)
 	}
@@ -78,5 +93,10 @@ func modelClause(models []string) (string, []any) {
 	for i, m := range models {
 		args[i] = m
 	}
-	return " AND request_model IN (" + strings.Repeat(",?", len(models))[1:] + ")", args
+	return " AND request_model IN (" + inPlaceholders(len(models)) + ")", args
+}
+
+// inPlaceholders returns "?,?,…" with n placeholders for a SQL IN list.
+func inPlaceholders(n int) string {
+	return strings.Repeat(",?", n)[1:]
 }

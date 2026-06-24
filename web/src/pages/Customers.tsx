@@ -10,6 +10,7 @@ import type {
   UserSegmentRow,
   UserStatRow,
 } from '../types'
+import { KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -127,11 +128,11 @@ function SegmentTag({ seg }: { seg: string }) {
 
 const userColumns: ColumnDef<UserStatRow, any>[] = [
   {
-    accessorKey: 'enduser_id',
+    accessorKey: 'id',
     header: 'User',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <UserCell r={c.row.original} />,
   },
-  { accessorKey: 'enduser_email', header: 'Email', cell: (c) => c.getValue() || '—' },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   { id: 'segment', accessorKey: 'segment', header: 'Segment', cell: (c) => <SegmentTag seg={c.getValue()} /> },
   { accessorKey: 'active_days', header: 'Active days', meta: { align: 'right' }, cell: (c) => c.getValue() },
   { accessorKey: 'requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },

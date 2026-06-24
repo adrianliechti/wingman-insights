@@ -13,6 +13,7 @@ import (
 	"insights/internal/api"
 	"insights/internal/ingest"
 	"insights/internal/store"
+	"insights/pkg/directory/entra"
 )
 
 func main() {
@@ -24,6 +25,22 @@ func main() {
 	// flushes its WAL and closes the file intact — a hard kill mid-write can
 	// corrupt the database.
 	defer s.Close()
+
+	// Optional Entra directory: resolves the OTel user.id / user.email values
+	// (object ids, emails or usernames) to display names and kinds. Unconfigured
+	// (no INSIGHTS_ENTRA_* env) → the store keeps raw ids and adds no resolution.
+	if dir, ok := entra.FromEnv(); ok {
+		s.SetDirectory(dir)
+		go func() {
+			// Warm the cache so the first dashboard load is already resolved;
+			// lazy refresh keeps it fresh thereafter.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := dir.Refresh(ctx); err != nil {
+				log.Printf("directory: initial refresh failed: %v", err)
+			}
+		}()
+	}
 
 	mux := http.NewServeMux()
 

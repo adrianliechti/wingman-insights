@@ -4,7 +4,7 @@ import "net/http"
 
 func (h *Handler) httpSummary(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryHTTPSummary(r.Context(), from, to, parseFilter(r))
+	rows, err := h.store.QueryHTTPSummary(r.Context(), from, to, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -14,7 +14,7 @@ func (h *Handler) httpSummary(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) httpTimeseries(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryHTTPTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	rows, err := h.store.QueryHTTPTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -24,7 +24,7 @@ func (h *Handler) httpTimeseries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) httpRequestsTimeseries(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryHTTPRequestsTimeseries(r.Context(), from, to, parseInterval(r), parseFilter(r))
+	rows, err := h.store.QueryHTTPRequestsTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -34,7 +34,7 @@ func (h *Handler) httpRequestsTimeseries(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) httpErrorsByCode(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryHTTPErrorsByCode(r.Context(), from, to, parseFilter(r))
+	rows, err := h.store.QueryHTTPErrorsByCode(r.Context(), from, to, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -44,7 +44,7 @@ func (h *Handler) httpErrorsByCode(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) topRoutes(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTopRoutes(r.Context(), from, to, 10, parseFilter(r))
+	rows, err := h.store.QueryTopRoutes(r.Context(), from, to, 10, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return

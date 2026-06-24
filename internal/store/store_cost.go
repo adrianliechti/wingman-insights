@@ -17,8 +17,9 @@ import (
 // non-cached remainder (inclusive input minus cache), so the four token columns
 // form a disjoint ledger that lines up with the four cost columns.
 type CostRow struct {
-	EndUserID    string `json:"enduser_id,omitempty"`
-	EndUserEmail string `json:"enduser_email,omitempty"`
+	ID           string `json:"id,omitempty"`   // Entra object id when resolved, else raw OTel id
+	Name         string `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind         string `json:"kind,omitempty"` // user | application; empty if unresolved
 	ServiceName  string `json:"service_name,omitempty"`
 	ProviderName string `json:"provider_name,omitempty"`
 	RequestModel string `json:"request_model,omitempty"`
@@ -74,10 +75,12 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
+		id, name, kind := s.resolveUser(user, email)
 		price, priced := pricing.Lookup(provider, model)
 		r := CostRow{
-			EndUserID:           user,
-			EndUserEmail:        email,
+			ID:                  id,
+			Name:                name,
+			Kind:                kind,
 			ServiceName:         service,
 			ProviderName:        provider,
 			RequestModel:        model,
@@ -104,14 +107,23 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		return nil, err
 	}
 
-	sortCostRows(result)
-	return result, nil
+	if !s.resolving() {
+		sortCostRows(result)
+		return result, nil
+	}
+	// SQL grouped by the raw user_id; fold rows whose ids resolved to the same
+	// Entra identity into one line per (id, service, provider, model).
+	return aggregateCosts(result, func(r CostRow) (string, CostRow) {
+		return r.ID + "\x00" + r.ServiceName + "\x00" + r.ProviderName + "\x00" + r.RequestModel,
+			CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, ServiceName: r.ServiceName, ProviderName: r.ProviderName, RequestModel: r.RequestModel}
+	}), nil
 }
 
-// AggregateCostsByUser collapses a cost breakdown to one row per user.
+// AggregateCostsByUser collapses a cost breakdown to one row per user, keyed by
+// the resolved identity id, carrying the name/kind through.
 func AggregateCostsByUser(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.EndUserID, CostRow{EndUserID: r.EndUserID, EndUserEmail: r.EndUserEmail}
+		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind}
 	})
 }
 

@@ -13,7 +13,7 @@ import (
 // (none = full user × model breakdown).
 func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, parseFilter(r))
+	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -33,7 +33,7 @@ func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
 // costReport streams the full user × model cost breakdown as a CSV download.
 func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, parseFilter(r))
+	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -45,7 +45,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 
 	cw := csv.NewWriter(w)
 	cw.Write([]string{
-		"user_id", "user_email", "app", "provider", "model",
+		"id", "name", "kind", "app", "provider", "model",
 		"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
 		"input_cost_usd", "output_cost_usd", "cache_read_cost_usd", "cache_creation_cost_usd",
 		"total_cost_usd", "priced",
@@ -54,7 +54,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		totalCost += row.TotalCost
 		cw.Write([]string{
-			row.EndUserID, row.EndUserEmail, row.ServiceName, row.ProviderName, row.RequestModel,
+			row.ID, row.Name, row.Kind, row.ServiceName, row.ProviderName, row.RequestModel,
 			fmtTokens(row.InputTokens), fmtTokens(row.OutputTokens),
 			fmtTokens(row.CacheReadTokens), fmtTokens(row.CacheCreationTokens), fmtTokens(row.ReasoningTokens),
 			fmtCost(row.InputCost), fmtCost(row.OutputCost),
@@ -62,7 +62,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 			fmtCost(row.TotalCost), strconv.FormatBool(row.Priced),
 		})
 	}
-	cw.Write([]string{"TOTAL", "", "", "", "", "", "", "", "", "", "", "", "", "", fmtCost(totalCost), ""})
+	cw.Write([]string{"TOTAL", "", "", "", "", "", "", "", "", "", "", "", "", "", "", fmtCost(totalCost), ""})
 	cw.Flush()
 }
 

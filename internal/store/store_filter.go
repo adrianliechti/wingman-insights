@@ -83,43 +83,42 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 		return nil, err
 	}
 
+	// Resolve principals via the directory table and dedupe in SQL, so a user
+	// split across several OTel ids is one entry keyed by the canonical id. The
+	// department/location dropdowns are collected from the same resolved set, so
+	// they only offer groups that actually have activity in the range.
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT enduser_id, COALESCE(MAX(enduser_email), '') FROM genai_metrics
-		WHERE enduser_id IS NOT NULL AND enduser_id != ''
-		  AND time >= ? AND time <= ?
-		GROUP BY enduser_id
+		WITH resolved AS (
+			SELECT `+r.ID+` as id, `+r.Name+` as name, `+r.Kind+` as kind,
+				`+r.Dept+` as department, `+r.Loc+` as location
+			FROM genai_metrics`+r.Join+`
+			WHERE enduser_id IS NOT NULL AND enduser_id != ''
+			  AND genai_metrics.time >= ? AND genai_metrics.time <= ?
+		)
+		SELECT id, MAX(name) as name, MAX(kind) as kind, MAX(department) as department, MAX(location) as location
+		FROM resolved
+		GROUP BY id
 	`, from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	// Dedupe by resolved identity: every raw id of one principal collapses to a
-	// single entry whose value is the canonical id. Department/office-location
-	// options are collected from the same resolved principals, so the dropdowns
-	// only offer groups that actually have activity in the range.
-	seen := make(map[string]int) // canonical id -> index in opts.Users
 	depts := make(map[string]bool)
 	locs := make(map[string]bool)
 	for rows.Next() {
-		var rawID, email string
-		if err := rows.Scan(&rawID, &email); err != nil {
+		var u FilterUser
+		var department, location string
+		if err := rows.Scan(&u.ID, &u.Name, &u.Kind, &department, &location); err != nil {
 			return nil, err
 		}
-		idt := s.resolveIdentity(rawID, email)
-		if idt.Department != "" {
-			depts[idt.Department] = true
+		if department != "" {
+			depts[department] = true
 		}
-		if idt.Location != "" {
-			locs[idt.Location] = true
+		if location != "" {
+			locs[location] = true
 		}
-		if i, ok := seen[idt.ID]; ok {
-			if opts.Users[i].Name == "" && idt.Name != "" {
-				opts.Users[i].Name, opts.Users[i].Kind = idt.Name, string(idt.Kind)
-			}
-			continue
-		}
-		seen[idt.ID] = len(opts.Users)
-		opts.Users = append(opts.Users, FilterUser{ID: idt.ID, Name: idt.Name, Kind: string(idt.Kind)})
+		opts.Users = append(opts.Users, u)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

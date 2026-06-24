@@ -210,45 +210,43 @@ func (s *Store) QueryOperationSummary(ctx context.Context, from, to time.Time, f
 func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f Filter) ([]UserTokenSummaryRow, error) {
 	clause, fargs := f.genaiClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	// Resolve to the canonical identity then group by it in SQL, so every alias
+	// of a user folds into one (model, token-type) line.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(enduser_id, '') as enduser_id,
-			COALESCE(NULLIF(MAX(enduser_email), ''), '') as enduser_email,
-			COALESCE(request_model, '') as request_model,
-			COALESCE(token_type, '') as token_type,
+		WITH resolved AS (
+			SELECT `+r.ID+` as principal, `+r.Name+` as name, `+r.Kind+` as kind,
+				COALESCE(request_model, '') as request_model,
+				COALESCE(token_type, '') as token_type,
+				sum, count
+			FROM genai_metrics`+r.Join+`
+			WHERE metric_name = 'gen_ai.client.token.usage'
+			  AND time >= ? AND time <= ?
+			  AND enduser_id IS NOT NULL AND enduser_id != ''`+clause+`
+		)
+		SELECT principal, name, kind, request_model, token_type,
 			COALESCE(SUM(sum), 0) as total_tokens,
 			COALESCE(SUM(count), 0) as total_requests
-		FROM genai_metrics
-		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND time >= ? AND time <= ?
-		  AND enduser_id IS NOT NULL AND enduser_id != ''`+clause+`
-		GROUP BY enduser_id, request_model, token_type
+		FROM resolved
+		GROUP BY principal, name, kind, request_model, token_type
 	`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	// Fold raw ids that resolve to the same identity, keeping per-(model, token).
-	fold := newIDFolder[UserTokenSummaryRow]()
+	var result []UserTokenSummaryRow
 	for rows.Next() {
-		var rawID, email, model, tt string
-		var tokens float64
-		var reqs int64
-		if err := rows.Scan(&rawID, &email, &model, &tt, &tokens, &reqs); err != nil {
+		var row UserTokenSummaryRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.RequestModel, &row.TokenType,
+			&row.TotalTokens, &row.TotalRequests); err != nil {
 			return nil, err
 		}
-		id, name, kind := s.resolveUser(rawID, email)
-		agg := fold.at(id+"\x00"+model+"\x00"+tt, func() *UserTokenSummaryRow {
-			return &UserTokenSummaryRow{ID: id, Name: name, Kind: kind, RequestModel: model, TokenType: tt}
-		})
-		agg.TotalTokens += tokens
-		agg.TotalRequests += reqs
+		result = append(result, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	result := fold.rows()
 	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
 	return result, nil
 }
@@ -272,66 +270,56 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 	}
 	clause, fargs := f.genaiClause()
 	args := append([]any{from, to}, fargs...)
-	// With a directory, fold raw ids into one identity before taking the top N
-	// (a split user mustn't be cut off mid-merge). Without one, nothing merges,
-	// so let SQL rank and limit.
-	q := `
-		SELECT
-			COALESCE(enduser_id, '') as enduser_id,
-			COALESCE(NULLIF(MAX(enduser_email), ''), '') as enduser_email,
-			COALESCE(SUM(CASE WHEN token_type = 'input' THEN count ELSE 0 END), 0) as total_requests,
-			COALESCE(SUM(sum), 0) as total_tokens
-		FROM genai_metrics
-		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND enduser_id IS NOT NULL AND enduser_id != ''
-		  AND time >= ? AND time <= ?` + clause + `
-		GROUP BY enduser_id`
-	if !s.resolving() {
-		q += " ORDER BY total_tokens DESC LIMIT ?"
-		args = append(args, limit)
-	}
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	args = append(args, limit)
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	// Resolve and group by the canonical identity in SQL, so a user split across
+	// several OTel ids merges into one row before the top-N cut.
+	rows, err := s.db.QueryContext(ctx, `
+		WITH resolved AS (
+			SELECT `+r.ID+` as principal, `+r.Name+` as name, `+r.Kind+` as kind,
+				CASE WHEN token_type = 'input' THEN count ELSE 0 END as reqs,
+				sum as tokens
+			FROM genai_metrics`+r.Join+`
+			WHERE metric_name = 'gen_ai.client.token.usage'
+			  AND enduser_id IS NOT NULL AND enduser_id != ''
+			  AND time >= ? AND time <= ?`+clause+`
+		)
+		SELECT principal, name, kind,
+			COALESCE(SUM(reqs), 0) as total_requests,
+			COALESCE(SUM(tokens), 0) as total_tokens
+		FROM resolved
+		GROUP BY principal, name, kind
+		ORDER BY total_tokens DESC
+		LIMIT ?
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	fold := newIDFolder[TopConsumerRow]()
+	mins := to.Sub(from).Minutes()
+	var result []TopConsumerRow
 	for rows.Next() {
-		var rawID, email string
-		var reqs int64
-		var tokens float64
-		if err := rows.Scan(&rawID, &email, &reqs, &tokens); err != nil {
+		var row TopConsumerRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.TotalRequests, &row.TotalTokens); err != nil {
 			return nil, err
 		}
-		id, name, kind := s.resolveUser(rawID, email)
-		agg := fold.at(id, func() *TopConsumerRow { return &TopConsumerRow{ID: id, Name: name, Kind: kind} })
-		agg.TotalRequests += reqs
-		agg.TotalTokens += tokens
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	mins := to.Sub(from).Minutes()
-	result := fold.rows()
-	for i := range result {
 		if mins > 0 {
-			result[i].TPM = result[i].TotalTokens / mins
+			row.TPM = row.TotalTokens / mins
 		}
+		result = append(result, row)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
-	if len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return result, rows.Err()
 }
 
 func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*ActiveUsersRow, error) {
 	clause, fargs := f.genaiClause()
-	sub := `(SELECT COUNT(DISTINCT enduser_id) FROM genai_metrics
+	dir := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	// Count distinct resolved identities, so a user appearing under several OTel
+	// ids counts once.
+	sub := `(SELECT COUNT(DISTINCT ` + dir.ID + `) FROM genai_metrics` + dir.Join + `
 			 WHERE enduser_id IS NOT NULL AND enduser_id != ''
-			   AND time >= ? AND time <= ?` + clause + `)`
+			   AND genai_metrics.time >= ? AND genai_metrics.time <= ?` + clause + `)`
 	var args []any
 	for _, window := range []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour} {
 		args = append(args, at.Add(-window), at)
@@ -350,15 +338,17 @@ func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*
 func (s *Store) QueryActiveUsersTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
 	clause, fargs := f.genaiClause()
 	args := append([]any{interval, from, to}, fargs...)
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	// Distinct resolved identities per bucket, so split OTel ids count once.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			time_bucket(CAST(? AS INTERVAL), genai_metrics.time) as bucket,
 			'' as label,
-			COUNT(DISTINCT enduser_id) as value,
-			COUNT(DISTINCT enduser_id) as count
-		FROM genai_metrics
+			COUNT(DISTINCT `+r.ID+`) as value,
+			COUNT(DISTINCT `+r.ID+`) as count
+		FROM genai_metrics`+r.Join+`
 		WHERE enduser_id IS NOT NULL AND enduser_id != ''
-		  AND time >= ? AND time <= ?`+clause+`
+		  AND genai_metrics.time >= ? AND genai_metrics.time <= ?`+clause+`
 		GROUP BY bucket
 		ORDER BY bucket
 	`, args...)

@@ -14,7 +14,12 @@
 // zero-config fallback that resolves nothing).
 package directory
 
-import "strings"
+import (
+	"encoding/json"
+	"io"
+	"iter"
+	"strings"
+)
 
 // Kind distinguishes a human principal from an application registration.
 type Kind string
@@ -55,34 +60,42 @@ type Directory interface {
 	Lookup(id string) (Identity, bool)
 }
 
-// Aliaser is an optional capability for directories that can enumerate every
-// identifier mapping to the same principal. It lets a filter on a single
-// canonical user expand to all of that user's ids as seen in telemetry.
-type Aliaser interface {
-	// Aliases returns the normalized identifiers (object id, UPN, mail, …) that
-	// resolve to the same principal as id, including id's principal itself.
-	// It returns nil when id is unknown.
-	Aliases(id string) []string
+// Record is one exported alias→identity row: the normalized alias as it appears
+// in telemetry (object id, UPN, mail, app id, …) joined to its canonical
+// identity. A principal contributes one Record per alias.
+type Record struct {
+	Alias      string `json:"alias"` // normalized lookup key (lower-cased)
+	ID         string `json:"id"`
+	Name       string `json:"name,omitempty"`
+	Kind       Kind   `json:"kind,omitempty"`
+	Department string `json:"department,omitempty"`
+	Location   string `json:"location,omitempty"`
 }
 
-// Attribute names a groupable user attribute resolved from the directory.
-type Attribute string
+// Lister is an optional capability for directories that can enumerate their
+// full alias→identity mapping — one Record per known alias. It is the minimal
+// hook Export needs; providers supply only the data, not the serialization.
+type Lister interface {
+	Records() iter.Seq[Record]
+}
 
-const (
-	AttrDepartment Attribute = "department"
-	AttrLocation   Attribute = "location"
-)
-
-// GroupResolver is an optional capability for directories that can enumerate
-// the principals sharing an attribute value (e.g. a department). It lets a
-// filter on a single department/office location expand to every member's
-// identifiers as seen in telemetry — the same expansion Aliaser does for one
-// user, applied to a whole group.
-type GroupResolver interface {
-	// Members returns the normalized identifiers (all aliases) of every
-	// principal whose attribute attr equals value, case-insensitively. It
-	// returns nil when the value is unknown or attr is unsupported.
-	Members(attr Attribute, value string) []string
+// Export writes a directory's alias→identity mapping as newline-delimited JSON
+// (one Record per line) to w, for materializing the directory for an in-database
+// join. It returns (false, nil) when d cannot enumerate its mapping (does not
+// implement Lister), so callers can fall back. The NDJSON encoding lives here
+// once, so providers implement only Lister.Records.
+func Export(d Directory, w io.Writer) (ok bool, err error) {
+	l, ok := d.(Lister)
+	if !ok {
+		return false, nil
+	}
+	enc := json.NewEncoder(w) // Encode appends '\n', yielding NDJSON
+	for rec := range l.Records() {
+		if err := enc.Encode(rec); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 // NormalizeKey canonicalises an identifier for case-insensitive lookup: object

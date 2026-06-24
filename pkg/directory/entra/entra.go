@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"net/http"
 	"net/url"
@@ -52,32 +53,10 @@ const (
 
 // Environment variables read by FromEnv.
 const (
-	envTenantID       = "INSIGHTS_ENTRA_TENANT_ID"
-	envClientID       = "INSIGHTS_ENTRA_CLIENT_ID"
-	envClientSecret   = "INSIGHTS_ENTRA_CLIENT_SECRET"
-	envDepartmentMode = "INSIGHTS_ENTRA_DEPARTMENT_MODE"
+	envTenantID     = "INSIGHTS_ENTRA_TENANT_ID"
+	envClientID     = "INSIGHTS_ENTRA_CLIENT_ID"
+	envClientSecret = "INSIGHTS_ENTRA_CLIENT_SECRET"
 )
-
-// DepartmentMatch selects how a department filter value is matched against
-// users' department codes.
-type DepartmentMatch string
-
-const (
-	// DepartmentDirect matches the selected code exactly (the default).
-	DepartmentDirect DepartmentMatch = "direct"
-	// DepartmentPrefix treats codes as hierarchical and matches the selected
-	// code plus every department that starts with it (its subtree).
-	DepartmentPrefix DepartmentMatch = "prefix"
-)
-
-// parseDepartmentMatch maps the env value to a mode; anything other than
-// "prefix" (incl. "direct", "exact", empty, or an unknown value) is direct.
-func parseDepartmentMatch(s string) DepartmentMatch {
-	if strings.EqualFold(strings.TrimSpace(s), string(DepartmentPrefix)) {
-		return DepartmentPrefix
-	}
-	return DepartmentDirect
-}
 
 // Config configures an Entra-backed directory. TenantID, ClientID and
 // ClientSecret are required; the rest have sane defaults.
@@ -99,10 +78,6 @@ type Config struct {
 	GraphBaseURL string
 	LoginBaseURL string
 
-	// DepartmentMatch selects exact vs. hierarchical-prefix department filtering.
-	// Zero value ("") is treated as DepartmentDirect.
-	DepartmentMatch DepartmentMatch
-
 	// Logf records background refresh failures. Zero uses log.Printf.
 	Logf func(format string, args ...any)
 }
@@ -112,9 +87,6 @@ type Config struct {
 // need no lock.
 type snapshot struct {
 	byKey    map[string]directory.Identity // NormalizeKey(alias) -> identity
-	byCanon  map[string][]string           // NormalizeKey(canonical id) -> its alias keys
-	byDept   map[string][]string           // NormalizeKey(department) -> member alias keys
-	byLoc    map[string][]string           // NormalizeKey(officeLocation) -> member alias keys
 	loadedAt time.Time
 }
 
@@ -137,9 +109,8 @@ type Directory struct {
 }
 
 var (
-	_ directory.Directory     = (*Directory)(nil)
-	_ directory.Aliaser       = (*Directory)(nil)
-	_ directory.GroupResolver = (*Directory)(nil)
+	_ directory.Directory = (*Directory)(nil)
+	_ directory.Lister    = (*Directory)(nil)
 )
 
 // New validates cfg and returns a directory. It performs no I/O: the first
@@ -158,22 +129,17 @@ func New(cfg Config) (*Directory, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = log.Printf
 	}
-	if cfg.DepartmentMatch == "" {
-		cfg.DepartmentMatch = DepartmentDirect
-	}
 	return &Directory{cfg: cfg, http: cfg.HTTPClient}, nil
 }
 
 // FromEnv builds an Entra directory from INSIGHTS_ENTRA_TENANT_ID / _CLIENT_ID /
-// _CLIENT_SECRET. INSIGHTS_ENTRA_DEPARTMENT_MODE (direct|prefix, default direct)
-// selects exact vs. hierarchical-prefix department filtering. ok is false when
-// any credential is unset, so the caller can fall back to a noop directory.
+// _CLIENT_SECRET. ok is false when any credential is unset, so the caller can
+// fall back to no resolution.
 func FromEnv() (d *Directory, ok bool) {
 	d, err := New(Config{
-		TenantID:        os.Getenv(envTenantID),
-		ClientID:        os.Getenv(envClientID),
-		ClientSecret:    os.Getenv(envClientSecret),
-		DepartmentMatch: parseDepartmentMatch(os.Getenv(envDepartmentMode)),
+		TenantID:     os.Getenv(envTenantID),
+		ClientID:     os.Getenv(envClientID),
+		ClientSecret: os.Getenv(envClientSecret),
 	})
 	if err != nil {
 		return nil, false
@@ -195,22 +161,6 @@ func (d *Directory) Lookup(id string) (directory.Identity, bool) {
 	}
 	idt, ok := s.byKey[directory.NormalizeKey(id)]
 	return idt, ok
-}
-
-// Aliases returns every identifier that resolves to the same principal as id
-// (including id's own canonical key), for alias-expanded filtering. It returns
-// nil when id is unknown or no snapshot has loaded.
-func (d *Directory) Aliases(id string) []string {
-	s := d.snap.Load()
-	if s == nil {
-		return nil
-	}
-	key := directory.NormalizeKey(id)
-	// Resolve to the canonical key first so any alias works as input.
-	if idt, ok := s.byKey[key]; ok {
-		key = directory.NormalizeKey(idt.ID)
-	}
-	return s.byCanon[key]
 }
 
 // maybeRefresh starts a background refresh unless one is already running or the
@@ -254,61 +204,30 @@ func (d *Directory) Refresh(ctx context.Context) error {
 	if err := d.loadServicePrincipals(ctx, tok, byKey); err != nil {
 		return fmt.Errorf("list service principals: %w", err)
 	}
-	// Build the reverse index (canonical id -> its alias keys) for Aliases.
-	byCanon := make(map[string][]string, len(byKey))
-	for key, idt := range byKey {
-		ck := directory.NormalizeKey(idt.ID)
-		byCanon[ck] = append(byCanon[ck], key)
-	}
-	// Index members by attribute (department / office location) for group
-	// filters: each user contributes all of its alias keys under its attribute
-	// value, so a department filter expands exactly like a per-user one.
-	byDept := make(map[string][]string)
-	byLoc := make(map[string][]string)
-	for canon, aliases := range byCanon {
-		idt := byKey[canon]
-		if idt.Kind != directory.KindUser {
-			continue
-		}
-		if dk := directory.NormalizeKey(idt.Department); dk != "" {
-			byDept[dk] = append(byDept[dk], aliases...)
-		}
-		if lk := directory.NormalizeKey(idt.Location); lk != "" {
-			byLoc[lk] = append(byLoc[lk], aliases...)
-		}
-	}
-	d.snap.Store(&snapshot{byKey: byKey, byCanon: byCanon, byDept: byDept, byLoc: byLoc, loadedAt: time.Now()})
+	d.snap.Store(&snapshot{byKey: byKey, loadedAt: time.Now()})
 	return nil
 }
 
-// Members returns every identifier resolving to a principal that matches the
-// attribute value, for group-expanded filtering. Department matching follows
-// Config.DepartmentMatch: DepartmentDirect matches the code exactly, while
-// DepartmentPrefix returns the whole subtree — every department starting with
-// the selected code. Location always matches exactly. It returns nil when the
-// value is empty/unknown, attr is unsupported, or no snapshot has loaded.
-func (d *Directory) Members(attr directory.Attribute, value string) []string {
-	s := d.snap.Load()
-	key := directory.NormalizeKey(value)
-	if s == nil || key == "" {
-		return nil
-	}
-	switch attr {
-	case directory.AttrDepartment:
-		if d.cfg.DepartmentMatch != DepartmentPrefix {
-			return s.byDept[key]
+// Records yields one directory.Record per known alias, for directory.Export to
+// serialize. It yields nothing when no snapshot has loaded yet.
+func (d *Directory) Records() iter.Seq[directory.Record] {
+	return func(yield func(directory.Record) bool) {
+		s := d.snap.Load()
+		if s == nil {
+			return
 		}
-		var out []string
-		for dept, members := range s.byDept {
-			if strings.HasPrefix(dept, key) {
-				out = append(out, members...)
+		for alias, idt := range s.byKey {
+			if !yield(directory.Record{
+				Alias:      alias,
+				ID:         idt.ID,
+				Name:       idt.Name,
+				Kind:       idt.Kind,
+				Department: idt.Department,
+				Location:   idt.Location,
+			}) {
+				return
 			}
 		}
-		return out
-	case directory.AttrLocation:
-		return s.byLoc[key]
-	default:
-		return nil
 	}
 }
 

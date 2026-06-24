@@ -31,13 +31,28 @@ func main() {
 	// (no INSIGHTS_ENTRA_* env) → the store keeps raw ids and adds no resolution.
 	if dir, ok := entra.FromEnv(); ok {
 		s.SetDirectory(dir)
+		s.SetDepartmentPrefix(strings.EqualFold(os.Getenv("INSIGHTS_ENTRA_DEPARTMENT_MODE"), "prefix"))
+		// Keep the directory and its in-DB mirror fresh. Queries resolve
+		// identities by JOINing the directory table (not per-row Lookup), so the
+		// table must be re-materialized after each refresh — nothing else drives
+		// it. Warm both once at startup, then re-sync on an interval.
 		go func() {
-			// Warm the cache so the first dashboard load is already resolved;
-			// lazy refresh keeps it fresh thereafter.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			if err := dir.Refresh(ctx); err != nil {
-				log.Printf("directory: initial refresh failed: %v", err)
+			sync := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if err := dir.Refresh(ctx); err != nil {
+					log.Printf("directory: refresh failed: %v", err)
+					return
+				}
+				if err := s.SyncDirectory(ctx); err != nil {
+					log.Printf("directory: table sync failed: %v", err)
+				}
+			}
+			sync()
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for range t.C {
+				sync()
 			}
 		}()
 	}

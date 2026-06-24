@@ -53,16 +53,30 @@ type CostRow struct {
 func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Filter) ([]CostRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	// Resolve user_id/user_email to a canonical identity via the directory table
+	// (id-then-email precedence, matching the old resolveUser), then group by the
+	// resolved principal directly in SQL — no Go-side fold. An unresolved id
+	// passes through as itself with empty name/kind/department/location.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(user_id, '') as enduser_id,
-			COALESCE(NULLIF(MAX(user_email), ''), '') as enduser_email,
-			COALESCE(service_name, '') as service_name,
-			COALESCE(provider_name, '') as provider_name,
-			COALESCE(request_model, '') as request_model,`+spansPartCols+`
-		FROM genai_spans
-		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
-		GROUP BY user_id, service_name, provider_name, request_model
+		WITH resolved AS (
+			SELECT
+				COALESCE(d1.id, d2.id, s.user_id, '') as principal,
+				COALESCE(d1.name, d2.name, '') as name,
+				COALESCE(d1.kind, d2.kind, '') as kind,
+				COALESCE(d1.department, d2.department, '') as department,
+				COALESCE(d1.location, d2.location, '') as location,
+				COALESCE(s.service_name, '') as service_name,
+				COALESCE(s.provider_name, '') as provider_name,
+				COALESCE(s.request_model, '') as request_model,
+				s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_creation_tokens, s.reasoning_tokens
+			FROM genai_spans s
+			LEFT JOIN directory d1 ON lower(s.user_id) = d1.alias
+			LEFT JOIN directory d2 ON lower(s.user_email) = d2.alias
+			WHERE (s.input_tokens > 0 OR s.output_tokens > 0) AND s.time >= ? AND s.time <= ?`+clause+`
+		)
+		SELECT principal, name, kind, department, location, service_name, provider_name, request_model,`+spansPartCols+`
+		FROM resolved
+		GROUP BY principal, name, kind, department, location, service_name, provider_name, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -71,20 +85,19 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 
 	var result []CostRow
 	for rows.Next() {
-		var user, email, service, provider, model string
+		var id, name, kind, department, location, service, provider, model string
 		var p tokenParts
-		if err := rows.Scan(&user, &email, &service, &provider, &model,
+		if err := rows.Scan(&id, &name, &kind, &department, &location, &service, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
-		idt := s.resolveIdentity(user, email)
 		price, priced := pricing.Lookup(provider, model)
 		r := CostRow{
-			ID:                  idt.ID,
-			Name:                idt.Name,
-			Kind:                string(idt.Kind),
-			Department:          idt.Department,
-			Location:            idt.Location,
+			ID:                  id,
+			Name:                name,
+			Kind:                kind,
+			Department:          department,
+			Location:            location,
 			ServiceName:         service,
 			ProviderName:        provider,
 			RequestModel:        model,
@@ -110,17 +123,8 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	if !s.resolving() {
-		sortCostRows(result)
-		return result, nil
-	}
-	// SQL grouped by the raw user_id; fold rows whose ids resolved to the same
-	// Entra identity into one line per (id, service, provider, model).
-	return aggregateCosts(result, func(r CostRow) (string, CostRow) {
-		return r.ID + "\x00" + r.ServiceName + "\x00" + r.ProviderName + "\x00" + r.RequestModel,
-			CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location, ServiceName: r.ServiceName, ProviderName: r.ProviderName, RequestModel: r.RequestModel}
-	}), nil
+	sortCostRows(result)
+	return result, nil
 }
 
 // AggregateCostsByUser collapses a cost breakdown to one row per user, keyed by

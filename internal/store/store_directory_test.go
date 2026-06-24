@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"iter"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,28 +26,21 @@ func (mappingStub) Lookup(id string) (directory.Identity, bool) {
 	return directory.Identity{}, false
 }
 
-func (mappingStub) Aliases(id string) []string {
-	switch strings.ToLower(id) {
-	case "alice-obj":
-		return []string{"u-guid-1", "alice@corp.com", "alice-obj"}
-	case "app-client":
-		return []string{"sp-guid", "app-client"}
-	}
-	return nil
-}
-
-func (s mappingStub) Members(attr directory.Attribute, value string) []string {
-	switch attr {
-	case directory.AttrDepartment:
-		if strings.EqualFold(value, "Eng") {
-			return s.Aliases("alice-obj")
+func (mappingStub) Records() iter.Seq[directory.Record] {
+	return func(yield func(directory.Record) bool) {
+		recs := []directory.Record{
+			{Alias: "u-guid-1", ID: "alice-obj", Name: "Alice", Kind: directory.KindUser, Department: "Eng", Location: "Zurich"},
+			{Alias: "alice@corp.com", ID: "alice-obj", Name: "Alice", Kind: directory.KindUser, Department: "Eng", Location: "Zurich"},
+			{Alias: "alice-obj", ID: "alice-obj", Name: "Alice", Kind: directory.KindUser, Department: "Eng", Location: "Zurich"},
+			{Alias: "sp-guid", ID: "app-client", Name: "Worker", Kind: directory.KindApplication},
+			{Alias: "app-client", ID: "app-client", Name: "Worker", Kind: directory.KindApplication},
 		}
-	case directory.AttrLocation:
-		if strings.EqualFold(value, "Zurich") {
-			return s.Aliases("alice-obj")
+		for _, r := range recs {
+			if !yield(r) {
+				return
+			}
 		}
 	}
-	return nil
 }
 
 func TestDirectoryMapping(t *testing.T) {
@@ -83,6 +77,9 @@ func TestDirectoryMapping(t *testing.T) {
 	s.SetDirectory(mappingStub{})
 
 	ctx := context.Background()
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
 	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
 
 	// 1) Unification: the two Alice ids (one resolved by email) fold into one row.
@@ -116,8 +113,7 @@ func TestDirectoryMapping(t *testing.T) {
 
 	// 2) Email-fallback FILTER: selecting Alice must also catch the rows that
 	//    only match on the email column (the bug this guards against).
-	f := s.ExpandUserFilter(Filter{User: "alice-obj"})
-	top, err = s.QueryTopConsumers(ctx, from, to, 10, f)
+	top, err = s.QueryTopConsumers(ctx, from, to, 10, Filter{User: "alice-obj"})
 	if err != nil {
 		t.Fatalf("filtered top consumers: %v", err)
 	}
@@ -236,6 +232,9 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 
 	s.SetDirectory(mappingStub{})
 	ctx := context.Background()
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
 	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
 
 	// Options expose the department/location seen in range.
@@ -267,9 +266,8 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 		t.Errorf("Unknown input tokens = %v, want 510", unknown.InputTokens)
 	}
 
-	// Department filter expands to Alice's ids (incl. the email-only row).
-	f := s.ExpandUserFilter(Filter{Department: "Eng"})
-	rows, err = s.QueryCostBreakdown(ctx, from, to, f)
+	// Department filter matches via the directory table (incl. the email-only row).
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "Eng"})
 	if err != nil {
 		t.Fatalf("filtered cost breakdown: %v", err)
 	}
@@ -282,12 +280,162 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 	}
 
 	// An unknown department matches nothing rather than everything.
-	f = s.ExpandUserFilter(Filter{Department: "Nonesuch"})
-	rows, err = s.QueryCostBreakdown(ctx, from, to, f)
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "Nonesuch"})
 	if err != nil {
 		t.Fatalf("unknown-dept breakdown: %v", err)
 	}
 	if len(rows) != 0 {
 		t.Errorf("unknown department matched %d rows, want 0", len(rows))
+	}
+
+	// A parent code "En" matches nothing in direct mode, but in prefix mode rolls
+	// up the "Eng" subtree (Alice).
+	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "En"})
+	if len(rows) != 0 {
+		t.Errorf("direct 'En' matched %d rows, want 0", len(rows))
+	}
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "En", DeptPrefix: true})
+	if err != nil {
+		t.Fatalf("prefix-dept breakdown: %v", err)
+	}
+	in = 0
+	for _, r := range rows {
+		in += r.InputTokens
+	}
+	if in != 300 {
+		t.Errorf("prefix 'En' input tokens = %v, want 300 (Eng subtree)", in)
+	}
+}
+
+// TestNoDirectory pins the pass-through behavior when no directory is configured:
+// the directory table is empty, so every id resolves to itself (no name/kind),
+// nothing folds, raw-id filtering still works, and group filters match nothing.
+func TestNoDirectory(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	// Deliberately no SetDirectory / SyncDirectory.
+
+	ts := time.Now().UTC()
+	for _, u := range []struct {
+		id  string
+		in  int
+		sum float64
+	}{{"u1", 100, 100}, {"u2", 50, 50}} {
+		if _, err := s.db.Exec(`INSERT INTO genai_metrics
+			(received_at, time, metric_name, token_type, enduser_id, count, sum)
+			VALUES (?, ?, 'gen_ai.client.token.usage', 'input', ?, 1, ?)`,
+			ts, ts, u.id, u.sum); err != nil {
+			t.Fatalf("insert metric: %v", err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, user_id, provider_name, request_model,
+			 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, cost)
+			VALUES (?, ?, 1.0, ?, ?, 'root', 'ok', ?, 'anthropic', 'claude', ?, 0, 0, 0, 0, 0)`,
+			ts, ts, u.id+"-t", u.id+"-s", u.id, u.in); err != nil {
+			t.Fatalf("insert span: %v", err)
+		}
+	}
+
+	ctx := context.Background()
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	// Cost breakdown passes ids through with no name/kind, one row per raw id.
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	byID := map[string]CostRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if len(byID) != 2 {
+		t.Fatalf("cost rows = %d, want 2 (one per raw id)", len(byID))
+	}
+	if r := byID["u1"]; r.Name != "" || r.Kind != "" || r.InputTokens != 100 {
+		t.Errorf("u1 row = %+v, want raw passthrough (no name/kind), 100 input", r)
+	}
+
+	// Raw-id user filter works without a directory (direct equality fallback).
+	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{User: "u1"})
+	if len(rows) != 1 || rows[0].ID != "u1" {
+		t.Errorf("user filter = %+v, want only u1", rows)
+	}
+
+	// A department filter with no directory matches nothing (empty table).
+	if rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "X"}); len(rows) != 0 {
+		t.Errorf("dept filter w/o directory matched %d rows, want 0", len(rows))
+	}
+
+	// Leaderboard and distinct-user count see two raw ids, unfolded.
+	top, err := s.QueryTopConsumers(ctx, from, to, 10, Filter{})
+	if err != nil {
+		t.Fatalf("top: %v", err)
+	}
+	if len(top) != 2 || top[0].ID != "u1" {
+		t.Errorf("top consumers = %+v, want [u1, u2]", top)
+	}
+	au, err := s.QueryActiveUsers(ctx, to, Filter{})
+	if err != nil {
+		t.Fatalf("active: %v", err)
+	}
+	if au.DAU != 2 {
+		t.Errorf("DAU = %d, want 2", au.DAU)
+	}
+
+	// Filter options list raw ids with no name, and no group dimensions.
+	opts, err := s.QueryFilterOptions(ctx, from, to)
+	if err != nil {
+		t.Fatalf("opts: %v", err)
+	}
+	if len(opts.Users) != 2 || opts.Users[0].Name != "" {
+		t.Errorf("users = %+v, want two un-named raw ids", opts.Users)
+	}
+	if len(opts.Departments) != 0 || len(opts.Locations) != 0 {
+		t.Errorf("departments=%v locations=%v, want both empty", opts.Departments, opts.Locations)
+	}
+}
+
+// TestDepartmentPrefixEscapesWildcards guards the LIKE escaping: a department
+// code with an underscore must not let '_' act as a single-char wildcard, so a
+// prefix of "a_" matches "a_b" but not "axb".
+func TestDepartmentPrefixEscapesWildcards(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Populate the directory table directly (the format SyncDirectory produces).
+	if _, err := s.db.Exec(`INSERT INTO directory (alias, id, name, kind, department) VALUES
+		('ua', 'ua', 'A', 'user', 'a_b'),
+		('ub', 'ub', 'B', 'user', 'axb')`); err != nil {
+		t.Fatalf("seed directory: %v", err)
+	}
+	ts := time.Now().UTC()
+	for _, id := range []string{"ua", "ub"} {
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, user_id, provider_name, request_model,
+			 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, cost)
+			VALUES (?, ?, 1.0, ?, ?, 'root', 'ok', ?, 'anthropic', 'claude', 100, 0, 0, 0, 0, 0)`,
+			ts, ts, id+"-t", id+"-s", id); err != nil {
+			t.Fatalf("insert span: %v", err)
+		}
+	}
+	ctx := context.Background()
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{Department: "a_", DeptPrefix: true})
+	if err != nil {
+		t.Fatalf("prefix breakdown: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "ua" {
+		t.Errorf("prefix 'a_' matched %+v, want only ua (a_b) — '_' must be literal", rows)
 	}
 }

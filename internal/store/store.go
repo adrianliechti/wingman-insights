@@ -16,8 +16,9 @@ import (
 )
 
 type Store struct {
-	db  *sql.DB
-	dir directory.Directory // nil = no resolution; raw ids pass through
+	db         *sql.DB
+	dir        directory.Directory // nil = no resolution; raw ids pass through
+	deptPrefix bool                // hierarchical department filtering
 }
 
 type TimeseriesPoint struct {
@@ -251,6 +252,19 @@ func (s *Store) migrate() error {
 		// engine and cost rollups aggregate spend without re-pricing on read.
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cost DOUBLE",
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_savings DOUBLE",
+		// directory materializes the principal directory (one row per alias) so
+		// queries resolve user_id/user_email to a canonical identity, department
+		// and location via a JOIN rather than per-row in Go. It is rebuilt from
+		// the configured directory by SyncDirectory; empty (every telemetry id
+		// passes through as itself) when no directory is configured.
+		`CREATE TABLE IF NOT EXISTS directory (
+			alias      VARCHAR PRIMARY KEY,
+			id         VARCHAR,
+			name       VARCHAR,
+			kind       VARCHAR,
+			department VARCHAR,
+			location   VARCHAR
+		)`,
 	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

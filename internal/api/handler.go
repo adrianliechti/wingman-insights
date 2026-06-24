@@ -90,18 +90,17 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 
 func (h *Handler) parseFilter(r *http.Request) store.Filter {
 	q := r.URL.Query()
-	f := store.Filter{
+	// User/department/location are matched against the directory table inside the
+	// query (see Filter.clause); nothing to expand here.
+	return store.Filter{
 		Service:    q.Get("service"),
 		User:       q.Get("user"),
 		Department: q.Get("department"),
 		Location:   q.Get("location"),
+		DeptPrefix: h.store.DepartmentPrefix(),
 		Provider:   q.Get("provider"),
 		Models:     parseModels(q.Get("models")),
 	}
-	// A selected user id may be a resolved (canonical) id, and a department /
-	// office location has no telemetry column; expand each to the raw ids it
-	// covers so the filter matches the right telemetry rows.
-	return h.store.ExpandUserFilter(f)
 }
 
 func parseModels(value string) []string {

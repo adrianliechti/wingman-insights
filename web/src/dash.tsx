@@ -153,24 +153,25 @@ export function useApi<T>(path: string, extra?: Params) {
   const key = path + JSON.stringify(params) + refreshKey
 
   useEffect(() => {
-    let cancelled = false
+    // Abort the in-flight request when the key changes (filter/range change) or
+    // the component unmounts, so superseded fetches don't run to completion or
+    // land their results out of order.
+    const ctrl = new AbortController()
     setLoading(true)
-    apiGet<T>(path, params)
+    apiGet<T>(path, params, ctrl.signal)
       .then((d) => {
-        if (!cancelled) {
+        if (!ctrl.signal.aborted) {
           setData(d)
           setError(null)
         }
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e))
+        if (!ctrl.signal.aborted) setError(String(e))
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!ctrl.signal.aborted) setLoading(false)
       })
-    return () => {
-      cancelled = true
-    }
+    return () => ctrl.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 

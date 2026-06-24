@@ -41,13 +41,3 @@ func (h *Handler) httpErrorsByCode(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, rows)
 }
-
-func (h *Handler) topRoutes(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTopRoutes(r.Context(), from, to, 10, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"time"
 )
 
@@ -43,16 +42,6 @@ type OperationRow struct {
 	ProviderName  string  `json:"provider_name"`
 	TotalCount    int64   `json:"total_count"`
 	AvgDuration   float64 `json:"avg_duration"`
-}
-
-type UserTokenSummaryRow struct {
-	ID            string  `json:"id"`             // Entra object id when resolved, else raw OTel id
-	Name          string  `json:"name,omitempty"` // resolved display name; empty if unresolved
-	Kind          string  `json:"kind,omitempty"` // user | application; empty if unresolved
-	RequestModel  string  `json:"request_model"`
-	TokenType     string  `json:"token_type"`
-	TotalTokens   float64 `json:"total_tokens"`
-	TotalRequests int64   `json:"total_requests"`
 }
 
 type ActiveUsersRow struct {
@@ -207,50 +196,6 @@ func (s *Store) QueryOperationSummary(ctx context.Context, from, to time.Time, f
 	return result, rows.Err()
 }
 
-func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f Filter) ([]UserTokenSummaryRow, error) {
-	clause, fargs := f.genaiClause()
-	args := append([]any{from, to}, fargs...)
-	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
-	// Resolve to the canonical identity then group by it in SQL, so every alias
-	// of a user folds into one (model, token-type) line.
-	rows, err := s.db.QueryContext(ctx, `
-		WITH resolved AS (
-			SELECT `+r.ID+` as principal, `+r.Name+` as name, `+r.Kind+` as kind,
-				COALESCE(request_model, '') as request_model,
-				COALESCE(token_type, '') as token_type,
-				sum, count
-			FROM genai_metrics`+r.Join+`
-			WHERE metric_name = 'gen_ai.client.token.usage'
-			  AND time >= ? AND time <= ?
-			  AND enduser_id IS NOT NULL AND enduser_id != ''`+clause+`
-		)
-		SELECT principal, name, kind, request_model, token_type,
-			COALESCE(SUM(sum), 0) as total_tokens,
-			COALESCE(SUM(count), 0) as total_requests
-		FROM resolved
-		GROUP BY principal, name, kind, request_model, token_type
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []UserTokenSummaryRow
-	for rows.Next() {
-		var row UserTokenSummaryRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.RequestModel, &row.TokenType,
-			&row.TotalTokens, &row.TotalRequests); err != nil {
-			return nil, err
-		}
-		result = append(result, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
-	return result, nil
-}
-
 type TopConsumerRow struct {
 	ID            string  `json:"id"`             // Entra object id when resolved, else raw OTel id
 	Name          string  `json:"name,omitempty"` // resolved display name; empty if unresolved
@@ -333,39 +278,6 @@ func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*
 		return nil, err
 	}
 	return r, nil
-}
-
-func (s *Store) QueryActiveUsersTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	clause, fargs := f.genaiClause()
-	args := append([]any{interval, from, to}, fargs...)
-	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
-	// Distinct resolved identities per bucket, so split OTel ids count once.
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			time_bucket(CAST(? AS INTERVAL), genai_metrics.time) as bucket,
-			'' as label,
-			COUNT(DISTINCT `+r.ID+`) as value,
-			COUNT(DISTINCT `+r.ID+`) as count
-		FROM genai_metrics`+r.Join+`
-		WHERE enduser_id IS NOT NULL AND enduser_id != ''
-		  AND genai_metrics.time >= ? AND genai_metrics.time <= ?`+clause+`
-		GROUP BY bucket
-		ORDER BY bucket
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 func (s *Store) QueryOperationDurationTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {

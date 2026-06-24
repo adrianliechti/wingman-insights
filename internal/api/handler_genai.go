@@ -42,16 +42,6 @@ func (h *Handler) operations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
-func (h *Handler) userSummary(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryUserTokenSummary(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
 func (h *Handler) topConsumers(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryTopConsumers(r.Context(), from, to, 10, h.parseFilter(r))
@@ -70,16 +60,6 @@ func (h *Handler) activeUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, row)
-}
-
-func (h *Handler) activeUsersTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryActiveUsersTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
 }
 
 func (h *Handler) operationDurationTimeseries(w http.ResponseWriter, r *http.Request) {
@@ -163,23 +143,6 @@ func (h *Handler) anomalies(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) anomalyTimeseries(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryTokenAnomalies(r.Context(), from, to, parseInterval(r), "none", 0, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-// costAnomalies lists buckets whose spend spikes above the rolling baseline,
-// grouped per user (default), service, model or overall — the spend counterpart
-// to anomalies.
-func (h *Handler) costAnomalies(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	groupBy := r.URL.Query().Get("group_by")
-	if groupBy == "" {
-		groupBy = "user"
-	}
-	rows, err := h.store.QueryCostAnomalies(r.Context(), from, to, parseInterval(r), groupBy, 3.0, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return

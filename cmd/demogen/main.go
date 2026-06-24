@@ -62,7 +62,6 @@ var (
 		"ivan", "judy", "mallory", "niaj", "olivia", "peggy", "rupert", "sybil",
 		"trent", "victor", "walter", "wendy", "xena", "yuri", "zoe",
 	}
-	operations = []string{"chat", "embeddings", "generate_content"}
 	httpRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/completions", "/api/agents/invoke"}
 	errorCodes = []int{400, 401, 403, 404, 429, 500, 502, 503}
 

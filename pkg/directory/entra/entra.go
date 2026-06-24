@@ -52,10 +52,32 @@ const (
 
 // Environment variables read by FromEnv.
 const (
-	envTenantID     = "INSIGHTS_ENTRA_TENANT_ID"
-	envClientID     = "INSIGHTS_ENTRA_CLIENT_ID"
-	envClientSecret = "INSIGHTS_ENTRA_CLIENT_SECRET"
+	envTenantID       = "INSIGHTS_ENTRA_TENANT_ID"
+	envClientID       = "INSIGHTS_ENTRA_CLIENT_ID"
+	envClientSecret   = "INSIGHTS_ENTRA_CLIENT_SECRET"
+	envDepartmentMode = "INSIGHTS_ENTRA_DEPARTMENT_MODE"
 )
+
+// DepartmentMatch selects how a department filter value is matched against
+// users' department codes.
+type DepartmentMatch string
+
+const (
+	// DepartmentDirect matches the selected code exactly (the default).
+	DepartmentDirect DepartmentMatch = "direct"
+	// DepartmentPrefix treats codes as hierarchical and matches the selected
+	// code plus every department that starts with it (its subtree).
+	DepartmentPrefix DepartmentMatch = "prefix"
+)
+
+// parseDepartmentMatch maps the env value to a mode; anything other than
+// "prefix" (incl. "direct", "exact", empty, or an unknown value) is direct.
+func parseDepartmentMatch(s string) DepartmentMatch {
+	if strings.EqualFold(strings.TrimSpace(s), string(DepartmentPrefix)) {
+		return DepartmentPrefix
+	}
+	return DepartmentDirect
+}
 
 // Config configures an Entra-backed directory. TenantID, ClientID and
 // ClientSecret are required; the rest have sane defaults.
@@ -76,6 +98,10 @@ type Config struct {
 	// the public-cloud defaults.
 	GraphBaseURL string
 	LoginBaseURL string
+
+	// DepartmentMatch selects exact vs. hierarchical-prefix department filtering.
+	// Zero value ("") is treated as DepartmentDirect.
+	DepartmentMatch DepartmentMatch
 
 	// Logf records background refresh failures. Zero uses log.Printf.
 	Logf func(format string, args ...any)
@@ -132,17 +158,22 @@ func New(cfg Config) (*Directory, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = log.Printf
 	}
+	if cfg.DepartmentMatch == "" {
+		cfg.DepartmentMatch = DepartmentDirect
+	}
 	return &Directory{cfg: cfg, http: cfg.HTTPClient}, nil
 }
 
 // FromEnv builds an Entra directory from INSIGHTS_ENTRA_TENANT_ID / _CLIENT_ID /
-// _CLIENT_SECRET. ok is false when any are unset, so the caller can fall back to
-// a noop directory.
+// _CLIENT_SECRET. INSIGHTS_ENTRA_DEPARTMENT_MODE (direct|prefix, default direct)
+// selects exact vs. hierarchical-prefix department filtering. ok is false when
+// any credential is unset, so the caller can fall back to a noop directory.
 func FromEnv() (d *Directory, ok bool) {
 	d, err := New(Config{
-		TenantID:     os.Getenv(envTenantID),
-		ClientID:     os.Getenv(envClientID),
-		ClientSecret: os.Getenv(envClientSecret),
+		TenantID:        os.Getenv(envTenantID),
+		ClientID:        os.Getenv(envClientID),
+		ClientSecret:    os.Getenv(envClientSecret),
+		DepartmentMatch: parseDepartmentMatch(os.Getenv(envDepartmentMode)),
 	})
 	if err != nil {
 		return nil, false
@@ -250,18 +281,30 @@ func (d *Directory) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Members returns every identifier resolving to a principal whose attribute
-// equals value (case-insensitively), for group-expanded filtering. It returns
-// nil when the value is unknown, attr is unsupported, or no snapshot has loaded.
+// Members returns every identifier resolving to a principal that matches the
+// attribute value, for group-expanded filtering. Department matching follows
+// Config.DepartmentMatch: DepartmentDirect matches the code exactly, while
+// DepartmentPrefix returns the whole subtree — every department starting with
+// the selected code. Location always matches exactly. It returns nil when the
+// value is empty/unknown, attr is unsupported, or no snapshot has loaded.
 func (d *Directory) Members(attr directory.Attribute, value string) []string {
 	s := d.snap.Load()
-	if s == nil {
+	key := directory.NormalizeKey(value)
+	if s == nil || key == "" {
 		return nil
 	}
-	key := directory.NormalizeKey(value)
 	switch attr {
 	case directory.AttrDepartment:
-		return s.byDept[key]
+		if d.cfg.DepartmentMatch != DepartmentPrefix {
+			return s.byDept[key]
+		}
+		var out []string
+		for dept, members := range s.byDept {
+			if strings.HasPrefix(dept, key) {
+				out = append(out, members...)
+			}
+		}
+		return out
 	case directory.AttrLocation:
 		return s.byLoc[key]
 	default:

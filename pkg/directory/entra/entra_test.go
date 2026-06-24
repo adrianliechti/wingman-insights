@@ -35,7 +35,7 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 			if r.URL.Query().Get("page") == "2" {
 				json.NewEncoder(w).Encode(map[string]any{
 					"value": []map[string]any{
-						{"id": "u2-objectid", "displayName": "Bob Builder", "userPrincipalName": "bob@contoso.com", "department": "Engineering", "officeLocation": "London"},
+						{"id": "u2-objectid", "displayName": "Bob Builder", "userPrincipalName": "bob@contoso.com", "department": "abc", "officeLocation": "London"},
 					},
 				})
 				return
@@ -48,7 +48,7 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 					"mail":              "alice.example@contoso.com",
 					"otherMails":        []string{"alice.old@legacy.example"},
 					"proxyAddresses":    []string{"SMTP:alice.example@contoso.com", "smtp:a.example@contoso.com"},
-					"department":        "Engineering",
+					"department":        "ab",
 					"officeLocation":    "Zurich",
 				}},
 				// Absolute next-page link, as Graph returns it.
@@ -71,14 +71,19 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 }
 
 func testDirectory(t *testing.T, srv *httptest.Server) *Directory {
+	return testDirectoryMode(t, srv, DepartmentDirect)
+}
+
+func testDirectoryMode(t *testing.T, srv *httptest.Server, mode DepartmentMatch) *Directory {
 	t.Helper()
 	d, err := New(Config{
-		TenantID:     "test-tenant",
-		ClientID:     "client",
-		ClientSecret: "secret",
-		GraphBaseURL: srv.URL + "/v1.0",
-		LoginBaseURL: srv.URL,
-		Logf:         func(string, ...any) {},
+		TenantID:        "test-tenant",
+		ClientID:        "client",
+		ClientSecret:    "secret",
+		GraphBaseURL:    srv.URL + "/v1.0",
+		LoginBaseURL:    srv.URL,
+		DepartmentMatch: mode,
+		Logf:            func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -188,44 +193,72 @@ func TestIdentityAttributes(t *testing.T) {
 	if !ok {
 		t.Fatal("Lookup(alice) miss")
 	}
-	if got.Department != "Engineering" || got.Location != "Zurich" {
-		t.Errorf("Alice attrs = %q/%q, want Engineering/Zurich", got.Department, got.Location)
+	if got.Department != "ab" || got.Location != "Zurich" {
+		t.Errorf("Alice attrs = %q/%q, want ab/Zurich", got.Department, got.Location)
 	}
 }
 
-func TestMembers(t *testing.T) {
+// aliceAndBob is every alias of both users — the full set a department filter
+// would IN-match when it covers both.
+var aliceAndBob = []string{
+	"a.example@contoso.com", "alice.example@contoso.com",
+	"alice.old@legacy.example", "alice@contoso.com",
+	"bob@contoso.com", "u1-objectid", "u2-objectid",
+}
+
+func sortedMembers(d *Directory, attr directory.Attribute, value string) []string {
+	m := append([]string(nil), d.Members(attr, value)...)
+	sort.Strings(m)
+	return m
+}
+
+func TestMembersDirect(t *testing.T) {
 	var tokenCalls atomic.Int32
 	srv := fakeGraph(t, &tokenCalls)
 	defer srv.Close()
 
-	d := testDirectory(t, srv)
+	d := testDirectory(t, srv) // DepartmentDirect
 	if err := d.Refresh(context.Background()); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	// Both users are in Engineering, so the department expands to every alias of
-	// both — the set a department filter would IN-match against telemetry.
-	got := append([]string(nil), d.Members(directory.AttrDepartment, "engineering")...)
-	sort.Strings(got)
-	want := []string{
-		"a.example@contoso.com", "alice.example@contoso.com",
-		"alice.old@legacy.example", "alice@contoso.com",
-		"bob@contoso.com", "u1-objectid", "u2-objectid",
+	// Direct mode: a parent code matches nobody; only the exact code resolves.
+	if got := d.Members(directory.AttrDepartment, "a"); got != nil {
+		t.Errorf("direct Members(a) = %v, want nil (no exact match)", got)
 	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("Members(department, engineering) = %v, want %v", got, want)
+	if got := sortedMembers(d, directory.AttrDepartment, "ab"); strings.Join(got, ",") != "a.example@contoso.com,alice.example@contoso.com,alice.old@legacy.example,alice@contoso.com,u1-objectid" {
+		t.Errorf("direct Members(ab) = %v, want Alice's aliases only", got)
 	}
 
-	// Office location splits the two users apart: only Bob is in London, so it
-	// expands to exactly Bob's aliases.
-	loc := append([]string(nil), d.Members(directory.AttrLocation, "London")...)
-	sort.Strings(loc)
-	if strings.Join(loc, ",") != "bob@contoso.com,u2-objectid" {
-		t.Errorf("Members(officeLocation, London) = %v, want [bob@contoso.com u2-objectid]", loc)
+	// Office location always matches exactly: only Bob is in London.
+	if got := sortedMembers(d, directory.AttrLocation, "London"); strings.Join(got, ",") != "bob@contoso.com,u2-objectid" {
+		t.Errorf("Members(location, London) = %v, want Bob's aliases", got)
 	}
-
 	if d.Members(directory.AttrDepartment, "nonesuch") != nil {
 		t.Error("Members of unknown department should be nil")
+	}
+}
+
+func TestMembersPrefix(t *testing.T) {
+	var tokenCalls atomic.Int32
+	srv := fakeGraph(t, &tokenCalls)
+	defer srv.Close()
+
+	d := testDirectoryMode(t, srv, DepartmentPrefix)
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// Prefix mode: the parent code rolls up the whole subtree (both users).
+	if got := sortedMembers(d, directory.AttrDepartment, "a"); strings.Join(got, ",") != strings.Join(aliceAndBob, ",") {
+		t.Errorf("prefix Members(a) = %v, want both users", got)
+	}
+	// A deeper code only catches its own subtree (just Bob).
+	if got := sortedMembers(d, directory.AttrDepartment, "abc"); strings.Join(got, ",") != "bob@contoso.com,u2-objectid" {
+		t.Errorf("prefix Members(abc) = %v, want Bob only", got)
+	}
+	if d.Members(directory.AttrDepartment, "zz") != nil {
+		t.Error("prefix Members of non-matching code should be nil")
 	}
 }
 
@@ -306,7 +339,25 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv(envTenantID, "tenant")
 	t.Setenv(envClientID, "client")
 	t.Setenv(envClientSecret, "secret")
-	if _, ok := FromEnv(); !ok {
+	d, ok := FromEnv()
+	if !ok {
 		t.Error("FromEnv with full env should report ok=true")
+	}
+	// Department mode defaults to direct when unset.
+	if d.cfg.DepartmentMatch != DepartmentDirect {
+		t.Errorf("default DepartmentMatch = %q, want direct", d.cfg.DepartmentMatch)
+	}
+
+	t.Setenv(envDepartmentMode, "prefix")
+	d, _ = FromEnv()
+	if d.cfg.DepartmentMatch != DepartmentPrefix {
+		t.Errorf("DepartmentMatch with mode=prefix = %q, want prefix", d.cfg.DepartmentMatch)
+	}
+
+	// Unknown / alias values fall back to direct.
+	t.Setenv(envDepartmentMode, "exact")
+	d, _ = FromEnv()
+	if d.cfg.DepartmentMatch != DepartmentDirect {
+		t.Errorf("DepartmentMatch with mode=exact = %q, want direct", d.cfg.DepartmentMatch)
 	}
 }

@@ -12,6 +12,8 @@ export interface DashSearch {
   to?: string
   service?: string
   user?: string
+  department?: string
+  location?: string
   provider?: string
   models?: string[]
 }
@@ -35,6 +37,8 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     to: str(search.to),
     service: str(search.service),
     user: str(search.user),
+    department: str(search.department),
+    location: str(search.location),
     provider: str(search.provider),
     models,
   }
@@ -140,6 +144,8 @@ export function useApi<T>(path: string, extra?: Params) {
     interval,
     service: search.service,
     user: search.user,
+    department: search.department,
+    location: search.location,
     provider: search.provider,
     models: search.models,
     ...extra,

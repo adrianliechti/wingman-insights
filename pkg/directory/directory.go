@@ -33,6 +33,16 @@ type Identity struct {
 	// application's name); empty when unknown.
 	Name string `json:"name"`
 	Kind Kind   `json:"kind"`
+
+	// Department is the user's department as shown on the Teams contact card
+	// (the Graph user "department" attribute); empty for applications or when
+	// unset in the directory.
+	Department string `json:"department,omitempty"`
+	// Location is the user's static office location — the building/city "Office
+	// location" on the Teams contact card (the Graph "officeLocation"
+	// attribute), not the daily In-office/Remote presence toggle. Empty for
+	// applications or when unset.
+	Location string `json:"location,omitempty"`
 }
 
 // Directory resolves a principal identifier to a canonical Identity.
@@ -53,6 +63,26 @@ type Aliaser interface {
 	// resolve to the same principal as id, including id's principal itself.
 	// It returns nil when id is unknown.
 	Aliases(id string) []string
+}
+
+// Attribute names a groupable user attribute resolved from the directory.
+type Attribute string
+
+const (
+	AttrDepartment Attribute = "department"
+	AttrLocation   Attribute = "location"
+)
+
+// GroupResolver is an optional capability for directories that can enumerate
+// the principals sharing an attribute value (e.g. a department). It lets a
+// filter on a single department/office location expand to every member's
+// identifiers as seen in telemetry — the same expansion Aliaser does for one
+// user, applied to a whole group.
+type GroupResolver interface {
+	// Members returns the normalized identifiers (all aliases) of every
+	// principal whose attribute attr equals value, case-insensitively. It
+	// returns nil when the value is unknown or attr is unsupported.
+	Members(attr Attribute, value string) []string
 }
 
 // NormalizeKey canonicalises an identifier for case-insensitive lookup: object

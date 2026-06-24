@@ -17,9 +17,11 @@ import (
 // non-cached remainder (inclusive input minus cache), so the four token columns
 // form a disjoint ledger that lines up with the four cost columns.
 type CostRow struct {
-	ID           string `json:"id,omitempty"`   // Entra object id when resolved, else raw OTel id
-	Name         string `json:"name,omitempty"` // resolved display name; empty if unresolved
-	Kind         string `json:"kind,omitempty"` // user | application; empty if unresolved
+	ID           string `json:"id,omitempty"`         // Entra object id when resolved, else raw OTel id
+	Name         string `json:"name,omitempty"`       // resolved display name; empty if unresolved
+	Kind         string `json:"kind,omitempty"`       // user | application; empty if unresolved
+	Department   string `json:"department,omitempty"` // resolved department; empty if unresolved/unset
+	Location     string `json:"location,omitempty"`   // resolved office location; empty if unresolved/unset
 	ServiceName  string `json:"service_name,omitempty"`
 	ProviderName string `json:"provider_name,omitempty"`
 	RequestModel string `json:"request_model,omitempty"`
@@ -75,12 +77,14 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
-		id, name, kind := s.resolveUser(user, email)
+		idt := s.resolveIdentity(user, email)
 		price, priced := pricing.Lookup(provider, model)
 		r := CostRow{
-			ID:                  id,
-			Name:                name,
-			Kind:                kind,
+			ID:                  idt.ID,
+			Name:                idt.Name,
+			Kind:                string(idt.Kind),
+			Department:          idt.Department,
+			Location:            idt.Location,
 			ServiceName:         service,
 			ProviderName:        provider,
 			RequestModel:        model,
@@ -115,15 +119,15 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 	// Entra identity into one line per (id, service, provider, model).
 	return aggregateCosts(result, func(r CostRow) (string, CostRow) {
 		return r.ID + "\x00" + r.ServiceName + "\x00" + r.ProviderName + "\x00" + r.RequestModel,
-			CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, ServiceName: r.ServiceName, ProviderName: r.ProviderName, RequestModel: r.RequestModel}
+			CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location, ServiceName: r.ServiceName, ProviderName: r.ProviderName, RequestModel: r.RequestModel}
 	}), nil
 }
 
 // AggregateCostsByUser collapses a cost breakdown to one row per user, keyed by
-// the resolved identity id, carrying the name/kind through.
+// the resolved identity id, carrying the name/kind/department/location through.
 func AggregateCostsByUser(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind}
+		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location}
 	})
 }
 
@@ -138,6 +142,23 @@ func AggregateCostsByModel(rows []CostRow) []CostRow {
 func AggregateCostsByApp(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
 		return r.ServiceName, CostRow{ServiceName: r.ServiceName}
+	})
+}
+
+// AggregateCostsByDepartment collapses a cost breakdown to one row per
+// department. Rows whose user did not resolve (or has no department) fold into a
+// single empty-department bucket the UI can label "Unknown".
+func AggregateCostsByDepartment(rows []CostRow) []CostRow {
+	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
+		return r.Department, CostRow{Department: r.Department}
+	})
+}
+
+// AggregateCostsByLocation collapses a cost breakdown to one row per office
+// location, with unresolved/unset locations folding into one bucket.
+func AggregateCostsByLocation(rows []CostRow) []CostRow {
+	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
+		return r.Location, CostRow{Location: r.Location}
 	})
 }
 

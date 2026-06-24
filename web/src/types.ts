@@ -73,6 +73,8 @@ export interface CostRow {
   id?: string
   name?: string
   kind?: string
+  department?: string
+  location?: string
   service_name?: string
   provider_name?: string
   request_model?: string
@@ -120,6 +122,8 @@ export interface FilterUser {
 export interface FilterOptions {
   services: string[]
   users: FilterUser[]
+  departments: string[]
+  locations: string[]
   providers: string[]
   models: string[]
 }

@@ -7,7 +7,7 @@ import {
   ComboboxOptions,
 } from '@headlessui/react'
 import { useNavigate } from '@tanstack/react-router'
-import { Bot, Boxes, Check, ChevronDown, Cpu, FilterX, User } from 'lucide-react'
+import { Bot, Boxes, Building2, Check, ChevronDown, Cpu, FilterX, MapPin, User } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useApi, useDash } from '../dash'
 import type { DashSearch } from '../dash'
@@ -248,6 +248,8 @@ export function FilterBar() {
   const { data } = useApi<FilterOptions>('/api/filters', {
     service: undefined,
     user: undefined,
+    department: undefined,
+    location: undefined,
     provider: undefined,
     models: undefined,
     interval: undefined,
@@ -257,7 +259,14 @@ export function FilterBar() {
     navigate({ to: '.', search: (prev: DashSearch) => ({ ...prev, ...patch }) })
   }
 
-  const hasFilter = !!(search.service || search.user || search.provider || (search.models?.length ?? 0) > 0)
+  const hasFilter = !!(
+    search.service ||
+    search.user ||
+    search.department ||
+    search.location ||
+    search.provider ||
+    (search.models?.length ?? 0) > 0
+  )
   const serviceOptions = useMemo(
     () => (data?.services ?? []).map((s) => ({ value: s, label: s })),
     [data?.services],
@@ -265,6 +274,14 @@ export function FilterBar() {
   const userOptions = useMemo(
     () => (data?.users ?? []).map((u) => ({ value: u.id, label: u.name || u.id })),
     [data?.users],
+  )
+  const departmentOptions = useMemo(
+    () => (data?.departments ?? []).map((d) => ({ value: d, label: d })),
+    [data?.departments],
+  )
+  const locationOptions = useMemo(
+    () => (data?.locations ?? []).map((l) => ({ value: l, label: l })),
+    [data?.locations],
   )
   const providerOptions = useMemo(
     () => (data?.providers ?? []).map((p) => ({ value: p, label: p })),
@@ -291,6 +308,24 @@ export function FilterBar() {
         options={userOptions}
         onChange={(v) => setFilter({ user: v })}
       />
+      {departmentOptions.length > 0 && (
+        <FilterSelect
+          icon={Building2}
+          placeholder="All departments"
+          value={search.department}
+          options={departmentOptions}
+          onChange={(v) => setFilter({ department: v })}
+        />
+      )}
+      {locationOptions.length > 0 && (
+        <FilterSelect
+          icon={MapPin}
+          placeholder="All locations"
+          value={search.location}
+          options={locationOptions}
+          onChange={(v) => setFilter({ location: v })}
+        />
+      )}
       <FilterSelect
         icon={Bot}
         placeholder="All providers"
@@ -311,6 +346,8 @@ export function FilterBar() {
             setFilter({
               service: undefined,
               user: undefined,
+              department: undefined,
+              location: undefined,
               provider: undefined,
               models: undefined,
             })

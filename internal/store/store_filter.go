@@ -19,20 +19,24 @@ type FilterUser struct {
 // FilterOptions are the distinct values available for dashboard filtering
 // within a time range.
 type FilterOptions struct {
-	Services  []string     `json:"services"`
-	Users     []FilterUser `json:"users"`
-	Providers []string     `json:"providers"`
-	Models    []string     `json:"models"`
+	Services    []string     `json:"services"`
+	Users       []FilterUser `json:"users"`
+	Departments []string     `json:"departments"`
+	Locations   []string     `json:"locations"`
+	Providers   []string     `json:"providers"`
+	Models      []string     `json:"models"`
 }
 
 // QueryFilterOptions lists distinct apps (services), users, providers and
 // models seen in the given time range. Services include HTTP-only apps.
 func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*FilterOptions, error) {
 	opts := &FilterOptions{
-		Services:  []string{},
-		Users:     []FilterUser{},
-		Providers: []string{},
-		Models:    []string{},
+		Services:    []string{},
+		Users:       []FilterUser{},
+		Departments: []string{},
+		Locations:   []string{},
+		Providers:   []string{},
+		Models:      []string{},
 	}
 
 	collect := func(query string, dest *[]string, args ...any) error {
@@ -90,26 +94,38 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 	}
 	defer rows.Close()
 	// Dedupe by resolved identity: every raw id of one principal collapses to a
-	// single entry whose value is the canonical id.
+	// single entry whose value is the canonical id. Department/office-location
+	// options are collected from the same resolved principals, so the dropdowns
+	// only offer groups that actually have activity in the range.
 	seen := make(map[string]int) // canonical id -> index in opts.Users
+	depts := make(map[string]bool)
+	locs := make(map[string]bool)
 	for rows.Next() {
 		var rawID, email string
 		if err := rows.Scan(&rawID, &email); err != nil {
 			return nil, err
 		}
-		id, name, kind := s.resolveUser(rawID, email)
-		if i, ok := seen[id]; ok {
-			if opts.Users[i].Name == "" && name != "" {
-				opts.Users[i].Name, opts.Users[i].Kind = name, kind
+		idt := s.resolveIdentity(rawID, email)
+		if idt.Department != "" {
+			depts[idt.Department] = true
+		}
+		if idt.Location != "" {
+			locs[idt.Location] = true
+		}
+		if i, ok := seen[idt.ID]; ok {
+			if opts.Users[i].Name == "" && idt.Name != "" {
+				opts.Users[i].Name, opts.Users[i].Kind = idt.Name, string(idt.Kind)
 			}
 			continue
 		}
-		seen[id] = len(opts.Users)
-		opts.Users = append(opts.Users, FilterUser{ID: id, Name: name, Kind: kind})
+		seen[idt.ID] = len(opts.Users)
+		opts.Users = append(opts.Users, FilterUser{ID: idt.ID, Name: idt.Name, Kind: string(idt.Kind)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	opts.Departments = sortedKeys(depts)
+	opts.Locations = sortedKeys(locs)
 	label := func(u FilterUser) string {
 		if u.Name != "" {
 			return u.Name
@@ -120,4 +136,17 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 		return strings.ToLower(label(opts.Users[i])) < strings.ToLower(label(opts.Users[j]))
 	})
 	return opts, nil
+}
+
+// sortedKeys returns the set's keys sorted case-insensitively, for stable
+// filter-dropdown ordering.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i]) < strings.ToLower(out[j])
+	})
+	return out
 }

@@ -88,6 +88,15 @@ const appColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
+const departmentColumns: ColumnDef<CostRow, any>[] = [
+  {
+    accessorKey: 'department',
+    header: 'Department',
+    cell: (c) => <span className="text-gray-900 dark:text-gray-100">{c.getValue() || 'Unknown'}</span>,
+  },
+  ...costCols(),
+]
+
 // SegToggle is a compact segmented control for switching a chart dimension.
 function SegToggle<T extends string>({
   value,
@@ -307,6 +316,7 @@ export function Finops() {
   const [trendMetric, setTrendMetric] = useState<'cost' | 'tokens'>('cost')
   const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
   const byApp = useApi<CostRow[]>('/api/genai/costs', { group_by: 'app' })
+  const byDept = useApi<CostRow[]>('/api/genai/costs', { group_by: 'department' })
   const byModel = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
   const byModelPrev = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model', ...prev })
   const budget = useApi<BudgetResponse>('/api/finops/budget')
@@ -314,6 +324,9 @@ export function Finops() {
   const tokenTrend = useApi<TimeseriesPoint[]>('/api/finops/token-timeseries', { by: spendBy })
 
   const models = byModel.data ?? []
+  // Only surface the department view when the directory actually attributes
+  // departments (otherwise every row folds into the "Unknown" bucket).
+  const hasDepartments = (byDept.data ?? []).some((r) => !!r.department)
   const total = models.reduce((acc, r) => acc + r.total_cost, 0)
   const totalPrev = (byModelPrev.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
@@ -415,6 +428,16 @@ export function Finops() {
           <DataTable data={byApp.data!} columns={appColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
         )}
       </Panel>
+
+      {hasDepartments && (
+        <Panel title="Cost per Department" sub="Priced token usage grouped by the directory department">
+          {byDept.loading ? (
+            <PanelMessage>Loading…</PanelMessage>
+          ) : (
+            <DataTable data={byDept.data!} columns={departmentColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+          )}
+        </Panel>
+      )}
 
       <Panel
         title="Cost per User"

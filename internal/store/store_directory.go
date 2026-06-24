@@ -17,23 +17,33 @@ func (s *Store) SetDirectory(d directory.Directory) { s.dir = d }
 // user and the fold is over the small distinct-user set.
 func (s *Store) resolving() bool { return s.dir != nil }
 
+// resolveIdentity maps a raw OTel principal to its canonical Entra identity. It
+// tries user.id first (which may itself be an object id, email or username),
+// then falls back to user.email. When nothing matches (or no directory is
+// configured) it returns an Identity carrying just the raw id, so callers still
+// group and label by the raw id.
+func (s *Store) resolveIdentity(rawID, rawEmail string) directory.Identity {
+	if s.dir != nil {
+		if idt, ok := s.dir.Lookup(rawID); ok {
+			return idt
+		}
+		if rawEmail != "" {
+			if idt, ok := s.dir.Lookup(rawEmail); ok {
+				return idt
+			}
+		}
+	}
+	return directory.Identity{ID: rawID}
+}
+
 // resolveUser maps a raw OTel principal to the canonical Entra identity: its
 // object id, display name and kind. It tries user.id first (which may itself be
 // an object id, email or username), then falls back to user.email. When nothing
 // matches (or no directory is configured) it returns the raw id with empty
 // name/kind, so callers still group and label by the raw id.
 func (s *Store) resolveUser(rawID, rawEmail string) (id, name, kind string) {
-	if s.dir != nil {
-		if idt, ok := s.dir.Lookup(rawID); ok {
-			return idt.ID, idt.Name, string(idt.Kind)
-		}
-		if rawEmail != "" {
-			if idt, ok := s.dir.Lookup(rawEmail); ok {
-				return idt.ID, idt.Name, string(idt.Kind)
-			}
-		}
-	}
-	return rawID, "", ""
+	idt := s.resolveIdentity(rawID, rawEmail)
+	return idt.ID, idt.Name, string(idt.Kind)
 }
 
 // resolveName is resolveUser for display-only callers (traces, anomalies) that
@@ -74,19 +84,26 @@ func (f *idFolder[T]) rows() []T {
 	return out
 }
 
-// ExpandUserFilter rewrites a user filter so that selecting a canonical
-// (resolved) id matches all of that principal's raw OTel ids. When the directory
-// can enumerate the aliases it sets Filter.Users (a case-insensitive IN match);
-// otherwise the raw Filter.User equality is kept unchanged. Callers build the
-// Filter from the request and pass it through here before querying.
+// ExpandUserFilter rewrites the directory-backed filters (user, department,
+// office location) into the raw-id sets that match telemetry rows. Selecting a
+// canonical user expands to all of that principal's raw OTel ids (Filter.Users);
+// selecting a department or office location expands to every member's ids
+// (Filter.DeptUsers / Filter.LocUsers). All matching is case-insensitive IN.
+// Callers build the Filter from the request and pass it through here before
+// querying.
 func (s *Store) ExpandUserFilter(f Filter) Filter {
-	if f.User == "" {
-		return f
-	}
-	if a, ok := s.dir.(directory.Aliaser); ok {
+	if a, ok := s.dir.(directory.Aliaser); ok && f.User != "" {
 		if aliases := a.Aliases(f.User); len(aliases) > 0 {
 			f.Users = aliases
 			f.User = ""
+		}
+	}
+	if g, ok := s.dir.(directory.GroupResolver); ok {
+		if f.Department != "" {
+			f.DeptUsers = g.Members(directory.AttrDepartment, f.Department)
+		}
+		if f.Location != "" {
+			f.LocUsers = g.Members(directory.AttrLocation, f.Location)
 		}
 	}
 	return f

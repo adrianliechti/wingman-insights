@@ -35,7 +35,7 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 			if r.URL.Query().Get("page") == "2" {
 				json.NewEncoder(w).Encode(map[string]any{
 					"value": []map[string]any{
-						{"id": "u2-objectid", "displayName": "Bob Builder", "userPrincipalName": "bob@contoso.com"},
+						{"id": "u2-objectid", "displayName": "Bob Builder", "userPrincipalName": "bob@contoso.com", "department": "Engineering", "officeLocation": "London"},
 					},
 				})
 				return
@@ -48,6 +48,8 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 					"mail":              "alice.example@contoso.com",
 					"otherMails":        []string{"alice.old@legacy.example"},
 					"proxyAddresses":    []string{"SMTP:alice.example@contoso.com", "smtp:a.example@contoso.com"},
+					"department":        "Engineering",
+					"officeLocation":    "Zurich",
 				}},
 				// Absolute next-page link, as Graph returns it.
 				"@odata.nextLink": "http://" + r.Host + "/v1.0/users?page=2",
@@ -169,6 +171,61 @@ func TestAliases(t *testing.T) {
 
 	if d.Aliases("nobody@nowhere") != nil {
 		t.Error("Aliases of unknown id should be nil")
+	}
+}
+
+func TestIdentityAttributes(t *testing.T) {
+	var tokenCalls atomic.Int32
+	srv := fakeGraph(t, &tokenCalls)
+	defer srv.Close()
+
+	d := testDirectory(t, srv)
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	got, ok := d.Lookup("alice@contoso.com")
+	if !ok {
+		t.Fatal("Lookup(alice) miss")
+	}
+	if got.Department != "Engineering" || got.Location != "Zurich" {
+		t.Errorf("Alice attrs = %q/%q, want Engineering/Zurich", got.Department, got.Location)
+	}
+}
+
+func TestMembers(t *testing.T) {
+	var tokenCalls atomic.Int32
+	srv := fakeGraph(t, &tokenCalls)
+	defer srv.Close()
+
+	d := testDirectory(t, srv)
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// Both users are in Engineering, so the department expands to every alias of
+	// both — the set a department filter would IN-match against telemetry.
+	got := append([]string(nil), d.Members(directory.AttrDepartment, "engineering")...)
+	sort.Strings(got)
+	want := []string{
+		"a.example@contoso.com", "alice.example@contoso.com",
+		"alice.old@legacy.example", "alice@contoso.com",
+		"bob@contoso.com", "u1-objectid", "u2-objectid",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Members(department, engineering) = %v, want %v", got, want)
+	}
+
+	// Office location splits the two users apart: only Bob is in London, so it
+	// expands to exactly Bob's aliases.
+	loc := append([]string(nil), d.Members(directory.AttrLocation, "London")...)
+	sort.Strings(loc)
+	if strings.Join(loc, ",") != "bob@contoso.com,u2-objectid" {
+		t.Errorf("Members(officeLocation, London) = %v, want [bob@contoso.com u2-objectid]", loc)
+	}
+
+	if d.Members(directory.AttrDepartment, "nonesuch") != nil {
+		t.Error("Members of unknown department should be nil")
 	}
 }
 

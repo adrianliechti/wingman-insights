@@ -87,6 +87,8 @@ type Config struct {
 type snapshot struct {
 	byKey    map[string]directory.Identity // NormalizeKey(alias) -> identity
 	byCanon  map[string][]string           // NormalizeKey(canonical id) -> its alias keys
+	byDept   map[string][]string           // NormalizeKey(department) -> member alias keys
+	byLoc    map[string][]string           // NormalizeKey(officeLocation) -> member alias keys
 	loadedAt time.Time
 }
 
@@ -109,8 +111,9 @@ type Directory struct {
 }
 
 var (
-	_ directory.Directory = (*Directory)(nil)
-	_ directory.Aliaser   = (*Directory)(nil)
+	_ directory.Directory     = (*Directory)(nil)
+	_ directory.Aliaser       = (*Directory)(nil)
+	_ directory.GroupResolver = (*Directory)(nil)
 )
 
 // New validates cfg and returns a directory. It performs no I/O: the first
@@ -226,8 +229,44 @@ func (d *Directory) Refresh(ctx context.Context) error {
 		ck := directory.NormalizeKey(idt.ID)
 		byCanon[ck] = append(byCanon[ck], key)
 	}
-	d.snap.Store(&snapshot{byKey: byKey, byCanon: byCanon, loadedAt: time.Now()})
+	// Index members by attribute (department / office location) for group
+	// filters: each user contributes all of its alias keys under its attribute
+	// value, so a department filter expands exactly like a per-user one.
+	byDept := make(map[string][]string)
+	byLoc := make(map[string][]string)
+	for canon, aliases := range byCanon {
+		idt := byKey[canon]
+		if idt.Kind != directory.KindUser {
+			continue
+		}
+		if dk := directory.NormalizeKey(idt.Department); dk != "" {
+			byDept[dk] = append(byDept[dk], aliases...)
+		}
+		if lk := directory.NormalizeKey(idt.Location); lk != "" {
+			byLoc[lk] = append(byLoc[lk], aliases...)
+		}
+	}
+	d.snap.Store(&snapshot{byKey: byKey, byCanon: byCanon, byDept: byDept, byLoc: byLoc, loadedAt: time.Now()})
 	return nil
+}
+
+// Members returns every identifier resolving to a principal whose attribute
+// equals value (case-insensitively), for group-expanded filtering. It returns
+// nil when the value is unknown, attr is unsupported, or no snapshot has loaded.
+func (d *Directory) Members(attr directory.Attribute, value string) []string {
+	s := d.snap.Load()
+	if s == nil {
+		return nil
+	}
+	key := directory.NormalizeKey(value)
+	switch attr {
+	case directory.AttrDepartment:
+		return s.byDept[key]
+	case directory.AttrLocation:
+		return s.byLoc[key]
+	default:
+		return nil
+	}
 }
 
 // accessToken returns a cached client-credentials token, fetching a fresh one
@@ -293,16 +332,23 @@ type graphUser struct {
 	OnPremisesSamAccountName string   `json:"onPremisesSamAccountName"`
 	OtherMails               []string `json:"otherMails"`
 	ProxyAddresses           []string `json:"proxyAddresses"`
+	// Department and OfficeLocation mirror the Teams contact-card fields; both
+	// are plain user attributes covered by the User.Read.All permission already
+	// in use.
+	Department     string `json:"department"`
+	OfficeLocation string `json:"officeLocation"`
 }
 
 func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]directory.Identity) error {
-	first := d.graphBase() + "/users?$select=id,displayName,userPrincipalName,mail,mailNickname,onPremisesSamAccountName,otherMails,proxyAddresses&$top=" + strconv.Itoa(pageSize)
+	first := d.graphBase() + "/users?$select=id,displayName,userPrincipalName,mail,mailNickname,onPremisesSamAccountName,otherMails,proxyAddresses,department,officeLocation&$top=" + strconv.Itoa(pageSize)
 	return fetchPaged(ctx, d, tok, first, func(users []graphUser) {
 		for _, u := range users {
 			idt := directory.Identity{
-				ID:   u.ID,
-				Name: u.DisplayName,
-				Kind: directory.KindUser,
+				ID:         u.ID,
+				Name:       u.DisplayName,
+				Kind:       directory.KindUser,
+				Department: u.Department,
+				Location:   u.OfficeLocation,
 			}
 			// Primary identifiers are authoritative and overwrite; secondary
 			// aliases (extra emails, usernames) only fill gaps so they can't

@@ -53,18 +53,11 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 				"@odata.nextLink": "http://" + r.Host + "/v1.0/users?page=2",
 			})
 
-		case strings.HasSuffix(r.URL.Path, "/applications"):
-			json.NewEncoder(w).Encode(map[string]any{
-				"value": []map[string]any{
-					{"id": "app-objectid", "appId": "app-clientid", "displayName": "Ingest Worker"},
-				},
-			})
-
 		case strings.HasSuffix(r.URL.Path, "/servicePrincipals"):
 			json.NewEncoder(w).Encode(map[string]any{
 				"value": []map[string]any{
-					// Same appId as the application above; its object id is the
-					// "oid" an app presents when calling.
+					// The SP object id is the "oid" an app presents when calling;
+					// appId is its stable client id.
 					{"id": "sp-objectid", "appId": "app-clientid", "displayName": "Ingest Worker"},
 				},
 			})
@@ -117,7 +110,6 @@ func TestLookup(t *testing.T) {
 		{"user from second page", "u2-objectid", "u2-objectid", directory.KindUser, "Bob Builder"},
 		{"user2 by upn", "bob@contoso.com", "u2-objectid", directory.KindUser, "Bob Builder"},
 		{"app by client id", "app-clientid", "app-clientid", directory.KindApplication, "Ingest Worker"},
-		{"app by object id", "app-objectid", "app-clientid", directory.KindApplication, "Ingest Worker"},
 		{"app by service principal object id", "sp-objectid", "app-clientid", directory.KindApplication, "Ingest Worker"},
 	}
 	for _, tc := range tests {
@@ -196,8 +188,6 @@ func TestRetriesOnThrottle(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"value": []map[string]any{{"id": "u1", "displayName": "Alice", "userPrincipalName": "alice@contoso.com"}},
 			})
-		case strings.HasSuffix(r.URL.Path, "/applications"):
-			json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{}})
 		case strings.HasSuffix(r.URL.Path, "/servicePrincipals"):
 			json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{}})
 		default:

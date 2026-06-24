@@ -343,9 +343,8 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 	defer rows.Close()
 
 	days := rangeDays(from, to)
-	byID := make(map[string]*UserStatRow)
+	fold := newIDFolder[UserStatRow]()
 	topTokens := make(map[string]float64) // tokens of the alias contributing TopModel
-	var order []string
 	for rows.Next() {
 		var rawID, email, topModel string
 		var requests, activeDays int64
@@ -354,12 +353,7 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 			return nil, err
 		}
 		id, name, kind := s.resolveUser(rawID, email)
-		agg, ok := byID[id]
-		if !ok {
-			agg = &UserStatRow{ID: id, Name: name, Kind: kind}
-			byID[id] = agg
-			order = append(order, id)
-		}
+		agg := fold.at(id, func() *UserStatRow { return &UserStatRow{ID: id, Name: name, Kind: kind} })
 		agg.Requests += requests
 		agg.Tokens += tokens
 		agg.Cost += cost
@@ -377,11 +371,9 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 		return nil, err
 	}
 
-	result := make([]UserStatRow, 0, len(order))
-	for _, id := range order {
-		r := byID[id]
-		r.Segment = classifySegment(r.Requests, days)
-		result = append(result, *r)
+	result := fold.rows()
+	for i := range result {
+		result[i].Segment = classifySegment(result[i].Requests, days)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Cost != result[j].Cost {
@@ -655,8 +647,7 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 	}
 	defer rows.Close()
 
-	byID := make(map[string]*BurstRow)
-	var order []string
+	fold := newIDFolder[BurstRow]()
 	for rows.Next() {
 		var rawID, email string
 		var peak, total, minutes int64
@@ -664,12 +655,7 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 			return nil, err
 		}
 		id, name, kind := s.resolveUser(rawID, email)
-		agg, ok := byID[id]
-		if !ok {
-			agg = &BurstRow{ID: id, Name: name, Kind: kind}
-			byID[id] = agg
-			order = append(order, id)
-		}
+		agg := fold.at(id, func() *BurstRow { return &BurstRow{ID: id, Name: name, Kind: kind} })
 		// peak_rpm and active_minutes can't be merged exactly across aliases
 		// post-aggregation: take the worst peak and the max active-minute count.
 		if peak > agg.PeakRPM {
@@ -684,10 +670,7 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 		return nil, err
 	}
 
-	result := make([]BurstRow, 0, len(order))
-	for _, id := range order {
-		result = append(result, *byID[id])
-	}
+	result := fold.rows()
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].PeakRPM != result[j].PeakRPM {
 			return result[i].PeakRPM > result[j].PeakRPM

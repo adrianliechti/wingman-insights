@@ -230,8 +230,7 @@ func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f
 	defer rows.Close()
 
 	// Fold raw ids that resolve to the same identity, keeping per-(model, token).
-	byKey := make(map[string]*UserTokenSummaryRow)
-	var order []string
+	fold := newIDFolder[UserTokenSummaryRow]()
 	for rows.Next() {
 		var rawID, email, model, tt string
 		var tokens float64
@@ -240,23 +239,16 @@ func (s *Store) QueryUserTokenSummary(ctx context.Context, from, to time.Time, f
 			return nil, err
 		}
 		id, name, kind := s.resolveUser(rawID, email)
-		key := id + "\x00" + model + "\x00" + tt
-		agg, ok := byKey[key]
-		if !ok {
-			agg = &UserTokenSummaryRow{ID: id, Name: name, Kind: kind, RequestModel: model, TokenType: tt}
-			byKey[key] = agg
-			order = append(order, key)
-		}
+		agg := fold.at(id+"\x00"+model+"\x00"+tt, func() *UserTokenSummaryRow {
+			return &UserTokenSummaryRow{ID: id, Name: name, Kind: kind, RequestModel: model, TokenType: tt}
+		})
 		agg.TotalTokens += tokens
 		agg.TotalRequests += reqs
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	result := make([]UserTokenSummaryRow, 0, len(order))
-	for _, k := range order {
-		result = append(result, *byKey[k])
-	}
+	result := fold.rows()
 	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
 	return result, nil
 }
@@ -304,8 +296,7 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 	}
 	defer rows.Close()
 
-	byID := make(map[string]*TopConsumerRow)
-	var order []string
+	fold := newIDFolder[TopConsumerRow]()
 	for rows.Next() {
 		var rawID, email string
 		var reqs int64
@@ -314,12 +305,7 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 			return nil, err
 		}
 		id, name, kind := s.resolveUser(rawID, email)
-		agg, ok := byID[id]
-		if !ok {
-			agg = &TopConsumerRow{ID: id, Name: name, Kind: kind}
-			byID[id] = agg
-			order = append(order, id)
-		}
+		agg := fold.at(id, func() *TopConsumerRow { return &TopConsumerRow{ID: id, Name: name, Kind: kind} })
 		agg.TotalRequests += reqs
 		agg.TotalTokens += tokens
 	}
@@ -328,13 +314,11 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 	}
 
 	mins := to.Sub(from).Minutes()
-	result := make([]TopConsumerRow, 0, len(order))
-	for _, id := range order {
-		r := byID[id]
+	result := fold.rows()
+	for i := range result {
 		if mins > 0 {
-			r.TPM = r.TotalTokens / mins
+			result[i].TPM = result[i].TotalTokens / mins
 		}
-		result = append(result, *r)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
 	if len(result) > limit {

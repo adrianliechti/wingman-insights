@@ -277,7 +277,7 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 	for _, a := range traces {
 		a.summary.Name = a.rootName
 		a.summary.Duration = a.endEpoch - a.startEpoch
-		_, a.summary.UserName, a.summary.UserKind = s.resolveUser(a.summary.UserID, a.summary.UserEmail)
+		a.summary.UserName, a.summary.UserKind = s.resolveName(a.summary.UserID, a.summary.UserEmail)
 		result = append(result, a.summary)
 	}
 	sortTraceSummaries(result)
@@ -318,7 +318,7 @@ func (s *Store) QueryTrace(ctx context.Context, traceID string) ([]SpanRow, erro
 			}
 		}
 		r.price()
-		_, r.UserName, r.UserKind = s.resolveUser(r.UserID, r.UserEmail)
+		r.UserName, r.UserKind = s.resolveName(r.UserID, r.UserEmail)
 		result = append(result, r)
 	}
 	return result, rows.Err()

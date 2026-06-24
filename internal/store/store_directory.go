@@ -36,6 +36,44 @@ func (s *Store) resolveUser(rawID, rawEmail string) (id, name, kind string) {
 	return rawID, "", ""
 }
 
+// resolveName is resolveUser for display-only callers (traces, anomalies) that
+// keep the raw id/group_key and only need a name and kind to show alongside it.
+func (s *Store) resolveName(rawID, rawEmail string) (name, kind string) {
+	_, name, kind = s.resolveUser(rawID, rawEmail)
+	return name, kind
+}
+
+// idFolder accumulates rows keyed by resolved identity id, preserving first-seen
+// order. It is the shared scaffold for the per-user leaderboards (top consumers,
+// user stats, burst, token summary), which group raw ids into one identity in Go
+// because the directory isn't available to SQL.
+type idFolder[T any] struct {
+	byKey map[string]*T
+	order []string
+}
+
+func newIDFolder[T any]() *idFolder[T] { return &idFolder[T]{byKey: map[string]*T{}} }
+
+// at returns the accumulator for key, creating it with init on first use.
+func (f *idFolder[T]) at(key string, init func() *T) *T {
+	a, ok := f.byKey[key]
+	if !ok {
+		a = init()
+		f.byKey[key] = a
+		f.order = append(f.order, key)
+	}
+	return a
+}
+
+// rows returns the accumulated values in first-seen order.
+func (f *idFolder[T]) rows() []T {
+	out := make([]T, 0, len(f.order))
+	for _, k := range f.order {
+		out = append(out, *f.byKey[k])
+	}
+	return out
+}
+
 // ExpandUserFilter rewrites a user filter so that selecting a canonical
 // (resolved) id matches all of that principal's raw OTel ids. When the directory
 // can enumerate the aliases it sets Filter.Users (a case-insensitive IN match);

@@ -149,4 +149,23 @@ func TestDirectoryMapping(t *testing.T) {
 	if traces[0].UserName != "Alice" || traces[0].UserKind != "user" {
 		t.Errorf("trace user = name:%q kind:%q, want Alice/user", traces[0].UserName, traces[0].UserKind)
 	}
+
+	// 5) User stats fold the two Alice ids (the span above via email + this one
+	//    by id) into a single identity row.
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status, user_id, user_email, input_tokens, output_tokens, cost)
+		VALUES (?, ?, 1.0, 'trace-2', 'span-2', 'root', 'ok', 'u-guid-1', '', 30, 15, 0.5)`,
+		ts, ts); err != nil {
+		t.Fatalf("insert span 2: %v", err)
+	}
+	stats, err := s.QueryUserStats(ctx, from, to, 0, Filter{})
+	if err != nil {
+		t.Fatalf("user stats: %v", err)
+	}
+	if len(stats) != 1 || stats[0].ID != "alice-obj" {
+		t.Fatalf("user stats = %+v, want one folded Alice row", stats)
+	}
+	if stats[0].Name != "Alice" || stats[0].Requests != 2 || stats[0].Tokens != 60 {
+		t.Errorf("Alice stats = %+v, want name=Alice requests=2 tokens=60", stats[0])
+	}
 }

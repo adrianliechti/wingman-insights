@@ -217,9 +217,6 @@ func (d *Directory) Refresh(ctx context.Context) error {
 	if err := d.loadUsers(ctx, tok, byKey); err != nil {
 		return fmt.Errorf("list users: %w", err)
 	}
-	if err := d.loadApps(ctx, tok, byKey); err != nil {
-		return fmt.Errorf("list applications: %w", err)
-	}
 	if err := d.loadServicePrincipals(ctx, tok, byKey); err != nil {
 		return fmt.Errorf("list service principals: %w", err)
 	}
@@ -325,34 +322,24 @@ func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]di
 	})
 }
 
-// graphApp mirrors the $select-ed fields of a Graph application object.
-type graphApp struct {
-	ID          string `json:"id"`    // directory object id
+// graphServicePrincipal mirrors the $select-ed fields of a Graph service
+// principal — the runtime identity of an application in the tenant.
+type graphServicePrincipal struct {
+	ID          string `json:"id"`    // service principal object id (a token's "oid")
 	AppID       string `json:"appId"` // client id, the stable public identifier
 	DisplayName string `json:"displayName"`
 }
 
-func (d *Directory) loadApps(ctx context.Context, tok string, dst map[string]directory.Identity) error {
-	first := d.graphBase() + "/applications?$select=id,appId,displayName&$top=" + strconv.Itoa(pageSize)
-	return fetchPaged(ctx, d, tok, first, func(apps []graphApp) {
-		for _, a := range apps {
-			idt := directory.Identity{
-				ID:   a.AppID,
-				Name: a.DisplayName,
-				Kind: directory.KindApplication,
-			}
-			// An app registration may surface in telemetry as its client id or
-			// its application object id; index both. Its runtime calls, though,
-			// carry the service principal object id — see loadServicePrincipals.
-			put(dst, a.AppID, idt, true)
-			put(dst, a.ID, idt, true)
-		}
-	})
-}
-
+// loadServicePrincipals indexes service principals, the runtime identity an
+// application presents when calling: a client-credentials token carries the SP
+// object id as "oid" and the appId as "appid". It is the sole source for apps —
+// /applications is intentionally not loaded, because an app registration's own
+// object id never appears in a token, and a registration with no service
+// principal can't authenticate (so it never appears in telemetry). SPs also
+// cover enterprise apps and managed identities that have no app registration.
 func (d *Directory) loadServicePrincipals(ctx context.Context, tok string, dst map[string]directory.Identity) error {
 	first := d.graphBase() + "/servicePrincipals?$select=id,appId,displayName&$top=" + strconv.Itoa(pageSize)
-	return fetchPaged(ctx, d, tok, first, func(sps []graphApp) {
+	return fetchPaged(ctx, d, tok, first, func(sps []graphServicePrincipal) {
 		for _, sp := range sps {
 			id := sp.AppID // the stable, cross-tenant app identifier
 			if id == "" {
@@ -363,13 +350,10 @@ func (d *Directory) loadServicePrincipals(ctx context.Context, tok string, dst m
 				Name: sp.DisplayName,
 				Kind: directory.KindApplication,
 			}
-			// The service principal object id is the token "oid" an app presents
-			// when calling, so this is what resolves an app GUID in telemetry.
-			// appId is shared with the application registration, collapsing both
-			// to one identity; SPs also cover enterprise apps and managed
-			// identities that have no application registration in the tenant.
+			// Resolve an app whether telemetry carries the SP object id or the
+			// appId; both collapse to one identity keyed by appId.
 			put(dst, sp.ID, idt, true)
-			put(dst, sp.AppID, idt, false) // don't clobber the app registration's entry
+			put(dst, sp.AppID, idt, true)
 		}
 	})
 }

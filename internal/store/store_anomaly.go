@@ -107,7 +107,7 @@ func (s *Store) QueryTokenAnomalies(ctx context.Context, from, to time.Time, int
 			return nil, err
 		}
 		if groupBy == "user" {
-			_, r.Name, r.Kind = s.resolveUser(r.GroupKey, "")
+			r.Name, r.Kind = s.resolveName(r.GroupKey, "")
 		}
 		result = append(result, r)
 	}
@@ -229,7 +229,7 @@ func (s *Store) QueryCostAnomalies(ctx context.Context, from, to time.Time, inte
 	}
 	if groupBy == "user" {
 		for i := range pts {
-			_, pts[i].Name, pts[i].Kind = s.resolveUser(pts[i].GroupKey, "")
+			pts[i].Name, pts[i].Kind = s.resolveName(pts[i].GroupKey, "")
 		}
 	}
 	return pts, nil
@@ -274,7 +274,7 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 				Metric: metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
 			}
 			if dim == "user" {
-				_, row.Name, row.Kind = s.resolveUser(p.GroupKey, "")
+				row.Name, row.Kind = s.resolveName(p.GroupKey, "")
 			}
 			feed = append(feed, row)
 		}

@@ -557,7 +557,7 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(user_id, ''), COALESCE(request_model, ''),
+		SELECT COALESCE(user_id, ''), COALESCE(MAX(user_email), ''), COALESCE(request_model, ''),
 			COALESCE(SUM(input_tokens + output_tokens), 0)
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0)
@@ -574,13 +574,14 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 	type key struct{ seg, model string }
 	agg := map[key]float64{}
 	for rows.Next() {
-		var user, model string
+		var user, email, model string
 		var tokens float64
-		if err := rows.Scan(&user, &model, &tokens); err != nil {
+		if err := rows.Scan(&user, &email, &model, &tokens); err != nil {
 			return nil, err
 		}
-		// Resolve the raw id to the same canonical id QueryUserStats keyed on.
-		id, _, _ := s.resolveUser(user, "")
+		// Resolve the raw id to the same canonical id QueryUserStats keyed on
+		// (id-then-email, matching resolveUser).
+		id, _, _ := s.resolveUser(user, email)
 		seg, ok := segOf[id]
 		if !ok {
 			continue

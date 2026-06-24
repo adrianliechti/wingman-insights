@@ -25,14 +25,9 @@ func (f Filter) genaiClause() (string, []any) {
 		clause += " AND service_name = ?"
 		args = append(args, f.Service)
 	}
-	if len(f.Users) > 0 {
-		clause += " AND lower(enduser_id) IN (" + inPlaceholders(len(f.Users)) + ")"
-		for _, u := range f.Users {
-			args = append(args, u)
-		}
-	} else if f.User != "" {
-		clause += " AND enduser_id = ?"
-		args = append(args, f.User)
+	if c, a := userClause("enduser_id", "enduser_email", f); c != "" {
+		clause += c
+		args = append(args, a...)
 	}
 	if f.Provider != "" {
 		clause += " AND provider_name = ?"
@@ -54,14 +49,9 @@ func (f Filter) spansClause() (string, []any) {
 		clause += " AND service_name = ?"
 		args = append(args, f.Service)
 	}
-	if len(f.Users) > 0 {
-		clause += " AND lower(user_id) IN (" + inPlaceholders(len(f.Users)) + ")"
-		for _, u := range f.Users {
-			args = append(args, u)
-		}
-	} else if f.User != "" {
-		clause += " AND user_id = ?"
-		args = append(args, f.User)
+	if c, a := userClause("user_id", "user_email", f); c != "" {
+		clause += c
+		args = append(args, a...)
 	}
 	if f.Provider != "" {
 		clause += " AND provider_name = ?"
@@ -72,6 +62,29 @@ func (f Filter) spansClause() (string, []any) {
 		args = append(args, a...)
 	}
 	return clause, args
+}
+
+// userClause matches the user filter against a principal's id and email columns.
+// A resolved selection (Users, the alias-expanded form) matches either column
+// case-insensitively — mirroring resolveUser's id-then-email lookup, so a row
+// attributed via its email is still caught. A raw selection (User) is an exact
+// id match. Returns ("", nil) when no user filter is set.
+func userClause(idCol, emailCol string, f Filter) (string, []any) {
+	if len(f.Users) > 0 {
+		ph := inPlaceholders(len(f.Users))
+		args := make([]any, 0, len(f.Users)*2)
+		for _, u := range f.Users { // id IN (...)
+			args = append(args, u)
+		}
+		for _, u := range f.Users { // OR email IN (...)
+			args = append(args, u)
+		}
+		return " AND (lower(" + idCol + ") IN (" + ph + ") OR lower(" + emailCol + ") IN (" + ph + "))", args
+	}
+	if f.User != "" {
+		return " AND " + idCol + " = ?", []any{f.User}
+	}
+	return "", nil
 }
 
 // httpClause returns SQL conditions for http_metrics. HTTP metrics carry no

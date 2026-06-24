@@ -60,6 +60,15 @@ func fakeGraph(t *testing.T, tokenCalls *atomic.Int32) *httptest.Server {
 				},
 			})
 
+		case strings.HasSuffix(r.URL.Path, "/servicePrincipals"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]any{
+					// Same appId as the application above; its object id is the
+					// "oid" an app presents when calling.
+					{"id": "sp-objectid", "appId": "app-clientid", "displayName": "Ingest Worker"},
+				},
+			})
+
 		default:
 			http.NotFound(w, r)
 		}
@@ -109,6 +118,7 @@ func TestLookup(t *testing.T) {
 		{"user2 by upn", "bob@contoso.com", "u2-objectid", directory.KindUser, "Bob Builder"},
 		{"app by client id", "app-clientid", "app-clientid", directory.KindApplication, "Ingest Worker"},
 		{"app by object id", "app-objectid", "app-clientid", directory.KindApplication, "Ingest Worker"},
+		{"app by service principal object id", "sp-objectid", "app-clientid", directory.KindApplication, "Ingest Worker"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,6 +197,8 @@ func TestRetriesOnThrottle(t *testing.T) {
 				"value": []map[string]any{{"id": "u1", "displayName": "Alice", "userPrincipalName": "alice@contoso.com"}},
 			})
 		case strings.HasSuffix(r.URL.Path, "/applications"):
+			json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{}})
+		case strings.HasSuffix(r.URL.Path, "/servicePrincipals"):
 			json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{}})
 		default:
 			http.NotFound(w, r)

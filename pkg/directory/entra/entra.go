@@ -220,6 +220,9 @@ func (d *Directory) Refresh(ctx context.Context) error {
 	if err := d.loadApps(ctx, tok, byKey); err != nil {
 		return fmt.Errorf("list applications: %w", err)
 	}
+	if err := d.loadServicePrincipals(ctx, tok, byKey); err != nil {
+		return fmt.Errorf("list service principals: %w", err)
+	}
 	// Build the reverse index (canonical id -> its alias keys) for Aliases.
 	byCanon := make(map[string][]string, len(byKey))
 	for key, idt := range byKey {
@@ -338,10 +341,35 @@ func (d *Directory) loadApps(ctx context.Context, tok string, dst map[string]dir
 				Name: a.DisplayName,
 				Kind: directory.KindApplication,
 			}
-			// An app may surface in telemetry as either its client id or its
-			// object id; index both.
+			// An app registration may surface in telemetry as its client id or
+			// its application object id; index both. Its runtime calls, though,
+			// carry the service principal object id — see loadServicePrincipals.
 			put(dst, a.AppID, idt, true)
 			put(dst, a.ID, idt, true)
+		}
+	})
+}
+
+func (d *Directory) loadServicePrincipals(ctx context.Context, tok string, dst map[string]directory.Identity) error {
+	first := d.graphBase() + "/servicePrincipals?$select=id,appId,displayName&$top=" + strconv.Itoa(pageSize)
+	return fetchPaged(ctx, d, tok, first, func(sps []graphApp) {
+		for _, sp := range sps {
+			id := sp.AppID // the stable, cross-tenant app identifier
+			if id == "" {
+				id = sp.ID
+			}
+			idt := directory.Identity{
+				ID:   id,
+				Name: sp.DisplayName,
+				Kind: directory.KindApplication,
+			}
+			// The service principal object id is the token "oid" an app presents
+			// when calling, so this is what resolves an app GUID in telemetry.
+			// appId is shared with the application registration, collapsing both
+			// to one identity; SPs also cover enterprise apps and managed
+			// identities that have no application registration in the tenant.
+			put(dst, sp.ID, idt, true)
+			put(dst, sp.AppID, idt, false) // don't clobber the app registration's entry
 		}
 	})
 }

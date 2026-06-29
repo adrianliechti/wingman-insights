@@ -75,7 +75,8 @@ export interface CostRow {
   kind?: string
   department?: string
   location?: string
-  service_name?: string
+  app_id?: string
+  app_name?: string
   provider_name?: string
   request_model?: string
   input_tokens: number
@@ -120,7 +121,7 @@ export interface FilterUser {
 }
 
 export interface FilterOptions {
-  services: string[]
+  apps: FilterUser[]
   users: FilterUser[]
   departments: string[]
   locations: string[]
@@ -137,7 +138,7 @@ export interface SpanRow {
   name: string
   kind?: string
   status?: string
-  service_name?: string
+  app_id?: string
   operation_name?: string
   provider_name?: string
   request_model?: string
@@ -165,7 +166,7 @@ export interface TraceSummary {
   name: string
   time: string
   duration: number
-  service_name?: string
+  app_id?: string
   user_id?: string
   user_email?: string
   user_name?: string
@@ -251,7 +252,8 @@ export interface CohortCell {
 }
 
 export interface AppAdoptionRow {
-  service_name: string
+  app_id: string
+  app_name?: string
   users: number
   requests: number
   tokens: number

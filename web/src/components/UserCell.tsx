@@ -26,6 +26,12 @@ export function UserCell({ r }: { r: UserLike }) {
   )
 }
 
+// AppCell renders a resolved application the same way UserCell renders a user:
+// display name with the raw app id as subtext, else the bare id.
+export function AppCell({ id, name }: { id?: string; name?: string }) {
+  return <UserCell r={{ id, name }} />
+}
+
 const KIND_STYLE: Record<string, string> = {
   user: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300',
   application: 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300',

@@ -91,16 +91,12 @@ func extractSpans(req *coltrace.ExportTraceServiceRequest) []store.SpanRow {
 	var rows []store.SpanRow
 
 	for _, rs := range req.ResourceSpans {
-		var serviceName string
-		if rs.Resource != nil {
-			serviceName = getStringAttr(rs.Resource.Attributes, "service.name")
-		}
 		for _, ss := range rs.ScopeSpans {
 			for _, sp := range ss.Spans {
 				if !hasGenAIAttr(sp.Attributes) {
 					continue
 				}
-				rows = append(rows, extractSpan(sp, serviceName, now))
+				rows = append(rows, extractSpan(sp, now))
 			}
 		}
 	}
@@ -116,7 +112,7 @@ func hasGenAIAttr(attrs []*common.KeyValue) bool {
 	return false
 }
 
-func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.SpanRow {
+func extractSpan(sp *tracepb.Span, now time.Time) store.SpanRow {
 	attrs := sp.Attributes
 
 	// gen_ai.conversation.id is the semconv-standard correlation id; session.id
@@ -130,6 +126,11 @@ func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.Span
 	case tracepb.Status_STATUS_CODE_ERROR:
 		status = "error"
 	}
+
+	// app_id is the calling application (service.peer.name, the client's OAuth
+	// azp/appid). No fallback to the resource service.name — that is the gateway,
+	// not the caller — so spans without an authenticated peer stay unattributed.
+	appID := getStringAttr(attrs, "service.peer.name")
 
 	start := tsFromNano(sp.StartTimeUnixNano)
 	var duration float64
@@ -147,7 +148,7 @@ func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.Span
 		Name:          sp.Name,
 		Kind:          spanKinds[sp.Kind],
 		Status:        status,
-		ServiceName:   serviceName,
+		AppID:         appID,
 		OperationName: getStringAttr(attrs, "gen_ai.operation.name"),
 		ProviderName:  getStringAttr(attrs, "gen_ai.provider.name"),
 		RequestModel:  getStringAttr(attrs, "gen_ai.request.model"),

@@ -2,17 +2,18 @@ package store
 
 import "strings"
 
-// Filter narrows queries to a single app (service), user, department, location,
+// Filter narrows queries to a single application, user, department, location,
 // provider and/or models. Zero values mean "everyone / everything".
 //
-// User is a canonical identity id (or a raw OTel id when no directory resolved
-// it); Department and Location are directory attribute values. These three are
-// matched against the directory table at query time — so a user split across
-// several OTel user.id values, or a whole department, is selected without ever
-// expanding ids in Go. DeptPrefix matches a department code hierarchically (the
-// code plus its subtree) rather than exactly.
+// App is the calling application's id (app_id / service.peer.name); it exists
+// only on spans, so it is applied by spansClause and ignored for the metrics
+// tables, which carry no application dimension. User is a canonical identity id
+// (or a raw OTel id when no directory resolved it); Department and Location are
+// directory attribute values, matched against the directory table at query time.
+// DeptPrefix matches a department code hierarchically (the code plus its
+// subtree) rather than exactly.
 type Filter struct {
-	Service    string
+	App        string
 	User       string
 	Department string
 	Location   string
@@ -28,9 +29,14 @@ func (f Filter) genaiClause() (string, []any) {
 }
 
 // spansClause is genaiClause for genai_spans (principal columns user_id /
-// user_email).
+// user_email), plus the application filter — app_id exists only on spans.
 func (f Filter) spansClause() (string, []any) {
-	return f.clause("user_id", "user_email")
+	c, a := f.clause("user_id", "user_email")
+	if f.App != "" {
+		c += " AND app_id = ?"
+		a = append(a, f.App)
+	}
+	return c, a
 }
 
 // clause builds the shared GenAI filter; idCol/emailCol name the raw principal
@@ -44,9 +50,6 @@ func (f Filter) clause(idCol, emailCol string) (string, []any) {
 		args = append(args, a...)
 	}
 
-	if f.Service != "" {
-		add(" AND service_name = ?", f.Service)
-	}
 	if c, a := userClause(idCol, emailCol, f.User); c != "" {
 		add(c, a...)
 	}
@@ -103,12 +106,9 @@ func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-// httpClause returns SQL conditions for http_metrics. HTTP metrics carry no
-// user/model attributes, so only the service filter applies.
+// httpClause returns SQL conditions for http_metrics, which carry no user,
+// model or application attributes — so no dashboard filter narrows them.
 func (f Filter) httpClause() (string, []any) {
-	if f.Service != "" {
-		return " AND service_name = ?", []any{f.Service}
-	}
 	return "", nil
 }
 

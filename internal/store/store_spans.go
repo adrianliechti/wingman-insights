@@ -22,7 +22,7 @@ type SpanRow struct {
 	Name          string    `json:"name"`
 	Kind          string    `json:"kind,omitempty"`
 	Status        string    `json:"status,omitempty"`
-	ServiceName   string    `json:"service_name,omitempty"`
+	AppID         string    `json:"app_id,omitempty"`
 	OperationName string    `json:"operation_name,omitempty"`
 	ProviderName  string    `json:"provider_name,omitempty"`
 	RequestModel  string    `json:"request_model,omitempty"`
@@ -91,7 +91,7 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_spans
 		(received_at, time, duration, trace_id, span_id, parent_span_id, name, kind,
-		 status, service_name, operation_name, provider_name, request_model,
+		 status, app_id, operation_name, provider_name, request_model,
 		 response_model, agent_name, tool_name, user_id, user_email, session_id,
 		 error_type, finish_reasons, input_tokens, output_tokens, cache_read_tokens,
 		 cache_creation_tokens, reasoning_tokens, attributes, cost, cache_savings)
@@ -106,7 +106,7 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 		cost, savings := r.costAndSavings()
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.Duration, r.TraceID, r.SpanID, r.ParentSpanID,
-			r.Name, r.Kind, r.Status, r.ServiceName, r.OperationName, r.ProviderName,
+			r.Name, r.Kind, r.Status, r.AppID, r.OperationName, r.ProviderName,
 			r.RequestModel, r.ResponseModel, r.AgentName, r.ToolName, r.UserID,
 			r.UserEmail, r.SessionID, r.ErrorType, r.FinishReasons, r.InputTokens,
 			r.OutputTokens, r.CacheRead, r.CacheCreation, r.Reasoning, string(attrs),
@@ -127,7 +127,7 @@ func sortTraceSummaries(rows []TraceSummary) {
 
 const spanColumns = `time, duration, trace_id, span_id, COALESCE(parent_span_id, ''),
 	COALESCE(name, ''), COALESCE(kind, ''), COALESCE(status, ''),
-	COALESCE(service_name, ''), COALESCE(operation_name, ''), COALESCE(provider_name, ''),
+	COALESCE(app_id, ''), COALESCE(operation_name, ''), COALESCE(provider_name, ''),
 	COALESCE(request_model, ''), COALESCE(response_model, ''), COALESCE(agent_name, ''),
 	COALESCE(tool_name, ''), COALESCE(user_id, ''), COALESCE(user_email, ''),
 	COALESCE(session_id, ''), COALESCE(error_type, ''), COALESCE(finish_reasons, ''),
@@ -140,7 +140,7 @@ type TraceSummary struct {
 	Name         string    `json:"name"`
 	Time         time.Time `json:"time"`
 	Duration     float64   `json:"duration"`
-	ServiceName  string    `json:"service_name,omitempty"`
+	AppID        string    `json:"app_id,omitempty"`
 	UserID       string    `json:"user_id,omitempty"`
 	UserEmail    string    `json:"user_email,omitempty"`
 	UserName     string    `json:"user_name,omitempty"` // resolved display name; empty if unresolved
@@ -180,7 +180,7 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 			MIN(time) as start_time,
 			MIN(epoch(time)) as start_epoch,
 			MAX(epoch(time) + duration) as end_epoch,
-			COALESCE(NULLIF(MAX(service_name), ''), '') as service_name,
+			COALESCE(NULLIF(MAX(app_id), ''), '') as app_id,
 			COALESCE(NULLIF(MAX(user_id), ''), '') as user_id,
 			COALESCE(NULLIF(MAX(user_email), ''), '') as user_email,
 			COALESCE(NULLIF(MAX(session_id), ''), '') as session_id,
@@ -220,7 +220,7 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 		var startEpoch, endEpoch float64
 		var cacheRead, cacheCreation int64
 		if err := rows.Scan(&t.TraceID, &provider, &model, &name, &hasRoot, &t.Time, &startEpoch, &endEpoch,
-			&t.ServiceName, &t.UserID, &t.UserEmail, &t.SessionID, &t.SpanCount,
+			&t.AppID, &t.UserID, &t.UserEmail, &t.SessionID, &t.SpanCount,
 			&t.InputTokens, &t.OutputTokens, &cacheRead, &cacheCreation, &t.HasError); err != nil {
 			return nil, err
 		}
@@ -265,8 +265,8 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 		if s.SessionID == "" {
 			s.SessionID = t.SessionID
 		}
-		if s.ServiceName == "" {
-			s.ServiceName = t.ServiceName
+		if s.AppID == "" {
+			s.AppID = t.AppID
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -304,7 +304,7 @@ func (s *Store) QueryTrace(ctx context.Context, traceID string) ([]SpanRow, erro
 		// example: github.com/duckdb/duckdb-go/blob/main/examples/json
 		var attrs duckdb.Composite[map[string]any]
 		err := rows.Scan(&r.Time, &r.Duration, &r.TraceID, &r.SpanID, &r.ParentSpanID,
-			&r.Name, &r.Kind, &r.Status, &r.ServiceName, &r.OperationName, &r.ProviderName,
+			&r.Name, &r.Kind, &r.Status, &r.AppID, &r.OperationName, &r.ProviderName,
 			&r.RequestModel, &r.ResponseModel, &r.AgentName, &r.ToolName, &r.UserID,
 			&r.UserEmail, &r.SessionID, &r.ErrorType, &r.FinishReasons,
 			&r.InputTokens, &r.OutputTokens, &r.CacheRead, &r.CacheCreation, &r.Reasoning, &attrs)

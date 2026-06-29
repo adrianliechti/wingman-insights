@@ -19,7 +19,7 @@ type FilterUser struct {
 // FilterOptions are the distinct values available for dashboard filtering
 // within a time range.
 type FilterOptions struct {
-	Services    []string     `json:"services"`
+	Apps        []FilterUser `json:"apps"`
 	Users       []FilterUser `json:"users"`
 	Departments []string     `json:"departments"`
 	Locations   []string     `json:"locations"`
@@ -27,11 +27,11 @@ type FilterOptions struct {
 	Models      []string     `json:"models"`
 }
 
-// QueryFilterOptions lists distinct apps (services), users, providers and
-// models seen in the given time range. Services include HTTP-only apps.
+// QueryFilterOptions lists distinct applications, users, providers and models
+// seen in the given time range.
 func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*FilterOptions, error) {
 	opts := &FilterOptions{
-		Services:    []string{},
+		Apps:        []FilterUser{},
 		Users:       []FilterUser{},
 		Departments: []string{},
 		Locations:   []string{},
@@ -53,16 +53,6 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 			*dest = append(*dest, v)
 		}
 		return rows.Err()
-	}
-
-	if err := collect(`
-		SELECT DISTINCT service_name FROM (
-			SELECT service_name FROM genai_metrics WHERE time >= ? AND time <= ?
-			UNION ALL
-			SELECT service_name FROM http_metrics WHERE time >= ? AND time <= ?
-		) WHERE service_name IS NOT NULL AND service_name != '' ORDER BY service_name
-	`, &opts.Services, from, to, from, to); err != nil {
-		return nil, err
 	}
 
 	if err := collect(`
@@ -133,6 +123,37 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 	}
 	sort.Slice(opts.Users, func(i, j int) bool {
 		return strings.ToLower(label(opts.Users[i])) < strings.ToLower(label(opts.Users[j]))
+	})
+
+	// Applications come from spans (app_id = service.peer.name); resolve each to
+	// its directory display name so the dropdown shows app names, not raw ids.
+	appRows, err := s.db.QueryContext(ctx, `
+		WITH resolved AS (
+			SELECT COALESCE(da.id, app_id, '') as id,
+				COALESCE(da.name, '') as name, COALESCE(da.kind, '') as kind
+			FROM genai_spans
+			LEFT JOIN directory da ON lower(app_id) = da.alias
+			WHERE app_id IS NOT NULL AND app_id != ''
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?
+		)
+		SELECT id, MAX(name) as name, MAX(kind) as kind FROM resolved GROUP BY id
+	`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer appRows.Close()
+	for appRows.Next() {
+		var u FilterUser
+		if err := appRows.Scan(&u.ID, &u.Name, &u.Kind); err != nil {
+			return nil, err
+		}
+		opts.Apps = append(opts.Apps, u)
+	}
+	if err := appRows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(opts.Apps, func(i, j int) bool {
+		return strings.ToLower(label(opts.Apps[i])) < strings.ToLower(label(opts.Apps[j]))
 	})
 	return opts, nil
 }

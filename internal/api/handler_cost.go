@@ -58,7 +58,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		totalCost += row.TotalCost
 		cw.Write([]string{
-			row.ID, row.Name, row.Kind, row.Department, row.Location, row.ServiceName, row.ProviderName, row.RequestModel,
+			row.ID, row.Name, row.Kind, row.Department, row.Location, row.AppID, row.ProviderName, row.RequestModel,
 			fmtTokens(row.InputTokens), fmtTokens(row.OutputTokens),
 			fmtTokens(row.CacheReadTokens), fmtTokens(row.CacheCreationTokens), fmtTokens(row.ReasoningTokens),
 			fmtCost(row.InputCost), fmtCost(row.OutputCost),

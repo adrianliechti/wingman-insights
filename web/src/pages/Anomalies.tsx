@@ -132,7 +132,7 @@ const burstColumns: ColumnDef<BurstRow, any>[] = [
 
 const DIMS = [
   { value: 'user', label: 'By user' },
-  { value: 'service', label: 'By application' },
+  { value: 'app', label: 'By application' },
   { value: 'model', label: 'By model' },
 ]
 
@@ -146,15 +146,15 @@ export function Anomalies() {
   const rows = feed.data ?? []
   const worst = rows.reduce((m, r) => Math.max(m, r.score), 0)
   const usersFlagged = new Set(rows.filter((r) => r.dimension === 'user').map((r) => r.group_key)).size
-  const appsFlagged = new Set(rows.filter((r) => r.dimension === 'service').map((r) => r.group_key)).size
+  const appsFlagged = new Set(rows.filter((r) => r.dimension === 'app').map((r) => r.group_key)).size
 
   const feedColumns: ColumnDef<AnomalyFeedRow, any>[] = [
     { accessorKey: 'bucket', header: 'When', cell: (c) => fmtTime(c.getValue()) },
-    { accessorKey: 'dimension', header: 'Dimension', cell: (c) => <Badge text={c.getValue() === 'service' ? 'application' : c.getValue()} /> },
+    { accessorKey: 'dimension', header: 'Dimension', cell: (c) => <Badge text={c.getValue() === 'app' ? 'application' : c.getValue()} /> },
     {
       accessorKey: 'group_key',
       header: 'Entity',
-      // name resolves user GUIDs to a display name; service/model keep the raw key.
+      // name resolves user GUIDs to a display name; app/model keep the raw key.
       cell: (c) => <span className="text-xs text-gray-900 dark:text-gray-100">{c.row.original.name || c.getValue() || '—'}</span>,
     },
     { accessorKey: 'metric', header: 'Metric', cell: (c) => <Badge text={c.getValue()} tone={c.getValue() === 'cost' ? 'amber' : 'indigo'} /> },
@@ -200,7 +200,7 @@ export function Anomalies() {
             { label: 'Open Anomalies', value: String(rows.length), sub: '≥ 3σ above baseline' },
             { label: 'Worst Z-Score', value: worst ? worst.toFixed(1) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
             { label: 'Users Flagged', value: String(usersFlagged), sub: 'distinct end users' },
-            { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct services' },
+            { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct applications' },
           ]}
         />
       </div>
@@ -229,7 +229,7 @@ export function Anomalies() {
       </Panel>
 
       <Panel title="Top Applications by Deviation" sub="Worst z-score per application">
-        <AnomalyLeaderboard feed={rows} dimension="service" />
+        <AnomalyLeaderboard feed={rows} dimension="app" />
       </Panel>
 
       <Panel title="Top Users by Deviation" sub="Worst z-score per user">
@@ -260,7 +260,7 @@ export function Anomalies() {
           <Heatmap
             rows={heatEntities}
             cols={heatBuckets}
-            corner={heatDim === 'service' ? 'application' : heatDim}
+            corner={heatDim === 'app' ? 'application' : heatDim}
             rowHeader={(e) => <span>{heatLabel.get(e) || e}</span>}
             colHeader={(b) => fmtTime(b).replace(',', '')}
             cell={(e, b) => {

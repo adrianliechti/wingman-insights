@@ -121,7 +121,7 @@ func (h *Handler) parseFilter(r *http.Request) store.Filter {
 	// User/department/location are matched against the directory table inside the
 	// query (see Filter.clause); nothing to expand here.
 	return store.Filter{
-		Service:    q.Get("service"),
+		App:        q.Get("app"),
 		User:       q.Get("user"),
 		Department: q.Get("department"),
 		Location:   q.Get("location"),

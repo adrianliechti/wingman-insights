@@ -40,7 +40,7 @@ type modelDef struct {
 type userDef struct {
 	id        string
 	email     string
-	service   string // primary application (service_name)
+	service   string // calling application (service.peer.name)
 	joinAt    time.Time
 	churnAt   time.Time // zero => never churns
 	intensity float64   // 0..1
@@ -416,6 +416,7 @@ func buildUserTrace(t time.Time, u userDef, svc string) []*tracepb.Span {
 		kv("user.id", u.id),
 		kv("user.email", u.email),
 		kv("gen_ai.conversation.id", sessionID),
+		kv("service.peer.name", svc),
 	}
 
 	rootStart := t
@@ -531,6 +532,7 @@ func emitBurst() *coltrace.ExportTraceServiceRequest {
 		kv("user.id", u.id),
 		kv("user.email", u.email),
 		kv("gen_ai.conversation.id", session),
+		kv("service.peer.name", svc),
 	}
 
 	cursor := burstTime

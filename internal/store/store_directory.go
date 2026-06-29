@@ -102,6 +102,21 @@ func dirResolve(table, idCol, emailCol string) resolved {
 	}
 }
 
+// dirResolveApp resolves a single application-id column — service.peer.name, an
+// Entra app registration's client (app) id — to its display name via the
+// directory table. It uses the fixed alias da so it composes alongside the user
+// join (d1/d2) in the same query. ID folds the appId and its service-principal
+// object id onto one canonical id (both alias the same directory row); Name is
+// the app's display name, empty when the id is unknown to the directory.
+func dirResolveApp(table, col string) resolved {
+	q := fmt.Sprintf("%s.%s", table, col)
+	return resolved{
+		Join: fmt.Sprintf(" LEFT JOIN directory da ON lower(%s) = da.alias", q),
+		ID:   fmt.Sprintf("COALESCE(da.id, %s, '')", q),
+		Name: "COALESCE(da.name, '')",
+	}
+}
+
 // resolveName resolves a raw OTel principal to a display name and kind for
 // display-only callers (traces, anomalies) that keep the raw id/group_key. It
 // tries user.id first (which may itself be an object id, email or username),

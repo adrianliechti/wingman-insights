@@ -168,6 +168,16 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// columnExists reports whether table has the named column, for guarding
+// one-shot in-place column migrations (DuckDB has no RENAME COLUMN IF EXISTS).
+func (s *Store) columnExists(table, column string) bool {
+	var n int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+		table, column).Scan(&n)
+	return err == nil && n > 0
+}
+
 func (s *Store) migrate() error {
 	stmts := []string{
 		"CREATE SEQUENCE IF NOT EXISTS genai_metrics_id_seq",
@@ -228,7 +238,7 @@ func (s *Store) migrate() error {
 			name          VARCHAR,
 			kind          VARCHAR,
 			status        VARCHAR,
-			service_name  VARCHAR,
+			app_id        VARCHAR,
 			operation_name VARCHAR,
 			provider_name VARCHAR,
 			request_model VARCHAR,
@@ -269,6 +279,15 @@ func (s *Store) migrate() error {
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", stmt[:40], err)
+		}
+	}
+	// genai_spans.service_name was repurposed to the calling application's identity
+	// (service.peer.name) and renamed to app_id — the gateway's resource
+	// service.name now lives only on the metrics tables. Rename in place for DBs
+	// created before the split; on fresh DBs the column is already app_id.
+	if s.columnExists("genai_spans", "service_name") {
+		if _, err := s.db.Exec("ALTER TABLE genai_spans RENAME COLUMN service_name TO app_id"); err != nil {
+			return fmt.Errorf("rename genai_spans.service_name to app_id: %w", err)
 		}
 	}
 	// Price rows inserted before the cost columns existed (NULL on every existing

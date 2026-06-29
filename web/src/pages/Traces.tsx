@@ -110,7 +110,7 @@ function SpanDetail({ span }: { span: SpanRow }) {
         <div className="mt-3 flex flex-wrap gap-1.5">
           {span.session_id && <MetaBadge label="Session" value={span.session_id} variant="strong" />}
           {(span.user_name || span.user_id) && <MetaBadge label="User" value={span.user_name || span.user_id!} variant="strong" />}
-          {span.service_name && <MetaBadge label="App" value={span.service_name} />}
+          {span.app_id && <MetaBadge label="App" value={span.app_id} />}
           {span.operation_name && <MetaBadge value={span.operation_name} />}
           <MetaBadge label="Latency" value={fmtDuration(span.duration)} />
           {span.cost > 0 && <MetaBadge label="Cost" value={fmtCost(span.cost)} />}

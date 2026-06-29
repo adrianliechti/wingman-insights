@@ -462,35 +462,39 @@ func (s *Store) QueryCohortRetention(ctx context.Context, to time.Time, weeks in
 	return result, rows.Err()
 }
 
-// AppAdoptionRow is one application's (service_name's) footprint in the range:
-// distinct users, requests, tokens and spend.
+// AppAdoptionRow is one application's footprint in the range: distinct users,
+// requests, tokens and spend.
 type AppAdoptionRow struct {
-	ServiceName string  `json:"service_name"`
-	Users       int64   `json:"users"`
-	Requests    int64   `json:"requests"`
-	Tokens      float64 `json:"tokens"`
-	Cost        float64 `json:"cost"`
+	AppID    string  `json:"app_id"`
+	AppName  string  `json:"app_name"`
+	Users    int64   `json:"users"`
+	Requests int64   `json:"requests"`
+	Tokens   float64 `json:"tokens"`
+	Cost     float64 `json:"cost"`
 }
 
 // QueryAppAdoption ranks applications by spend, with their distinct-user reach —
-// the per-application lens (service_name is the app dimension).
+// the per-application lens (app_id is the app dimension).
 func (s *Store) QueryAppAdoption(ctx context.Context, from, to time.Time, f Filter) ([]AppAdoptionRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
 	r := dirResolve("genai_spans", "user_id", "user_email")
+	a := dirResolveApp("genai_spans", "app_id")
 	// Distinct-user reach counts resolved identities, so a user under several
-	// OTel ids isn't over-counted per app.
+	// OTel ids isn't over-counted per app; the app id itself is resolved to its
+	// directory display name.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(service_name, '') as service_name,
+			`+a.ID+` as app_id,
+			`+a.Name+` as app_name,
 			COUNT(DISTINCT `+r.ID+`) as users,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
 			COALESCE(SUM(cost), 0) as cost
-		FROM genai_spans`+r.Join+`
+		FROM genai_spans`+r.Join+a.Join+`
 		WHERE (input_tokens > 0 OR output_tokens > 0)
 		  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
-		GROUP BY service_name
+		GROUP BY `+a.ID+`, `+a.Name+`
 		ORDER BY cost DESC, tokens DESC
 	`, args...)
 	if err != nil {
@@ -501,7 +505,7 @@ func (s *Store) QueryAppAdoption(ctx context.Context, from, to time.Time, f Filt
 	var result []AppAdoptionRow
 	for rows.Next() {
 		var r AppAdoptionRow
-		if err := rows.Scan(&r.ServiceName, &r.Users, &r.Requests, &r.Tokens, &r.Cost); err != nil {
+		if err := rows.Scan(&r.AppID, &r.AppName, &r.Users, &r.Requests, &r.Tokens, &r.Cost); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -619,7 +623,7 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 			FROM genai_spans`+r.Join+`
 			WHERE user_id IS NOT NULL AND user_id != ''
 			  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
-			GROUP BY principal, name, kind, minute
+			GROUP BY `+r.ID+`, `+r.Name+`, `+r.Kind+`, minute
 		)
 		SELECT principal, name, kind,
 			MAX(reqs) as peak_rpm,

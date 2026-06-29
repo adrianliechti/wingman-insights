@@ -173,7 +173,7 @@ func (h *Handler) cohortRetention(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
-// appAdoption ranks applications (service_name) by spend with their user reach.
+// appAdoption ranks applications by spend with their user reach.
 func (h *Handler) appAdoption(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryAppAdoption(r.Context(), from, to, h.parseFilter(r))

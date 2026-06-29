@@ -246,7 +246,7 @@ export function FilterBar() {
   // The options list itself must not shrink to the current selection, so this
   // request carries only the time range, not the active filters.
   const { data } = useApi<FilterOptions>('/api/filters', {
-    service: undefined,
+    app: undefined,
     user: undefined,
     department: undefined,
     location: undefined,
@@ -260,16 +260,16 @@ export function FilterBar() {
   }
 
   const hasFilter = !!(
-    search.service ||
+    search.app ||
     search.user ||
     search.department ||
     search.location ||
     search.provider ||
     (search.models?.length ?? 0) > 0
   )
-  const serviceOptions = useMemo(
-    () => (data?.services ?? []).map((s) => ({ value: s, label: s })),
-    [data?.services],
+  const appOptions = useMemo(
+    () => (data?.apps ?? []).map((a) => ({ value: a.id, label: a.name || a.id })),
+    [data?.apps],
   )
   const userOptions = useMemo(
     () => (data?.users ?? []).map((u) => ({ value: u.id, label: u.name || u.id })),
@@ -296,10 +296,10 @@ export function FilterBar() {
     <div className="flex flex-wrap items-center gap-2 py-4">
       <FilterSelect
         icon={Boxes}
-        placeholder="All services"
-        value={search.service}
-        options={serviceOptions}
-        onChange={(v) => setFilter({ service: v })}
+        placeholder="All applications"
+        value={search.app}
+        options={appOptions}
+        onChange={(v) => setFilter({ app: v })}
       />
       <FilterSelect
         icon={User}
@@ -344,7 +344,7 @@ export function FilterBar() {
         <button
           onClick={() =>
             setFilter({
-              service: undefined,
+              app: undefined,
               user: undefined,
               department: undefined,
               location: undefined,

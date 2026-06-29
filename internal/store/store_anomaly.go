@@ -28,11 +28,13 @@ const (
 	minBaseline     = 6
 )
 
+// anomalyGroupColumns are the genai_metrics group dimensions. Metrics carry no
+// application identity (that lives on spans as app_id), so there is no app
+// dimension here — see spanAnomalyGroupColumns.
 var anomalyGroupColumns = map[string]string{
-	"none":    "''",
-	"user":    "COALESCE(enduser_id, '')",
-	"service": "COALESCE(service_name, '')",
-	"model":   "COALESCE(request_model, '')",
+	"none":  "''",
+	"user":  "COALESCE(enduser_id, '')",
+	"model": "COALESCE(request_model, '')",
 }
 
 // QueryTokenAnomalies buckets input/output token consumption and scores each
@@ -126,13 +128,14 @@ type ScorePoint struct {
 	Score    float64   `json:"score"`
 }
 
-// spanAnomalyGroupColumns mirrors anomalyGroupColumns but for genai_spans, where
-// the end user lives in user_id (genai_metrics calls it enduser_id).
+// spanAnomalyGroupColumns are the genai_spans group dimensions: the end user is
+// user_id (genai_metrics calls it enduser_id), and app_id (service.peer.name)
+// gives the application dimension that metrics lack.
 var spanAnomalyGroupColumns = map[string]string{
-	"none":    "''",
-	"user":    "COALESCE(user_id, '')",
-	"service": "COALESCE(service_name, '')",
-	"model":   "COALESCE(request_model, '')",
+	"none":  "''",
+	"user":  "COALESCE(user_id, '')",
+	"app":   "COALESCE(app_id, '')",
+	"model": "COALESCE(request_model, '')",
 }
 
 // rollingScoreSQL wraps a bucketed inner SELECT (which must yield columns named
@@ -239,7 +242,7 @@ func (s *Store) QueryCostAnomalies(ctx context.Context, from, to time.Time, inte
 // feed — the cross-dimension ranking that replaces manually toggling group_by.
 type AnomalyFeedRow struct {
 	Bucket    time.Time `json:"bucket"`
-	Dimension string    `json:"dimension"` // user | service | model
+	Dimension string    `json:"dimension"` // user | app | model
 	GroupKey  string    `json:"group_key"`
 	Name      string    `json:"name,omitempty"` // resolved when dimension=user; else empty
 	Kind      string    `json:"kind,omitempty"`
@@ -249,10 +252,11 @@ type AnomalyFeedRow struct {
 	Score     float64   `json:"score"`
 }
 
-// QueryAnomalyFeed scores spend and token consumption across the user, service
-// and model dimensions and returns the top `limit` flagged buckets ranked by
-// z-score. Cost comes from genai_spans, tokens from genai_metrics, so the two are
-// scored separately and merged in Go.
+// QueryAnomalyFeed scores spend and token consumption across the user, app and
+// model dimensions and returns the top `limit` flagged buckets ranked by
+// z-score. Cost comes from genai_spans; tokens from genai_metrics for user/model,
+// but from genai_spans for app (the app dimension exists only on spans). The
+// series are scored separately and merged in Go.
 func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interval string, minScore float64, limit int, f Filter) ([]AnomalyFeedRow, error) {
 	if minScore <= 0 {
 		minScore = 3
@@ -280,7 +284,7 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 		}
 	}
 
-	for _, dim := range []string{"user", "service", "model"} {
+	for _, dim := range []string{"user", "app", "model"} {
 		cost, err := s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
 			"(input_tokens > 0 OR output_tokens > 0)", spanAnomalyGroupColumns[dim], costClause, costArgs, from, to, interval, minScore)
 		if err != nil {
@@ -288,8 +292,16 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 		}
 		add(dim, "cost", cost)
 
-		tok, err := s.scoredSeries(ctx, "genai_metrics", "SUM(sum)",
-			"metric_name = 'gen_ai.client.token.usage' AND token_type IN ('input', 'output')", anomalyGroupColumns[dim], tokClause, tokArgs, from, to, interval, minScore)
+		var tok []ScorePoint
+		if dim == "app" {
+			// Metrics carry no app_id, so app token anomalies are span-sourced
+			// (matching app cost above).
+			tok, err = s.scoredSeries(ctx, "genai_spans", "SUM(input_tokens + output_tokens)",
+				"(input_tokens > 0 OR output_tokens > 0)", spanAnomalyGroupColumns["app"], costClause, costArgs, from, to, interval, minScore)
+		} else {
+			tok, err = s.scoredSeries(ctx, "genai_metrics", "SUM(sum)",
+				"metric_name = 'gen_ai.client.token.usage' AND token_type IN ('input', 'output')", anomalyGroupColumns[dim], tokClause, tokArgs, from, to, interval, minScore)
+		}
 		if err != nil {
 			return nil, err
 		}

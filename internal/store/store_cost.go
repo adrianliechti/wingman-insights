@@ -22,7 +22,8 @@ type CostRow struct {
 	Kind         string `json:"kind,omitempty"`       // user | application; empty if unresolved
 	Department   string `json:"department,omitempty"` // resolved department; empty if unresolved/unset
 	Location     string `json:"location,omitempty"`   // resolved office location; empty if unresolved/unset
-	ServiceName  string `json:"service_name,omitempty"`
+	AppID        string `json:"app_id,omitempty"`
+	AppName      string `json:"app_name,omitempty"` // resolved app display name; empty if unresolved
 	ProviderName string `json:"provider_name,omitempty"`
 	RequestModel string `json:"request_model,omitempty"`
 
@@ -65,18 +66,20 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 				COALESCE(d1.kind, d2.kind, '') as kind,
 				COALESCE(d1.department, d2.department, '') as department,
 				COALESCE(d1.location, d2.location, '') as location,
-				COALESCE(s.service_name, '') as service_name,
+				COALESCE(da.id, s.app_id, '') as app_id,
+				COALESCE(da.name, '') as app_name,
 				COALESCE(s.provider_name, '') as provider_name,
 				COALESCE(s.request_model, '') as request_model,
 				s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_creation_tokens, s.reasoning_tokens
 			FROM genai_spans s
 			LEFT JOIN directory d1 ON lower(s.user_id) = d1.alias
 			LEFT JOIN directory d2 ON lower(s.user_email) = d2.alias
+			LEFT JOIN directory da ON lower(s.app_id) = da.alias
 			WHERE (s.input_tokens > 0 OR s.output_tokens > 0) AND s.time >= ? AND s.time <= ?`+clause+`
 		)
-		SELECT principal, name, kind, department, location, service_name, provider_name, request_model,`+spansPartCols+`
+		SELECT principal, name, kind, department, location, app_id, app_name, provider_name, request_model,`+spansPartCols+`
 		FROM resolved
-		GROUP BY principal, name, kind, department, location, service_name, provider_name, request_model
+		GROUP BY principal, name, kind, department, location, app_id, app_name, provider_name, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -85,9 +88,9 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 
 	var result []CostRow
 	for rows.Next() {
-		var id, name, kind, department, location, service, provider, model string
+		var id, name, kind, department, location, appID, appName, provider, model string
 		var p tokenParts
-		if err := rows.Scan(&id, &name, &kind, &department, &location, &service, &provider, &model,
+		if err := rows.Scan(&id, &name, &kind, &department, &location, &appID, &appName, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
@@ -98,7 +101,8 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 			Kind:                kind,
 			Department:          department,
 			Location:            location,
-			ServiceName:         service,
+			AppID:               appID,
+			AppName:             appName,
 			ProviderName:        provider,
 			RequestModel:        model,
 			InputTokens:         p.Uncached, // billed (non-cached) input
@@ -142,10 +146,11 @@ func AggregateCostsByModel(rows []CostRow) []CostRow {
 	})
 }
 
-// AggregateCostsByApp collapses a cost breakdown to one row per app (service).
+// AggregateCostsByApp collapses a cost breakdown to one row per app, keyed by
+// the resolved app identity (service.peer.name) and carrying its display name.
 func AggregateCostsByApp(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.ServiceName, CostRow{ServiceName: r.ServiceName}
+		return r.AppID, CostRow{AppID: r.AppID, AppName: r.AppName}
 	})
 }
 
@@ -198,12 +203,12 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 }
 
 // QueryCostTimeseries returns spend per time bucket, stacked by request_model
-// (groupBy "model", default) or service_name (groupBy "app"). Priced from spans
+// (groupBy "model", default) or app_id (groupBy "app"). Priced from spans
 // so cached tokens are billed at their own rate.
 func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
 	labelCol := "request_model"
 	if groupBy == "app" {
-		labelCol = "service_name"
+		labelCol = "app_id"
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
@@ -261,7 +266,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 }
 
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
-// request_model (groupBy "model", default) or service_name (groupBy "app").
+// request_model (groupBy "model", default) or app_id (groupBy "app").
 // Unlike QueryCostTimeseries this is consumption, not spend: it includes models
 // with no models.dev price, so unpriced usage stays visible. Volume is the
 // inclusive input + output total (cache and reasoning are subsets, not added
@@ -269,7 +274,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
 	labelCol := "request_model"
 	if groupBy == "app" {
-		labelCol = "service_name"
+		labelCol = "app_id"
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)

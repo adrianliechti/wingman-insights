@@ -4,7 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
-import { KindBadge, UserCell } from '../components/UserCell'
+import { AppCell, KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -81,9 +81,9 @@ const userColumns: ColumnDef<CostRow, any>[] = [
 
 const appColumns: ColumnDef<CostRow, any>[] = [
   {
-    accessorKey: 'service_name',
+    accessorKey: 'app_id',
     header: 'Application',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <AppCell id={c.row.original.app_id} name={c.row.original.app_name} />,
   },
   ...costCols(),
 ]
@@ -394,7 +394,7 @@ export function Finops() {
             {byApp.loading ? (
               <PanelMessage>Loading…</PanelMessage>
             ) : (
-              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.service_name || 'unattributed'} />
+              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
             )}
           </div>
           <div>
@@ -419,7 +419,7 @@ export function Finops() {
         )}
       </Panel>
 
-      <Panel title="Cost per Application" sub="Priced token usage attributed via service.name">
+      <Panel title="Cost per Application" sub="Priced token usage attributed via service.peer.name">
         {byApp.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (byApp.data ?? []).length === 0 ? (

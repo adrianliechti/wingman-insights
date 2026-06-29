@@ -10,7 +10,7 @@ export interface DashSearch {
   range?: RangeKey
   from?: string
   to?: string
-  service?: string
+  app?: string
   user?: string
   department?: string
   location?: string
@@ -35,7 +35,7 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     range: RANGE_KEYS.includes(range as RangeKey) ? (range as RangeKey) : undefined,
     from: str(search.from),
     to: str(search.to),
-    service: str(search.service),
+    app: str(search.app),
     user: str(search.user),
     department: str(search.department),
     location: str(search.location),
@@ -142,7 +142,7 @@ export function useApi<T>(path: string, extra?: Params) {
     from,
     to,
     interval,
-    service: search.service,
+    app: search.app,
     user: search.user,
     department: search.department,
     location: search.location,

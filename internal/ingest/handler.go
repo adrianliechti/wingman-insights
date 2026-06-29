@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,25 +32,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	req := &colmetrics.ExportMetricsServiceRequest{}
-	ct := r.Header.Get("Content-Type")
-	switch {
-	case strings.Contains(ct, "application/x-protobuf"), strings.Contains(ct, "application/protobuf"):
-		if err := proto.Unmarshal(body, req); err != nil {
-			http.Error(w, "decode protobuf: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	default:
-		if err := protojson.Unmarshal(body, req); err != nil {
-			http.Error(w, "decode json: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+	ct, err := decodeOTLP(r, req)
+	if err != nil {
+		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	genaiRows, httpRows := h.extract(req)
@@ -68,16 +55,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("ingested %d genai, %d http metric rows", len(genaiRows), len(httpRows))
 
-	resp := &colmetrics.ExportMetricsServiceResponse{}
+	writeOTLP(w, ct, &colmetrics.ExportMetricsServiceResponse{})
+}
+
+// otlpBodyLimit caps OTLP request bodies across the metrics, traces and discard
+// routes.
+const otlpBodyLimit = 10 << 20
+
+// decodeOTLP reads and unmarshals an OTLP request body into msg, choosing
+// protobuf vs JSON by Content-Type, and returns the Content-Type so the response
+// is encoded to match.
+func decodeOTLP(r *http.Request, msg proto.Message) (string, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, otlpBodyLimit))
+	if err != nil {
+		return "", err
+	}
+	ct := r.Header.Get("Content-Type")
+	if strings.Contains(ct, "protobuf") {
+		return ct, proto.Unmarshal(body, msg)
+	}
+	return ct, protojson.Unmarshal(body, msg)
+}
+
+// writeOTLP marshals an OTLP response in the same encoding as the request.
+func writeOTLP(w http.ResponseWriter, ct string, resp proto.Message) {
 	if strings.Contains(ct, "protobuf") {
 		out, _ := proto.Marshal(resp)
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.Write(out)
-	} else {
-		out, _ := protojson.Marshal(resp)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(out)
+		return
 	}
+	out, _ := protojson.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(out)
 }
 
 func (h *Handler) extract(req *colmetrics.ExportMetricsServiceRequest) ([]store.GenAIMetricRow, []store.HTTPMetricRow) {
@@ -126,6 +136,11 @@ func iterateDataPoints(m *metrics.Metric, fn dpFunc) {
 			val := asFloat(dp)
 			fn(dp.Attributes, ts, 1, val, val, val)
 		}
+	default:
+		// ExponentialHistogram / Summary aren't handled; log so the data loss is
+		// visible rather than silent (the wingman emitter uses explicit-bucket
+		// histograms, so this is a guard for other OTLP senders).
+		log.Printf("ingest: unhandled metric data type %T for %q", m.Data, m.Name)
 	}
 }
 
@@ -153,6 +168,21 @@ func getResourceServiceName(rm *metrics.ResourceMetrics) string {
 	return getStringAttr(rm.Resource.Attributes, "service.name")
 }
 
+// appID resolves the calling application's identity for the app_id column: the
+// gateway-stamped service.peer.name (the client's OAuth azp/appid) when present,
+// otherwise the resource service.name. The peer is only set for OIDC auth that
+// yields an azp/appid claim (e.g. Entra); header/static/anonymous auth and
+// non-Entra apps carry no peer, so without this fallback those rows would be
+// unattributed in the App filter. service.name is then the gateway's own
+// resource name ("wingman" or TELEMETRY_NAME), or — for a directly-instrumented
+// app exporting its own telemetry — that app's name.
+func appID(attrs []*common.KeyValue, serviceName string) string {
+	if peer := getStringAttr(attrs, "service.peer.name"); peer != "" {
+		return peer
+	}
+	return serviceName
+}
+
 func getStringAttr(attrs []*common.KeyValue, key string) string {
 	for _, kv := range attrs {
 		if kv.Key == key {
@@ -164,11 +194,25 @@ func getStringAttr(attrs []*common.KeyValue, key string) string {
 	return ""
 }
 
+// getIntAttr reads an integer attribute, tolerating int, double (truncated) and
+// numeric-string encodings — some OTLP senders promote integers to doubles or
+// strings in transit, and a silent 0 would drop token counts / status codes.
 func getIntAttr(attrs []*common.KeyValue, key string) int64 {
 	for _, kv := range attrs {
-		if kv.Key == key {
-			return kv.Value.GetIntValue()
+		if kv.Key != key {
+			continue
 		}
+		switch v := kv.Value.GetValue().(type) {
+		case *common.AnyValue_IntValue:
+			return v.IntValue
+		case *common.AnyValue_DoubleValue:
+			return int64(v.DoubleValue)
+		case *common.AnyValue_StringValue:
+			if n, err := strconv.ParseInt(v.StringValue, 10, 64); err == nil {
+				return n
+			}
+		}
+		return 0
 	}
 	return 0
 }

@@ -21,16 +21,6 @@ export interface OperationRow {
   avg_duration: number
 }
 
-export interface UserTokenSummaryRow {
-  id: string
-  name?: string
-  kind?: string
-  request_model: string
-  token_type: string
-  total_tokens: number
-  total_requests: number
-}
-
 export interface ActiveUsersRow {
   dau: number
   wau: number
@@ -191,12 +181,6 @@ export interface HTTPSummaryRow {
 export interface HTTPErrorsByCodeRow {
   status_code: number
   count: number
-}
-
-export interface TopRouteRow {
-  method: string
-  route: string
-  total_requests: number
 }
 
 // ScorePoint is one bucket of a single series scored against its rolling

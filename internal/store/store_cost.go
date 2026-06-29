@@ -54,28 +54,27 @@ type CostRow struct {
 func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Filter) ([]CostRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
-	// Resolve user_id/user_email to a canonical identity via the directory table
-	// (id-then-email precedence, matching the old resolveUser), then group by the
-	// resolved principal directly in SQL — no Go-side fold. An unresolved id
-	// passes through as itself with empty name/kind/department/location.
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	a := dirResolveApp("genai_spans", "app_id")
+	// Resolve user_id/user_email and app_id to canonical identities via the
+	// directory table (id-then-email precedence), then group by the resolved
+	// principal directly in SQL — no Go-side fold. An unresolved id passes through
+	// as itself with empty name/kind/department/location.
 	rows, err := s.db.QueryContext(ctx, `
 		WITH resolved AS (
 			SELECT
-				COALESCE(d1.id, d2.id, s.user_id, '') as principal,
-				COALESCE(d1.name, d2.name, '') as name,
-				COALESCE(d1.kind, d2.kind, '') as kind,
-				COALESCE(d1.department, d2.department, '') as department,
-				COALESCE(d1.location, d2.location, '') as location,
-				COALESCE(da.id, s.app_id, '') as app_id,
-				COALESCE(da.name, '') as app_name,
-				COALESCE(s.provider_name, '') as provider_name,
-				COALESCE(s.request_model, '') as request_model,
-				s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_creation_tokens, s.reasoning_tokens
-			FROM genai_spans s
-			LEFT JOIN directory d1 ON lower(s.user_id) = d1.alias
-			LEFT JOIN directory d2 ON lower(s.user_email) = d2.alias
-			LEFT JOIN directory da ON lower(s.app_id) = da.alias
-			WHERE (s.input_tokens > 0 OR s.output_tokens > 0) AND s.time >= ? AND s.time <= ?`+clause+`
+				`+r.ID+` as principal,
+				`+r.Name+` as name,
+				`+r.Kind+` as kind,
+				`+r.Dept+` as department,
+				`+r.Loc+` as location,
+				`+a.ID+` as app_id,
+				`+a.Name+` as app_name,
+				COALESCE(provider_name, '') as provider_name,
+				COALESCE(request_model, '') as request_model,
+				input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens
+			FROM genai_spans`+r.Join+a.Join+`
+			WHERE (input_tokens > 0 OR output_tokens > 0) AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
 		)
 		SELECT principal, name, kind, department, location, app_id, app_name, provider_name, request_model,`+spansPartCols+`
 		FROM resolved
@@ -278,7 +277,7 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(`+labelCol+`, '') as label,
@@ -289,20 +288,6 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 		GROUP BY bucket, label
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 // backfillSpanCost fills the cost / cache_savings columns for rows inserted

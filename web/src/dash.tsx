@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { apiGet } from './api'
 import type { Params } from './api'
 
-export type RangeKey = 'today' | '24h' | '3d' | '7d' | '30d' | 'custom'
+export type RangeKey = 'today' | '24h' | '3d' | '7d' | '30d'
 
 // DashSearch lives in the URL so views (range, filters) are shareable.
 export interface DashSearch {
@@ -18,7 +18,7 @@ export interface DashSearch {
   models?: string[]
 }
 
-const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d', 'custom']
+const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d']
 
 export function validateSearch(search: Record<string, unknown>): DashSearch {
   const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
@@ -54,12 +54,9 @@ const RANGE_MS: Record<string, number> = {
 export function resolveRange(search: DashSearch) {
   const now = new Date()
   const range = search.range ?? '24h'
+  const to = now
   let from: Date
-  let to = now
-  if (range === 'custom' && search.from) {
-    from = new Date(search.from)
-    to = search.to ? new Date(search.to) : now
-  } else if (range === 'today') {
+  if (range === 'today') {
     from = new Date(now)
     from.setHours(0, 0, 0, 0)
   } else {

@@ -28,14 +28,22 @@ const (
 	minBaseline     = 6
 )
 
-// anomalyGroupColumns are the genai_metrics group dimensions; the end user is
-// enduser_id (genai_spans calls it user_id) and app_id is the application.
-var anomalyGroupColumns = map[string]string{
-	"none":  "''",
-	"user":  "COALESCE(enduser_id, '')",
-	"app":   "COALESCE(app_id, '')",
-	"model": "COALESCE(request_model, '')",
+// anomalyGroupCols builds the anomaly group-by dimensions for a telemetry table;
+// userCol is its end-user column (enduser_id on genai_metrics, user_id on
+// genai_spans). app_id and request_model are named the same on both tables.
+func anomalyGroupCols(userCol string) map[string]string {
+	return map[string]string{
+		"none":  "''",
+		"user":  "COALESCE(" + userCol + ", '')",
+		"app":   "COALESCE(app_id, '')",
+		"model": "COALESCE(request_model, '')",
+	}
 }
+
+var (
+	anomalyGroupColumns     = anomalyGroupCols("enduser_id")
+	spanAnomalyGroupColumns = anomalyGroupCols("user_id")
+)
 
 // QueryTokenAnomalies buckets input/output token consumption and scores each
 // bucket against the rolling mean/stddev of the preceding buckets in the same
@@ -126,16 +134,6 @@ type ScorePoint struct {
 	Value    float64   `json:"value"`
 	Expected float64   `json:"expected"`
 	Score    float64   `json:"score"`
-}
-
-// spanAnomalyGroupColumns are the genai_spans group dimensions: the end user is
-// user_id (genai_metrics calls it enduser_id), and app_id (service.peer.name)
-// gives the application dimension that metrics lack.
-var spanAnomalyGroupColumns = map[string]string{
-	"none":  "''",
-	"user":  "COALESCE(user_id, '')",
-	"app":   "COALESCE(app_id, '')",
-	"model": "COALESCE(request_model, '')",
 }
 
 // rollingScoreSQL wraps a bucketed inner SELECT (which must yield columns named
@@ -277,7 +275,9 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 				Bucket: p.Bucket, Dimension: dim, GroupKey: p.GroupKey,
 				Metric: metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
 			}
-			if dim == "user" {
+			if dim == "user" || dim == "app" {
+				// group_key is the raw principal/app_id; resolve it to the directory
+				// display name so apps read the same here as elsewhere in the UI.
 				row.Name, row.Kind = s.resolveName(p.GroupKey, "")
 			}
 			feed = append(feed, row)

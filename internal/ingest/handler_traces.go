@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"encoding/hex"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -13,8 +12,6 @@ import (
 	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 // TracesHandler ingests OTLP trace exports and stores GenAI spans (any span
@@ -35,25 +32,11 @@ func (h *TracesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	req := &coltrace.ExportTraceServiceRequest{}
-	ct := r.Header.Get("Content-Type")
-	switch {
-	case strings.Contains(ct, "application/x-protobuf"), strings.Contains(ct, "application/protobuf"):
-		if err := proto.Unmarshal(body, req); err != nil {
-			http.Error(w, "decode protobuf: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	default:
-		if err := protojson.Unmarshal(body, req); err != nil {
-			http.Error(w, "decode json: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+	ct, err := decodeOTLP(r, req)
+	if err != nil {
+		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	rows := extractSpans(req)
@@ -66,16 +49,7 @@ func (h *TracesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ingested %d genai spans", len(rows))
 	}
 
-	resp := &coltrace.ExportTraceServiceResponse{}
-	if strings.Contains(ct, "protobuf") {
-		out, _ := proto.Marshal(resp)
-		w.Header().Set("Content-Type", "application/x-protobuf")
-		w.Write(out)
-	} else {
-		out, _ := protojson.Marshal(resp)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(out)
-	}
+	writeOTLP(w, ct, &coltrace.ExportTraceServiceResponse{})
 }
 
 var spanKinds = map[tracepb.Span_SpanKind]string{
@@ -91,12 +65,16 @@ func extractSpans(req *coltrace.ExportTraceServiceRequest) []store.SpanRow {
 	var rows []store.SpanRow
 
 	for _, rs := range req.ResourceSpans {
+		serviceName := ""
+		if rs.Resource != nil {
+			serviceName = getStringAttr(rs.Resource.Attributes, "service.name")
+		}
 		for _, ss := range rs.ScopeSpans {
 			for _, sp := range ss.Spans {
 				if !hasGenAIAttr(sp.Attributes) {
 					continue
 				}
-				rows = append(rows, extractSpan(sp, now))
+				rows = append(rows, extractSpan(sp, serviceName, now))
 			}
 		}
 	}
@@ -112,7 +90,7 @@ func hasGenAIAttr(attrs []*common.KeyValue) bool {
 	return false
 }
 
-func extractSpan(sp *tracepb.Span, now time.Time) store.SpanRow {
+func extractSpan(sp *tracepb.Span, serviceName string, now time.Time) store.SpanRow {
 	attrs := sp.Attributes
 
 	// gen_ai.conversation.id is the semconv-standard correlation id; session.id
@@ -126,11 +104,6 @@ func extractSpan(sp *tracepb.Span, now time.Time) store.SpanRow {
 	case tracepb.Status_STATUS_CODE_ERROR:
 		status = "error"
 	}
-
-	// app_id is the calling application (service.peer.name, the client's OAuth
-	// azp/appid). No fallback to the resource service.name — that is the gateway,
-	// not the caller — so spans without an authenticated peer stay unattributed.
-	appID := getStringAttr(attrs, "service.peer.name")
 
 	start := tsFromNano(sp.StartTimeUnixNano)
 	var duration float64
@@ -148,7 +121,7 @@ func extractSpan(sp *tracepb.Span, now time.Time) store.SpanRow {
 		Name:          sp.Name,
 		Kind:          spanKinds[sp.Kind],
 		Status:        status,
-		AppID:         appID,
+		AppID:         appID(attrs, serviceName),
 		OperationName: getStringAttr(attrs, "gen_ai.operation.name"),
 		ProviderName:  getStringAttr(attrs, "gen_ai.provider.name"),
 		RequestModel:  getStringAttr(attrs, "gen_ai.request.model"),

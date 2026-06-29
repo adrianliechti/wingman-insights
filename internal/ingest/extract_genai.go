@@ -18,7 +18,9 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 			ServiceName: serviceName,
 			// service.peer.name is the calling app (the gateway stamps it on metric
 			// data points); service_name above is the gateway's own resource name.
-			AppID:         getStringAttr(attrs, "service.peer.name"),
+			// Falls back to service_name when no peer was stamped (non-OIDC auth or
+			// a non-Entra app) — see appID.
+			AppID:         appID(attrs, serviceName),
 			MetricName:    m.Name,
 			OperationName: getStringAttr(attrs, "gen_ai.operation.name"),
 			ProviderName:  getStringAttr(attrs, "gen_ai.provider.name"),

@@ -49,6 +49,11 @@ func (s *Store) SyncDirectory(ctx context.Context) error {
 	if !ok {
 		return nil // directory can't enumerate; leave the table as-is
 	}
+	if fi, serr := os.Stat(f.Name()); serr == nil && fi.Size() == 0 {
+		// An empty snapshot (zero records exported) must not wipe a previously
+		// populated table — skip the destructive replace and keep what we have.
+		return nil
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -114,6 +119,7 @@ func dirResolveApp(table, col string) resolved {
 		Join: fmt.Sprintf(" LEFT JOIN directory da ON lower(%s) = da.alias", q),
 		ID:   fmt.Sprintf("COALESCE(da.id, %s, '')", q),
 		Name: "COALESCE(da.name, '')",
+		Kind: "COALESCE(da.kind, '')",
 	}
 }
 

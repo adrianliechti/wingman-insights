@@ -7,76 +7,6 @@ import (
 	"time"
 )
 
-func (h *Handler) costTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostTimeseries(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) tokenVolumeTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTokenVolumeTimeseries(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) modelMix(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryModelMixTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) operationMix(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryOperationMixTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) tokensPerRequest(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTokensPerRequest(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) sessionsTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QuerySessionsTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) sessionStats(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	stats, err := h.store.QuerySessionStats(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, stats)
-}
-
 func (h *Handler) interactions(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	n, err := h.store.QueryInteractions(r.Context(), from, to, h.parseFilter(r))
@@ -87,73 +17,11 @@ func (h *Handler) interactions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int64{"count": n})
 }
 
-func (h *Handler) latencyPercentiles(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryLatencyPercentiles(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) throughput(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryThroughputTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) ttfcTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTTFCTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) genaiErrorRate(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryGenAIErrorRate(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) toolStats(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryToolStats(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
 // userStats is the unified per-user table: requests, tokens, cost, active days,
 // top model and engagement segment.
 func (h *Handler) userStats(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryUserStats(r.Context(), from, to, 200, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-// userSegments rolls users up into the four engagement segments with their
-// share of spend and consumption.
-func (h *Handler) userSegments(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryUserSegments(r.Context(), from, to, h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -173,45 +41,11 @@ func (h *Handler) cohortRetention(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
-// appAdoption ranks applications by spend with their user reach.
-func (h *Handler) appAdoption(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryAppAdoption(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-// modelPreference cross-tabs token volume by engagement segment and model.
-func (h *Handler) modelPreference(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryModelPreferenceBySegment(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
 // burst ranks users by peak requests-per-minute — the in-dashboard runaway/peak
 // signal.
 func (h *Handler) burst(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryUserBurst(r.Context(), from, to, 15, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-// newVsReturning splits active users per bucket into first-ever (new) vs
-// previously-seen (returning).
-func (h *Handler) newVsReturning(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryNewVsReturningTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
 	if err != nil {
 		writeErr(w, err)
 		return

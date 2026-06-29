@@ -8,6 +8,7 @@ export function fmtTokens(n: number): string {
 }
 
 export function fmtCost(n: number): string {
+  if (n < 0) return '-' + fmtCost(-n)
   if (n >= 100) return '$' + n.toFixed(0)
   if (n >= 1) return '$' + n.toFixed(2)
   if (n > 0) return '$' + n.toFixed(4)
@@ -27,11 +28,14 @@ export function fmtDuration(seconds: number): string {
   return (seconds * 1_000_000).toFixed(0) + 'µs'
 }
 
-// fmtBucket renders a time-axis label appropriate for the visible span.
+// fmtBucket renders a time-axis label appropriate for the visible span. The
+// sub-daily cutoff matches resolveRange's 6-hour bucketing band (up to 14d) so
+// multiple buckets on one day don't collapse to the same day-only label; only
+// the >14d band (1-day buckets) drops the time component.
 export function fmtBucket(bucket: string, spanMs: number): string {
   const d = new Date(bucket)
   if (spanMs <= 26 * 3600e3) return format(d, 'HH:mm')
-  if (spanMs <= 4 * 24 * 3600e3) return format(d, 'EEE HH:mm')
+  if (spanMs <= 14 * 24 * 3600e3) return format(d, 'EEE HH:mm')
   return format(d, 'MMM d')
 }
 

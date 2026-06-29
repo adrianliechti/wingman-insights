@@ -5,9 +5,10 @@ import "strings"
 // Filter narrows queries to a single application, user, department, location,
 // provider and/or models. Zero values mean "everyone / everything".
 //
-// App is the calling application's id (app_id / service.peer.name); it is stamped
-// on both genai_spans and genai_metrics (from the service.peer.name data-point
-// attribute), so it narrows either source. User is a canonical identity id (or a
+// App is the calling application's id (app_id), stamped on both genai_spans and
+// genai_metrics from the service.peer.name attribute, falling back to the
+// resource service.name when no peer is present (non-OIDC auth / non-Entra apps);
+// it narrows either source. User is a canonical identity id (or a
 // raw OTel id when no directory resolved it); Department and Location are
 // directory attribute values, matched against the directory table at query time.
 // DeptPrefix matches a department code hierarchically (the code plus its
@@ -55,8 +56,8 @@ func (f Filter) clause(idCol, emailCol string) (string, []any) {
 	if c, a := attrClause(idCol, emailCol, "location", f.Location, false); c != "" {
 		add(c, a...)
 	}
-	if f.App != "" {
-		add(" AND app_id = ?", f.App)
+	if c, a := appClause(f.App); c != "" {
+		add(c, a...)
 	}
 	if f.Provider != "" {
 		add(" AND provider_name = ?", f.Provider)
@@ -79,6 +80,21 @@ func userClause(idCol, emailCol, user string) (string, []any) {
 		" OR lower(" + idCol + ") IN (" + sub + ")" +
 		" OR lower(" + emailCol + ") IN (" + sub + "))"
 	return c, []any{user, user, user}
+}
+
+// appClause matches rows whose calling app is the selected application: a direct
+// app_id match (the unresolved / no-directory case) or any directory alias of
+// that identity. The app dropdown sends the resolved canonical id when the app
+// is known to the directory (COALESCE(da.id, app_id) in QueryFilterOptions), so
+// — like userClause — it must expand that id back to its aliases, the raw
+// service.peer.name values carried on the rows. Returns ("", nil) when unset.
+func appClause(app string) (string, []any) {
+	if app == "" {
+		return "", nil
+	}
+	sub := "SELECT alias FROM directory WHERE lower(id) = lower(?)"
+	c := " AND (lower(app_id) = lower(?) OR lower(app_id) IN (" + sub + "))"
+	return c, []any{app, app}
 }
 
 // attrClause matches rows whose principal carries the given directory attribute

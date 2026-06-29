@@ -4,7 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
-import { AppCell, KindBadge, UserCell } from '../components/UserCell'
+import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -156,11 +156,6 @@ function SpendDoughnut({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRo
 // Slate gray for the consolidated "Others" bucket — kept off the PALETTE so the
 // long tail reads as residual, not as another named consumer.
 const OTHER_COLOR = '#94a3b8'
-
-// Human label for an allocation consumer — the user.id it's attributed to.
-// Module-scope so its identity is stable across renders (keeps AllocationKey's
-// useMemo from busting).
-const userLabel = (r: CostRow) => r.name || r.id || 'unattributed'
 
 interface AllocSlice {
   label: string

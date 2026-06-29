@@ -324,7 +324,12 @@ func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]di
 				put(dst, m, idt, false)
 			}
 			for _, p := range u.ProxyAddresses {
-				put(dst, stripScheme(p), idt, false)
+				// proxyAddresses also holds non-SMTP entries (X500:, SIP:, …) that
+				// never appear in telemetry; indexing them only bloats the table and
+				// invites alias collisions, so keep SMTP addresses only.
+				if addr, ok := smtpAddress(p); ok {
+					put(dst, addr, idt, false)
+				}
 			}
 		}
 	})
@@ -510,11 +515,13 @@ func put(dst map[string]directory.Identity, key string, id directory.Identity, f
 	dst[k] = id
 }
 
-// stripScheme drops a leading "smtp:"/"SMTP:"-style prefix from a proxy
-// address, leaving the bare address to index.
-func stripScheme(p string) string {
-	if i := strings.IndexByte(p, ':'); i >= 0 {
-		return p[i+1:]
+// smtpAddress returns the bare address of an SMTP proxy address (case-insensitive
+// "smtp:" scheme), and false for any other scheme (X500:, SIP:, …) or a value
+// with no scheme.
+func smtpAddress(p string) (string, bool) {
+	const scheme = "smtp:"
+	if len(p) >= len(scheme) && strings.EqualFold(p[:len(scheme)], scheme) {
+		return p[len(scheme):], true
 	}
-	return p
+	return "", false
 }

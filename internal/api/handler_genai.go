@@ -12,36 +12,6 @@ func (h *Handler) filterOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, opts)
 }
 
-func (h *Handler) tokenSummary(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTokenSummary(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) tokenTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTokenTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) operations(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryOperationSummary(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
 func (h *Handler) topConsumers(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryTopConsumers(r.Context(), from, to, 10, h.parseFilter(r))
@@ -60,66 +30,6 @@ func (h *Handler) activeUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, row)
-}
-
-func (h *Handler) operationDurationTimeseries(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryOperationDurationTimeseries(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) modelDistribution(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryModelDistribution(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) cacheEfficiency(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCacheEfficiency(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) tokenComposition(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryTokenComposition(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) reasoningShare(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryReasoningShare(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
-}
-
-func (h *Handler) genaiErrors(w http.ResponseWriter, r *http.Request) {
-	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryGenAIErrors(r.Context(), from, to, h.parseFilter(r))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, rows)
 }
 
 // anomalies lists buckets whose token consumption spikes above the rolling

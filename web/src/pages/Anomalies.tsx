@@ -85,7 +85,7 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
   }
   const rows = [...byEntity.entries()].map(([k, score]) => ({ k, label: labelOf.get(k) || k, score })).sort((a, b) => b.score - a.score).slice(0, 8)
   if (rows.length === 0) return <PanelMessage>No anomalies</PanelMessage>
-  const max = rows[0].score
+  const max = rows[0].score || 1 // rows are sorted desc; guard a 0 top score
   return (
     <div className="space-y-2">
       {rows.map((r) => (

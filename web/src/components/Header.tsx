@@ -10,7 +10,6 @@ const PRESETS: { label: string; value: RangeKey }[] = [
   { label: '3d', value: '3d' },
   { label: '7d', value: '7d' },
   { label: '30d', value: '30d' },
-  { label: 'Custom', value: 'custom' },
 ]
 
 const NAV = [
@@ -22,19 +21,11 @@ const NAV = [
   { to: '/traces', label: 'Traces' },
 ]
 
-function toLocalInput(iso: string): string {
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
 export function Header() {
   const dash = useDash()
   const navigate = useNavigate()
   const range = dash.search.range ?? '24h'
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
-  const [customFrom, setCustomFrom] = useState(() => toLocalInput(dash.from))
-  const [customTo, setCustomTo] = useState(() => toLocalInput(dash.to))
 
   function setSearch(patch: Partial<DashSearch>) {
     navigate({
@@ -48,13 +39,6 @@ export function Header() {
     setDark(next)
     document.documentElement.classList.toggle('dark', next)
     localStorage.setItem('theme', next ? 'dark' : 'light')
-  }
-
-  function applyCustom() {
-    const from = new Date(customFrom)
-    const to = new Date(customTo)
-    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) return
-    setSearch({ range: 'custom', from: from.toISOString(), to: to.toISOString() })
   }
 
   const btn =
@@ -92,11 +76,7 @@ export function Header() {
             {PRESETS.map((p) => (
               <button
                 key={p.value}
-                onClick={() =>
-                  p.value === 'custom'
-                    ? setSearch({ range: 'custom', from: new Date(customFrom).toISOString(), to: new Date(customTo).toISOString() })
-                    : setSearch({ range: p.value, from: undefined, to: undefined })
-                }
+                onClick={() => setSearch({ range: p.value, from: undefined, to: undefined })}
                 className={
                   range === p.value
                     ? 'rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm'
@@ -131,27 +111,6 @@ export function Header() {
           </button>
         </div>
       </div>
-
-      {range === 'custom' && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input
-            type="datetime-local"
-            value={customFrom}
-            onChange={(e) => setCustomFrom(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:[color-scheme:dark]"
-          />
-          <span className="text-xs text-gray-500">→</span>
-          <input
-            type="datetime-local"
-            value={customTo}
-            onChange={(e) => setCustomTo(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:[color-scheme:dark]"
-          />
-          <button onClick={applyCustom} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
-            Apply
-          </button>
-        </div>
-      )}
     </header>
   )
 }

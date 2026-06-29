@@ -294,10 +294,46 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("rename genai_spans.service_name to app_id: %w", err)
 		}
 	}
+	// Make app_id obey the single rule (service.peer.name ?? service.name) on rows
+	// written before it, reading the peer from the stored attributes JSON.
+	if err := s.backfillAppID(context.Background()); err != nil {
+		return fmt.Errorf("backfill app_id: %w", err)
+	}
 	// Price rows inserted before the cost columns existed (NULL on every existing
 	// row). No-op once every row is priced, so it stays cheap on later starts.
 	if err := s.backfillSpanCost(context.Background()); err != nil {
 		return fmt.Errorf("backfill span cost: %w", err)
+	}
+	return nil
+}
+
+// backfillAppID makes the app_id column obey the single rule
+// app_id = service.peer.name ?? service.name on rows written before the rule (or
+// before the column existed), so an application is keyed identically across
+// genai_spans and genai_metrics. service.peer.name is read from the stored
+// attributes JSON (the '$."..."' quoting is required — the key contains dots).
+// Both statements converge to a no-op once every row conforms, like
+// backfillSpanCost, so they stay cheap on later starts.
+func (s *Store) backfillAppID(ctx context.Context) error {
+	// genai_metrics.app_id was added later and is NULL on existing rows: fill from
+	// the data-point peer attribute, else the resource service.name.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE genai_metrics
+		SET app_id = COALESCE(
+			NULLIF(json_extract_string(attributes, '$."service.peer.name"'), ''),
+			service_name)
+		WHERE app_id IS NULL OR app_id = ''`); err != nil {
+		return fmt.Errorf("genai_metrics: %w", err)
+	}
+	// genai_spans.app_id holds the resource service.name on pre-rename rows; lift
+	// it to the recorded peer where present so pre-rename OIDC spans stop being
+	// bucketed under the gateway name and match the metric rows.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE genai_spans
+		SET app_id = json_extract_string(attributes, '$."service.peer.name"')
+		WHERE NULLIF(json_extract_string(attributes, '$."service.peer.name"'), '') IS NOT NULL
+		  AND app_id IS DISTINCT FROM json_extract_string(attributes, '$."service.peer.name"')`); err != nil {
+		return fmt.Errorf("genai_spans: %w", err)
 	}
 	return nil
 }

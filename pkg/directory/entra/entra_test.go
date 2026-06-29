@@ -286,3 +286,23 @@ func TestFromEnv(t *testing.T) {
 		t.Error("FromEnv with full env should report ok=true")
 	}
 }
+
+func TestSMTPAddress(t *testing.T) {
+	cases := []struct {
+		in  string
+		out string
+		ok  bool
+	}{
+		{"SMTP:Alice@contoso.com", "Alice@contoso.com", true}, // primary, upper scheme
+		{"smtp:a@contoso.com", "a@contoso.com", true},         // alias, lower scheme
+		{"X500:/o=Exch/cn=Recipients/cn=x", "", false},        // non-SMTP, not indexed
+		{"SIP:alice@contoso.com", "", false},                  // non-SMTP
+		{"plain@contoso.com", "", false},                      // no scheme
+	}
+	for _, c := range cases {
+		got, ok := smtpAddress(c.in)
+		if got != c.out || ok != c.ok {
+			t.Errorf("smtpAddress(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.out, c.ok)
+		}
+	}
+}

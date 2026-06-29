@@ -9,9 +9,9 @@
 // A Directory hides that by mapping every known alias of a principal to one
 // Identity.
 //
-// This package holds only the contract and shared types. Implementations live
-// in sub-packages: directory/entra (Microsoft Graph) and directory/noop (the
-// zero-config fallback that resolves nothing).
+// This package holds only the contract and shared types. The Microsoft Graph
+// implementation lives in sub-package directory/entra; the zero-config fallback
+// is a nil Directory (the store resolves nothing and passes ids through).
 package directory
 
 import (

@@ -134,7 +134,8 @@ func (s *Store) QueryTokenSummary(ctx context.Context, from, to time.Time, f Fil
 
 func (s *Store) QueryTokenTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
 	clause, fargs := f.genaiClause()
-	query := `
+	args := append([]any{interval, from, to}, fargs...)
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(token_type, '') as label,
@@ -142,27 +143,10 @@ func (s *Store) QueryTokenTimeseries(ctx context.Context, from, to time.Time, in
 			COALESCE(SUM(count), 0) as count
 		FROM genai_metrics
 		WHERE metric_name = 'gen_ai.client.token.usage'
-		  AND time >= ? AND time <= ?` + clause + `
+		  AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket, token_type
 		ORDER BY bucket
-	`
-	args := append([]any{interval, from, to}, fargs...)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
+	`, args...)
 }
 
 func (s *Store) QueryOperationSummary(ctx context.Context, from, to time.Time, f Filter) ([]OperationRow, error) {
@@ -284,7 +268,7 @@ func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*
 func (s *Store) QueryOperationDurationTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
 	clause, fargs := f.genaiClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(request_model, '') as label,
@@ -296,20 +280,6 @@ func (s *Store) QueryOperationDurationTimeseries(ctx context.Context, from, to t
 		GROUP BY bucket, request_model
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 func (s *Store) QueryModelDistribution(ctx context.Context, from, to time.Time, f Filter) ([]ModelDistributionRow, error) {
@@ -448,6 +418,7 @@ func (s *Store) QueryGenAIErrors(ctx context.Context, from, to time.Time, f Filt
 			COALESCE(SUM(count), 0) as count
 		FROM genai_metrics
 		WHERE error_type IS NOT NULL AND error_type != ''
+		  AND metric_name = 'gen_ai.client.operation.duration'
 		  AND time >= ? AND time <= ?`+clause+`
 		GROUP BY error_type, request_model
 		ORDER BY count DESC

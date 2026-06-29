@@ -80,3 +80,65 @@ func TestAppFilterNarrowsMetrics(t *testing.T) {
 		}
 	}
 }
+
+// TestAppFilterResolvesDirectoryAliases guards the P0: the app dropdown sends the
+// resolved canonical id, so filtering by it must expand back to the raw
+// service.peer.name aliases on the rows — not match the raw column literally.
+func TestAppFilterResolvesDirectoryAliases(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	ctx := context.Background()
+
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	insert := func(appID string, sum float64) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO genai_metrics
+			(received_at, time, metric_name, token_type, app_id, enduser_id, count, sum)
+			VALUES (?, ?, 'gen_ai.client.token.usage', 'input', ?, 'u1', 1, ?)`,
+			ts, ts, appID, sum); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	// "sp-guid" is a directory alias of canonical app "app-client" (the Worker app
+	// in mappingStub); "other-app" is unknown to the directory.
+	insert("sp-guid", 100)
+	insert("other-app", 999)
+
+	s.SetDirectory(mappingStub{})
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	// Dropdown sends the canonical id "app-client"; it must match the sp-guid row.
+	resolved, err := s.QueryTokenSummary(ctx, from, to, Filter{App: "app-client"})
+	if err != nil {
+		t.Fatalf("token summary (resolved app): %v", err)
+	}
+	var got float64
+	for _, r := range resolved {
+		got += r.TotalTokens
+	}
+	if got != 100 {
+		t.Errorf("resolved-app filter tokens = %v, want 100 (alias expansion)", got)
+	}
+
+	// An unresolved raw app_id still matches directly.
+	raw, err := s.QueryTokenSummary(ctx, from, to, Filter{App: "other-app"})
+	if err != nil {
+		t.Fatalf("token summary (raw app): %v", err)
+	}
+	got = 0
+	for _, r := range raw {
+		got += r.TotalTokens
+	}
+	if got != 999 {
+		t.Errorf("raw-app filter tokens = %v, want 999", got)
+	}
+}

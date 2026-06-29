@@ -125,19 +125,27 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 		return strings.ToLower(label(opts.Users[i])) < strings.ToLower(label(opts.Users[j]))
 	})
 
-	// Applications come from spans (app_id = service.peer.name); resolve each to
-	// its directory display name so the dropdown shows app names, not raw ids.
+	// Applications are keyed by app_id (service.peer.name ?? service.name) on both
+	// genai_spans and genai_metrics; union them so an app seen in either source is
+	// selectable (cost is span-sourced, token charts metric-sourced — a selection
+	// must narrow both). Resolve each to its directory display name so the
+	// dropdown shows app names, not raw ids.
+	aSpans := dirResolveApp("genai_spans", "app_id")
+	aMetrics := dirResolveApp("genai_metrics", "app_id")
 	appRows, err := s.db.QueryContext(ctx, `
 		WITH resolved AS (
-			SELECT COALESCE(da.id, app_id, '') as id,
-				COALESCE(da.name, '') as name, COALESCE(da.kind, '') as kind
-			FROM genai_spans
-			LEFT JOIN directory da ON lower(app_id) = da.alias
+			SELECT `+aSpans.ID+` as id, `+aSpans.Name+` as name, `+aSpans.Kind+` as kind
+			FROM genai_spans`+aSpans.Join+`
 			WHERE app_id IS NOT NULL AND app_id != ''
 			  AND genai_spans.time >= ? AND genai_spans.time <= ?
+			UNION ALL
+			SELECT `+aMetrics.ID+` as id, `+aMetrics.Name+` as name, `+aMetrics.Kind+` as kind
+			FROM genai_metrics`+aMetrics.Join+`
+			WHERE app_id IS NOT NULL AND app_id != ''
+			  AND genai_metrics.time >= ? AND genai_metrics.time <= ?
 		)
 		SELECT id, MAX(name) as name, MAX(kind) as kind FROM resolved GROUP BY id
-	`, from, to)
+	`, from, to, from, to)
 	if err != nil {
 		return nil, err
 	}

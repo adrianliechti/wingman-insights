@@ -186,6 +186,7 @@ func (s *Store) migrate() error {
 			received_at   TIMESTAMP NOT NULL,
 			time          TIMESTAMP NOT NULL,
 			service_name  VARCHAR,
+			app_id        VARCHAR,
 			metric_name   VARCHAR NOT NULL,
 			operation_name VARCHAR,
 			provider_name VARCHAR,
@@ -226,6 +227,9 @@ func (s *Store) migrate() error {
 	}
 	stmts = append(stmts,
 		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS session_id VARCHAR",
+		// app_id (service.peer.name) was added so the App filter narrows metric
+		// queries too, not just spans; existing DBs backfill as NULL (unattributed).
+		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS app_id VARCHAR",
 		"CREATE SEQUENCE IF NOT EXISTS genai_spans_id_seq",
 		`CREATE TABLE IF NOT EXISTS genai_spans (
 			id            BIGINT DEFAULT nextval('genai_spans_id_seq') PRIMARY KEY,

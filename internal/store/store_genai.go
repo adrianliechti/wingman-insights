@@ -10,6 +10,7 @@ type GenAIMetricRow struct {
 	ReceivedAt    time.Time
 	Time          time.Time
 	ServiceName   string
+	AppID         string
 	MetricName    string
 	OperationName string
 	ProviderName  string
@@ -73,11 +74,11 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_metrics
-		(received_at, time, service_name, metric_name, operation_name, provider_name,
+		(received_at, time, service_name, app_id, metric_name, operation_name, provider_name,
 		 request_model, response_model, token_type,
 		 server_address, error_type, enduser_id, enduser_email, session_id,
 		 count, sum, min_val, max_val, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -86,7 +87,7 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 	for _, r := range rows {
 		attrs, _ := json.Marshal(r.Attributes)
 		_, err := stmt.ExecContext(ctx,
-			r.ReceivedAt, r.Time, r.ServiceName, r.MetricName, r.OperationName,
+			r.ReceivedAt, r.Time, r.ServiceName, r.AppID, r.MetricName, r.OperationName,
 			r.ProviderName, r.RequestModel, r.ResponseModel, r.TokenType,
 			r.ServerAddress, r.ErrorType,
 			r.EndUserID, r.EndUserEmail, r.SessionID,

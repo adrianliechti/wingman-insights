@@ -5,10 +5,10 @@ import "strings"
 // Filter narrows queries to a single application, user, department, location,
 // provider and/or models. Zero values mean "everyone / everything".
 //
-// App is the calling application's id (app_id / service.peer.name); it exists
-// only on spans, so it is applied by spansClause and ignored for the metrics
-// tables, which carry no application dimension. User is a canonical identity id
-// (or a raw OTel id when no directory resolved it); Department and Location are
+// App is the calling application's id (app_id / service.peer.name); it is stamped
+// on both genai_spans and genai_metrics (from the service.peer.name data-point
+// attribute), so it narrows either source. User is a canonical identity id (or a
+// raw OTel id when no directory resolved it); Department and Location are
 // directory attribute values, matched against the directory table at query time.
 // DeptPrefix matches a department code hierarchically (the code plus its
 // subtree) rather than exactly.
@@ -28,20 +28,16 @@ func (f Filter) genaiClause() (string, []any) {
 	return f.clause("enduser_id", "enduser_email")
 }
 
-// spansClause is genaiClause for genai_spans (principal columns user_id /
-// user_email), plus the application filter — app_id exists only on spans.
+// spansClause is genaiClause for genai_spans, whose principal columns are
+// user_id / user_email.
 func (f Filter) spansClause() (string, []any) {
-	c, a := f.clause("user_id", "user_email")
-	if f.App != "" {
-		c += " AND app_id = ?"
-		a = append(a, f.App)
-	}
-	return c, a
+	return f.clause("user_id", "user_email")
 }
 
 // clause builds the shared GenAI filter; idCol/emailCol name the raw principal
 // columns of the target table. User/department/location resolve against the
-// directory table inline, so no query needs to join it just to filter.
+// directory table inline, so no query needs to join it just to filter. App,
+// provider and model match plain columns carried by both telemetry tables.
 func (f Filter) clause(idCol, emailCol string) (string, []any) {
 	var b strings.Builder
 	var args []any
@@ -58,6 +54,9 @@ func (f Filter) clause(idCol, emailCol string) (string, []any) {
 	}
 	if c, a := attrClause(idCol, emailCol, "location", f.Location, false); c != "" {
 		add(c, a...)
+	}
+	if f.App != "" {
+		add(" AND app_id = ?", f.App)
 	}
 	if f.Provider != "" {
 		add(" AND provider_name = ?", f.Provider)

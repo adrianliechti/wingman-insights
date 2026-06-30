@@ -40,12 +40,6 @@ type HTTPErrorsByCodeRow struct {
 	Count      int64 `json:"count"`
 }
 
-type TopRouteRow struct {
-	Method        string `json:"method"`
-	Route         string `json:"route"`
-	TotalRequests int64  `json:"total_requests"`
-}
-
 func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -117,7 +111,7 @@ func (s *Store) QueryHTTPSummary(ctx context.Context, from, to time.Time, f Filt
 func (s *Store) QueryHTTPTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
 	clause, fargs := f.httpClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(direction, '') as label,
@@ -129,26 +123,12 @@ func (s *Store) QueryHTTPTimeseries(ctx context.Context, from, to time.Time, int
 		GROUP BY bucket, direction
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 func (s *Store) QueryHTTPRequestsTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
 	clause, fargs := f.httpClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(direction, '') as label,
@@ -160,20 +140,6 @@ func (s *Store) QueryHTTPRequestsTimeseries(ctx context.Context, from, to time.T
 		GROUP BY bucket, direction
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 func (s *Store) QueryHTTPErrorsByCode(ctx context.Context, from, to time.Time, f Filter) ([]HTTPErrorsByCodeRow, error) {
@@ -199,41 +165,6 @@ func (s *Store) QueryHTTPErrorsByCode(ctx context.Context, from, to time.Time, f
 	for rows.Next() {
 		var r HTTPErrorsByCodeRow
 		if err := rows.Scan(&r.StatusCode, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
-}
-
-func (s *Store) QueryTopRoutes(ctx context.Context, from, to time.Time, limit int, f Filter) ([]TopRouteRow, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	clause, fargs := f.httpClause()
-	args := append([]any{from, to}, fargs...)
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(method, '') as method,
-			COALESCE(route, '') as route,
-			COALESCE(SUM(count), 0) as total_requests
-		FROM http_metrics
-		WHERE metric_name LIKE 'http.%.request.duration'
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY method, route
-		ORDER BY total_requests DESC
-		LIMIT ?
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TopRouteRow
-	for rows.Next() {
-		var r TopRouteRow
-		if err := rows.Scan(&r.Method, &r.Route, &r.TotalRequests); err != nil {
 			return nil, err
 		}
 		result = append(result, r)

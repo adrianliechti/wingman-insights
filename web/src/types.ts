@@ -21,15 +21,6 @@ export interface OperationRow {
   avg_duration: number
 }
 
-export interface UserTokenSummaryRow {
-  enduser_id: string
-  enduser_email: string
-  request_model: string
-  token_type: string
-  total_tokens: number
-  total_requests: number
-}
-
 export interface ActiveUsersRow {
   dau: number
   wau: number
@@ -37,8 +28,9 @@ export interface ActiveUsersRow {
 }
 
 export interface TopConsumerRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   total_requests: number
   total_tokens: number
   tpm: number
@@ -59,6 +51,8 @@ export interface GenAIErrorRow {
 export interface AnomalyPoint {
   bucket: string
   group_key: string
+  name?: string
+  kind?: string
   token_type: string
   tokens: number
   expected: number
@@ -66,9 +60,13 @@ export interface AnomalyPoint {
 }
 
 export interface CostRow {
-  enduser_id?: string
-  enduser_email?: string
-  service_name?: string
+  id?: string
+  name?: string
+  kind?: string
+  department?: string
+  location?: string
+  app_id?: string
+  app_name?: string
   provider_name?: string
   request_model?: string
   input_tokens: number
@@ -108,12 +106,15 @@ export interface BudgetResponse {
 
 export interface FilterUser {
   id: string
-  email: string
+  name?: string
+  kind?: string
 }
 
 export interface FilterOptions {
-  services: string[]
+  apps: FilterUser[]
   users: FilterUser[]
+  departments: string[]
+  locations: string[]
   providers: string[]
   models: string[]
 }
@@ -127,7 +128,7 @@ export interface SpanRow {
   name: string
   kind?: string
   status?: string
-  service_name?: string
+  app_id?: string
   operation_name?: string
   provider_name?: string
   request_model?: string
@@ -136,6 +137,8 @@ export interface SpanRow {
   tool_name?: string
   user_id?: string
   user_email?: string
+  user_name?: string
+  user_kind?: string
   session_id?: string
   error_type?: string
   finish_reasons?: string
@@ -153,9 +156,11 @@ export interface TraceSummary {
   name: string
   time: string
   duration: number
-  service_name?: string
+  app_id?: string
   user_id?: string
   user_email?: string
+  user_name?: string
+  user_kind?: string
   session_id?: string
   span_count: number
   input_tokens: number
@@ -178,17 +183,13 @@ export interface HTTPErrorsByCodeRow {
   count: number
 }
 
-export interface TopRouteRow {
-  method: string
-  route: string
-  total_requests: number
-}
-
 // ScorePoint is one bucket of a single series scored against its rolling
 // baseline (cost anomalies, generic spike charts).
 export interface ScorePoint {
   bucket: string
   group_key: string
+  name?: string
+  kind?: string
   value: number
   expected: number
   score: number
@@ -200,6 +201,8 @@ export interface AnomalyFeedRow {
   bucket: string
   dimension: string // user | service | model
   group_key: string
+  name?: string // resolved when dimension=user
+  kind?: string
   metric: string // cost | tokens
   value: number
   expected: number
@@ -207,8 +210,9 @@ export interface AnomalyFeedRow {
 }
 
 export interface UserStatRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   requests: number
   tokens: number
   cost: number
@@ -232,7 +236,8 @@ export interface CohortCell {
 }
 
 export interface AppAdoptionRow {
-  service_name: string
+  app_id: string
+  app_name?: string
   users: number
   requests: number
   tokens: number
@@ -246,8 +251,9 @@ export interface ModelPreferenceRow {
 }
 
 export interface BurstRow {
-  enduser_id: string
-  enduser_email: string
+  id: string
+  name?: string
+  kind?: string
   peak_rpm: number
   total_requests: number
   active_minutes: number

@@ -4,6 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
+import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -70,19 +71,28 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
 
 const userColumns: ColumnDef<CostRow, any>[] = [
   {
-    accessorKey: 'enduser_id',
+    accessorKey: 'id',
     header: 'User',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <UserCell r={c.row.original} />,
   },
-  { accessorKey: 'enduser_email', header: 'Email', cell: (c) => c.getValue() || '—' },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   ...costCols(),
 ]
 
 const appColumns: ColumnDef<CostRow, any>[] = [
   {
-    accessorKey: 'service_name',
+    accessorKey: 'app_id',
     header: 'Application',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <AppCell id={c.row.original.app_id} name={c.row.original.app_name} />,
+  },
+  ...costCols(),
+]
+
+const departmentColumns: ColumnDef<CostRow, any>[] = [
+  {
+    accessorKey: 'department',
+    header: 'Department',
+    cell: (c) => <span className="text-gray-900 dark:text-gray-100">{c.getValue() || 'Unknown'}</span>,
   },
   ...costCols(),
 ]
@@ -146,11 +156,6 @@ function SpendDoughnut({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRo
 // Slate gray for the consolidated "Others" bucket — kept off the PALETTE so the
 // long tail reads as residual, not as another named consumer.
 const OTHER_COLOR = '#94a3b8'
-
-// Human label for an allocation consumer — the user.id it's attributed to.
-// Module-scope so its identity is stable across renders (keeps AllocationKey's
-// useMemo from busting).
-const userLabel = (r: CostRow) => r.enduser_id || 'unattributed'
 
 interface AllocSlice {
   label: string
@@ -306,6 +311,7 @@ export function Finops() {
   const [trendMetric, setTrendMetric] = useState<'cost' | 'tokens'>('cost')
   const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
   const byApp = useApi<CostRow[]>('/api/genai/costs', { group_by: 'app' })
+  const byDept = useApi<CostRow[]>('/api/genai/costs', { group_by: 'department' })
   const byModel = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
   const byModelPrev = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model', ...prev })
   const budget = useApi<BudgetResponse>('/api/finops/budget')
@@ -313,6 +319,9 @@ export function Finops() {
   const tokenTrend = useApi<TimeseriesPoint[]>('/api/finops/token-timeseries', { by: spendBy })
 
   const models = byModel.data ?? []
+  // Only surface the department view when the directory actually attributes
+  // departments (otherwise every row folds into the "Unknown" bucket).
+  const hasDepartments = (byDept.data ?? []).some((r) => !!r.department)
   const total = models.reduce((acc, r) => acc + r.total_cost, 0)
   const totalPrev = (byModelPrev.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
@@ -380,7 +389,7 @@ export function Finops() {
             {byApp.loading ? (
               <PanelMessage>Loading…</PanelMessage>
             ) : (
-              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.service_name || 'unattributed'} />
+              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
             )}
           </div>
           <div>
@@ -405,7 +414,7 @@ export function Finops() {
         )}
       </Panel>
 
-      <Panel title="Cost per Application" sub="Priced token usage attributed via service.name">
+      <Panel title="Cost per Application" sub="Priced token usage attributed via service.peer.name">
         {byApp.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (byApp.data ?? []).length === 0 ? (
@@ -414,6 +423,16 @@ export function Finops() {
           <DataTable data={byApp.data!} columns={appColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
         )}
       </Panel>
+
+      {hasDepartments && (
+        <Panel title="Cost per Department" sub="Priced token usage grouped by the directory department">
+          {byDept.loading ? (
+            <PanelMessage>Loading…</PanelMessage>
+          ) : (
+            <DataTable data={byDept.data!} columns={departmentColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+          )}
+        </Panel>
+      )}
 
       <Panel
         title="Cost per User"

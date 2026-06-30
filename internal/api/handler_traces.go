@@ -10,7 +10,7 @@ func (h *Handler) traceList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	onlyErrors := q.Get("status") == "error"
-	rows, err := h.store.QueryTraceList(r.Context(), from, to, parseFilter(r), onlyErrors, limit)
+	rows, err := h.store.QueryTraceList(r.Context(), from, to, h.parseFilter(r), onlyErrors, limit)
 	if err != nil {
 		writeErr(w, err)
 		return

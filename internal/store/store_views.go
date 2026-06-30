@@ -94,18 +94,21 @@ type SessionStats struct {
 func (s *Store) QuerySessionStats(ctx context.Context, from, to time.Time, f Filter) (*SessionStats, error) {
 	clause, fargs := f.genaiClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	// avg_per_user divides by distinct resolved identities, so a user under
+	// several OTel ids isn't counted as several users.
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(DISTINCT session_id) as sessions,
-			CASE WHEN COUNT(DISTINCT enduser_id) > 0
-				THEN CAST(COUNT(DISTINCT session_id) AS DOUBLE) / COUNT(DISTINCT enduser_id)
+			CASE WHEN COUNT(DISTINCT `+r.ID+`) > 0
+				THEN CAST(COUNT(DISTINCT session_id) AS DOUBLE) / COUNT(DISTINCT `+r.ID+`)
 				ELSE 0 END as avg_per_user,
 			CASE WHEN COUNT(DISTINCT session_id) > 0
 				THEN SUM(CASE WHEN metric_name = 'gen_ai.client.token.usage' THEN sum ELSE 0 END) / COUNT(DISTINCT session_id)
 				ELSE 0 END as avg_tokens
-		FROM genai_metrics
+		FROM genai_metrics`+r.Join+`
 		WHERE session_id IS NOT NULL AND session_id != ''
-		  AND time >= ? AND time <= ?`+clause, args...)
+		  AND genai_metrics.time >= ? AND genai_metrics.time <= ?`+clause, args...)
 	st := &SessionStats{}
 	if err := row.Scan(&st.Sessions, &st.AvgPerUser, &st.AvgTokensPerSess); err != nil {
 		return nil, err
@@ -299,14 +302,15 @@ func rangeDays(from, to time.Time) float64 {
 // UserStatRow is one end user's activity in the range: the row behind the
 // unified per-user table and the input to segmentation.
 type UserStatRow struct {
-	EndUserID    string  `json:"enduser_id"`
-	EndUserEmail string  `json:"enduser_email"`
-	Requests     int64   `json:"requests"`
-	Tokens       float64 `json:"tokens"`
-	Cost         float64 `json:"cost"`
-	ActiveDays   int64   `json:"active_days"`
-	TopModel     string  `json:"top_model"`
-	Segment      string  `json:"segment"`
+	ID         string  `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name       string  `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind       string  `json:"kind,omitempty"` // user | application; empty if unresolved
+	Requests   int64   `json:"requests"`
+	Tokens     float64 `json:"tokens"`
+	Cost       float64 `json:"cost"`
+	ActiveDays int64   `json:"active_days"`
+	TopModel   string  `json:"top_model"`
+	Segment    string  `json:"segment"`
 }
 
 // QueryUserStats aggregates per-user requests, tokens, cost, active days and
@@ -315,20 +319,27 @@ type UserStatRow struct {
 func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit int, f Filter) ([]UserStatRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	// Resolve then group by the canonical identity in SQL. Folding the aliases
+	// before aggregation makes active_days (distinct days) and top_model (mode)
+	// exact for the merged user — the Go fold could only approximate them.
 	q := `
-		SELECT
-			COALESCE(user_id, '') as enduser_id,
-			COALESCE(MAX(user_email), '') as enduser_email,
+		WITH resolved AS (
+			SELECT ` + r.ID + ` as principal, ` + r.Name + ` as name, ` + r.Kind + ` as kind,
+				genai_spans.time as ts, request_model, input_tokens, output_tokens, cost
+			FROM genai_spans` + r.Join + `
+			WHERE (input_tokens > 0 OR output_tokens > 0)
+			  AND user_id IS NOT NULL AND user_id != ''
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?` + clause + `
+		)
+		SELECT principal, name, kind,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
 			COALESCE(SUM(cost), 0) as cost,
-			COUNT(DISTINCT CAST(time AS DATE)) as active_days,
+			COUNT(DISTINCT CAST(ts AS DATE)) as active_days,
 			COALESCE(mode(request_model), '') as top_model
-		FROM genai_spans
-		WHERE (input_tokens > 0 OR output_tokens > 0)
-		  AND user_id IS NOT NULL AND user_id != ''
-		  AND time >= ? AND time <= ?` + clause + `
-		GROUP BY user_id
+		FROM resolved
+		GROUP BY principal, name, kind
 		ORDER BY cost DESC, tokens DESC`
 	if limit > 0 {
 		q += " LIMIT ?"
@@ -343,12 +354,13 @@ func (s *Store) QueryUserStats(ctx context.Context, from, to time.Time, limit in
 	days := rangeDays(from, to)
 	var result []UserStatRow
 	for rows.Next() {
-		var r UserStatRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.Requests, &r.Tokens, &r.Cost, &r.ActiveDays, &r.TopModel); err != nil {
+		var row UserStatRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.Requests, &row.Tokens,
+			&row.Cost, &row.ActiveDays, &row.TopModel); err != nil {
 			return nil, err
 		}
-		r.Segment = classifySegment(r.Requests, days)
-		result = append(result, r)
+		row.Segment = classifySegment(row.Requests, days)
+		result = append(result, row)
 	}
 	return result, rows.Err()
 }
@@ -410,23 +422,26 @@ func (s *Store) QueryCohortRetention(ctx context.Context, to time.Time, weeks in
 	args = append(args, to)
 	args = append(args, fargs...)
 	args = append(args, bound)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	// Cohorts key on the resolved identity, so a user under several OTel ids has
+	// one first-seen week and is counted once per cohort/offset cell.
 	rows, err := s.db.QueryContext(ctx, `
 		WITH first_seen AS (
-			SELECT user_id, MIN(time) AS first_ts
-			FROM genai_spans
-			WHERE user_id IS NOT NULL AND user_id != '' AND time <= ?`+clause+`
-			GROUP BY user_id
+			SELECT `+r.ID+` as principal, MIN(genai_spans.time) AS first_ts
+			FROM genai_spans`+r.Join+`
+			WHERE user_id IS NOT NULL AND user_id != '' AND genai_spans.time <= ?`+clause+`
+			GROUP BY principal
 		),
 		activity AS (
-			SELECT DISTINCT user_id, date_trunc('week', time) AS wk
-			FROM genai_spans
-			WHERE user_id IS NOT NULL AND user_id != '' AND time <= ?`+clause+`
+			SELECT DISTINCT `+r.ID+` as principal, date_trunc('week', genai_spans.time) AS wk
+			FROM genai_spans`+r.Join+`
+			WHERE user_id IS NOT NULL AND user_id != '' AND genai_spans.time <= ?`+clause+`
 		)
 		SELECT
 			date_trunc('week', fs.first_ts) AS cohort,
 			CAST(date_diff('week', date_trunc('week', fs.first_ts), a.wk) AS BIGINT) AS week_offset,
-			COUNT(DISTINCT a.user_id) AS active
-		FROM first_seen fs JOIN activity a ON fs.user_id = a.user_id
+			COUNT(DISTINCT a.principal) AS active
+		FROM first_seen fs JOIN activity a ON fs.principal = a.principal
 		WHERE date_trunc('week', fs.first_ts) >= date_trunc('week', CAST(? AS TIMESTAMP))
 		GROUP BY cohort, week_offset
 		ORDER BY cohort, week_offset
@@ -447,32 +462,39 @@ func (s *Store) QueryCohortRetention(ctx context.Context, to time.Time, weeks in
 	return result, rows.Err()
 }
 
-// AppAdoptionRow is one application's (service_name's) footprint in the range:
-// distinct users, requests, tokens and spend.
+// AppAdoptionRow is one application's footprint in the range: distinct users,
+// requests, tokens and spend.
 type AppAdoptionRow struct {
-	ServiceName string  `json:"service_name"`
-	Users       int64   `json:"users"`
-	Requests    int64   `json:"requests"`
-	Tokens      float64 `json:"tokens"`
-	Cost        float64 `json:"cost"`
+	AppID    string  `json:"app_id"`
+	AppName  string  `json:"app_name"`
+	Users    int64   `json:"users"`
+	Requests int64   `json:"requests"`
+	Tokens   float64 `json:"tokens"`
+	Cost     float64 `json:"cost"`
 }
 
 // QueryAppAdoption ranks applications by spend, with their distinct-user reach —
-// the per-application lens (service_name is the app dimension).
+// the per-application lens (app_id is the app dimension).
 func (s *Store) QueryAppAdoption(ctx context.Context, from, to time.Time, f Filter) ([]AppAdoptionRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	a := dirResolveApp("genai_spans", "app_id")
+	// Distinct-user reach counts resolved identities, so a user under several
+	// OTel ids isn't over-counted per app; the app id itself is resolved to its
+	// directory display name.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(service_name, '') as service_name,
-			COUNT(DISTINCT user_id) as users,
+			`+a.ID+` as app_id,
+			`+a.Name+` as app_name,
+			COUNT(DISTINCT `+r.ID+`) as users,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
 			COALESCE(SUM(cost), 0) as cost
-		FROM genai_spans
+		FROM genai_spans`+r.Join+a.Join+`
 		WHERE (input_tokens > 0 OR output_tokens > 0)
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY service_name
+		  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
+		GROUP BY `+a.ID+`, `+a.Name+`
 		ORDER BY cost DESC, tokens DESC
 	`, args...)
 	if err != nil {
@@ -483,7 +505,7 @@ func (s *Store) QueryAppAdoption(ctx context.Context, from, to time.Time, f Filt
 	var result []AppAdoptionRow
 	for rows.Next() {
 		var r AppAdoptionRow
-		if err := rows.Scan(&r.ServiceName, &r.Users, &r.Requests, &r.Tokens, &r.Cost); err != nil {
+		if err := rows.Scan(&r.AppID, &r.AppName, &r.Users, &r.Requests, &r.Tokens, &r.Cost); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -509,20 +531,27 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 	}
 	segOf := make(map[string]string, len(stats))
 	for _, u := range stats {
-		segOf[u.EndUserID] = u.Segment
+		segOf[u.ID] = u.Segment
 	}
 
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	// Group by the canonical identity in SQL so it lines up with QueryUserStats's
+	// resolved ids (segOf is keyed on those).
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(user_id, ''), COALESCE(request_model, ''),
-			COALESCE(SUM(input_tokens + output_tokens), 0)
-		FROM genai_spans
-		WHERE (input_tokens > 0 OR output_tokens > 0)
-		  AND request_model IS NOT NULL AND request_model != ''
-		  AND user_id IS NOT NULL AND user_id != ''
-		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY user_id, request_model
+		WITH resolved AS (
+			SELECT `+r.ID+` as principal, COALESCE(request_model, '') as request_model,
+				input_tokens, output_tokens
+			FROM genai_spans`+r.Join+`
+			WHERE (input_tokens > 0 OR output_tokens > 0)
+			  AND request_model IS NOT NULL AND request_model != ''
+			  AND user_id IS NOT NULL AND user_id != ''
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
+		)
+		SELECT principal, request_model, COALESCE(SUM(input_tokens + output_tokens), 0)
+		FROM resolved
+		GROUP BY principal, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -532,12 +561,12 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 	type key struct{ seg, model string }
 	agg := map[key]float64{}
 	for rows.Next() {
-		var user, model string
+		var id, model string
 		var tokens float64
-		if err := rows.Scan(&user, &model, &tokens); err != nil {
+		if err := rows.Scan(&id, &model, &tokens); err != nil {
 			return nil, err
 		}
-		seg, ok := segOf[user]
+		seg, ok := segOf[id]
 		if !ok {
 			continue
 		}
@@ -566,8 +595,9 @@ func (s *Store) QueryModelPreferenceBySegment(ctx context.Context, from, to time
 // total requests and how many distinct active minutes — the in-dashboard
 // runaway/peak signal (an agent stuck hammering the gateway shows a high peak).
 type BurstRow struct {
-	EndUserID     string `json:"enduser_id"`
-	EndUserEmail  string `json:"enduser_email"`
+	ID            string `json:"id"`             // Entra object id when resolved, else raw OTel id
+	Name          string `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind          string `json:"kind,omitempty"` // user | application; empty if unresolved
 	PeakRPM       int64  `json:"peak_rpm"`
 	TotalRequests int64  `json:"total_requests"`
 	ActiveMinutes int64  `json:"active_minutes"`
@@ -581,23 +611,26 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
 	args = append(args, limit)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	// Resolve to the canonical identity per minute first, so peak_rpm and active
+	// minutes are exact for a user spread across several OTel ids (the Go fold
+	// could only take the worst single-alias peak).
 	rows, err := s.db.QueryContext(ctx, `
 		WITH per_min AS (
-			SELECT user_id,
-				COALESCE(MAX(user_email), '') as email,
-				time_bucket(CAST('1 minute' AS INTERVAL), time) as minute,
+			SELECT `+r.ID+` as principal, `+r.Name+` as name, `+r.Kind+` as kind,
+				time_bucket(CAST('1 minute' AS INTERVAL), genai_spans.time) as minute,
 				COUNT(*) as reqs
-			FROM genai_spans
+			FROM genai_spans`+r.Join+`
 			WHERE user_id IS NOT NULL AND user_id != ''
-			  AND time >= ? AND time <= ?`+clause+`
-			GROUP BY user_id, minute
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
+			GROUP BY `+r.ID+`, `+r.Name+`, `+r.Kind+`, minute
 		)
-		SELECT user_id, MAX(email) as email,
+		SELECT principal, name, kind,
 			MAX(reqs) as peak_rpm,
 			SUM(reqs) as total_reqs,
 			COUNT(*) as active_minutes
 		FROM per_min
-		GROUP BY user_id
+		GROUP BY principal, name, kind
 		ORDER BY peak_rpm DESC, total_reqs DESC
 		LIMIT ?
 	`, args...)
@@ -608,11 +641,11 @@ func (s *Store) QueryUserBurst(ctx context.Context, from, to time.Time, limit in
 
 	var result []BurstRow
 	for rows.Next() {
-		var r BurstRow
-		if err := rows.Scan(&r.EndUserID, &r.EndUserEmail, &r.PeakRPM, &r.TotalRequests, &r.ActiveMinutes); err != nil {
+		var row BurstRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.PeakRPM, &row.TotalRequests, &row.ActiveMinutes); err != nil {
 			return nil, err
 		}
-		result = append(result, r)
+		result = append(result, row)
 	}
 	return result, rows.Err()
 }
@@ -626,25 +659,28 @@ func (s *Store) QueryNewVsReturningTimeseries(ctx context.Context, from, to time
 	args = append(args, interval, from, to) // activity bucket + range
 	args = append(args, fargs...)           // activity clause
 	args = append(args, interval)           // new/returning split
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	// New vs returning keys on the resolved identity: first-seen and per-bucket
+	// activity fold every OTel id of a user into one principal.
 	return s.queryTimeseries(ctx, `
 		WITH first_seen AS (
-			SELECT user_id, MIN(time) AS first_ts
-			FROM genai_spans
+			SELECT `+r.ID+` as principal, MIN(genai_spans.time) AS first_ts
+			FROM genai_spans`+r.Join+`
 			WHERE user_id IS NOT NULL AND user_id != ''`+clause+`
-			GROUP BY user_id
+			GROUP BY principal
 		),
 		activity AS (
-			SELECT DISTINCT user_id, time_bucket(CAST(? AS INTERVAL), time) as bucket
-			FROM genai_spans
+			SELECT DISTINCT `+r.ID+` as principal, time_bucket(CAST(? AS INTERVAL), genai_spans.time) as bucket
+			FROM genai_spans`+r.Join+`
 			WHERE user_id IS NOT NULL AND user_id != ''
-			  AND time >= ? AND time <= ?`+clause+`
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
 		)
 		SELECT
 			a.bucket,
 			CASE WHEN time_bucket(CAST(? AS INTERVAL), fs.first_ts) >= a.bucket THEN 'new' ELSE 'returning' END as label,
-			COUNT(DISTINCT a.user_id) as value,
-			COUNT(DISTINCT a.user_id) as count
-		FROM activity a JOIN first_seen fs ON a.user_id = fs.user_id
+			COUNT(DISTINCT a.principal) as value,
+			COUNT(DISTINCT a.principal) as count
+		FROM activity a JOIN first_seen fs ON a.principal = fs.principal
 		GROUP BY a.bucket, label
 		ORDER BY a.bucket
 	`, args...)

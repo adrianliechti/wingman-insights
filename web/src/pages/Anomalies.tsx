@@ -4,6 +4,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
 import type { AnomalyFeedRow, BurstRow, ScorePoint, TopConsumerRow } from '../types'
 import type { TimeseriesPoint } from '../types'
+import { KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -76,19 +77,21 @@ function SpikeLine({ points, yFmt, color, label }: { points: ScorePoint[] | null
 // the feed — the "who is spiking most" view for one dimension.
 function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimension: string }) {
   const byEntity = new Map<string, number>()
+  const labelOf = new Map<string, string>()
   for (const r of feed) {
     if (r.dimension !== dimension) continue
     byEntity.set(r.group_key, Math.max(byEntity.get(r.group_key) ?? 0, r.score))
+    labelOf.set(r.group_key, r.name || r.group_key) // name for users, raw key otherwise
   }
-  const rows = [...byEntity.entries()].map(([k, score]) => ({ k, score })).sort((a, b) => b.score - a.score).slice(0, 8)
+  const rows = [...byEntity.entries()].map(([k, score]) => ({ k, label: labelOf.get(k) || k, score })).sort((a, b) => b.score - a.score).slice(0, 8)
   if (rows.length === 0) return <PanelMessage>No anomalies</PanelMessage>
-  const max = rows[0].score
+  const max = rows[0].score || 1 // rows are sorted desc; guard a 0 top score
   return (
     <div className="space-y-2">
       {rows.map((r) => (
         <div key={r.k} className="flex items-center gap-3">
-          <span className="w-40 shrink-0 truncate font-mono text-xs text-gray-700 dark:text-gray-300" title={r.k}>
-            {r.k}
+          <span className="w-40 shrink-0 truncate text-xs text-gray-700 dark:text-gray-300" title={r.k}>
+            {r.label}
           </span>
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
             <div
@@ -104,24 +107,16 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
 }
 
 const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
-  {
-    id: 'user',
-    header: 'User',
-    accessorFn: (r) => r.enduser_email || r.enduser_id,
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-  },
+  { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
   { accessorKey: 'total_tokens', header: 'Tokens', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
   { accessorKey: 'tpm', header: 'TPM', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) + '/min' },
 ]
 
 const burstColumns: ColumnDef<BurstRow, any>[] = [
-  {
-    id: 'user',
-    header: 'User',
-    accessorFn: (r) => r.enduser_email || r.enduser_id,
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
-  },
+  { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   {
     accessorKey: 'peak_rpm',
     header: 'Peak / min',
@@ -137,7 +132,7 @@ const burstColumns: ColumnDef<BurstRow, any>[] = [
 
 const DIMS = [
   { value: 'user', label: 'By user' },
-  { value: 'service', label: 'By application' },
+  { value: 'app', label: 'By application' },
   { value: 'model', label: 'By model' },
 ]
 
@@ -151,15 +146,16 @@ export function Anomalies() {
   const rows = feed.data ?? []
   const worst = rows.reduce((m, r) => Math.max(m, r.score), 0)
   const usersFlagged = new Set(rows.filter((r) => r.dimension === 'user').map((r) => r.group_key)).size
-  const appsFlagged = new Set(rows.filter((r) => r.dimension === 'service').map((r) => r.group_key)).size
+  const appsFlagged = new Set(rows.filter((r) => r.dimension === 'app').map((r) => r.group_key)).size
 
   const feedColumns: ColumnDef<AnomalyFeedRow, any>[] = [
     { accessorKey: 'bucket', header: 'When', cell: (c) => fmtTime(c.getValue()) },
-    { accessorKey: 'dimension', header: 'Dimension', cell: (c) => <Badge text={c.getValue() === 'service' ? 'application' : c.getValue()} /> },
+    { accessorKey: 'dimension', header: 'Dimension', cell: (c) => <Badge text={c.getValue() === 'app' ? 'application' : c.getValue()} /> },
     {
       accessorKey: 'group_key',
       header: 'Entity',
-      cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || '—'}</span>,
+      // name resolves user GUIDs to a display name; app/model keep the raw key.
+      cell: (c) => <span className="text-xs text-gray-900 dark:text-gray-100">{c.row.original.name || c.getValue() || '—'}</span>,
     },
     { accessorKey: 'metric', header: 'Metric', cell: (c) => <Badge text={c.getValue()} tone={c.getValue() === 'cost' ? 'amber' : 'indigo'} /> },
     {
@@ -194,6 +190,7 @@ export function Anomalies() {
     return [...byEntity.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k]) => k)
   })()
   const heatScore = new Map(dimRows.map((r) => [r.group_key + '\0' + r.bucket, r.score]))
+  const heatLabel = new Map(dimRows.map((r) => [r.group_key, r.name || r.group_key])) // name for users
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -203,7 +200,7 @@ export function Anomalies() {
             { label: 'Open Anomalies', value: String(rows.length), sub: '≥ 3σ above baseline' },
             { label: 'Worst Z-Score', value: worst ? worst.toFixed(1) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
             { label: 'Users Flagged', value: String(usersFlagged), sub: 'distinct end users' },
-            { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct services' },
+            { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct applications' },
           ]}
         />
       </div>
@@ -232,7 +229,7 @@ export function Anomalies() {
       </Panel>
 
       <Panel title="Top Applications by Deviation" sub="Worst z-score per application">
-        <AnomalyLeaderboard feed={rows} dimension="service" />
+        <AnomalyLeaderboard feed={rows} dimension="app" />
       </Panel>
 
       <Panel title="Top Users by Deviation" sub="Worst z-score per user">
@@ -263,8 +260,8 @@ export function Anomalies() {
           <Heatmap
             rows={heatEntities}
             cols={heatBuckets}
-            corner={heatDim === 'service' ? 'application' : heatDim}
-            rowHeader={(e) => <span className="font-mono">{e}</span>}
+            corner={heatDim === 'app' ? 'application' : heatDim}
+            rowHeader={(e) => <span>{heatLabel.get(e) || e}</span>}
             colHeader={(b) => fmtTime(b).replace(',', '')}
             cell={(e, b) => {
               const s = heatScore.get(e + '\0' + b)
@@ -273,7 +270,7 @@ export function Anomalies() {
               return {
                 bg: `rgba(239, 68, 68, ${0.15 + alpha * 0.7})`,
                 text: alpha > 0.5 ? '#fff' : undefined,
-                title: `${e} · ${fmtTime(b)} · ${s.toFixed(1)}σ`,
+                title: `${heatLabel.get(e) || e} · ${fmtTime(b)} · ${s.toFixed(1)}σ`,
                 content: s.toFixed(1),
               }
             }}

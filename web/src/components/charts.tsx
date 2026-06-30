@@ -145,7 +145,10 @@ export function groupSeries(
     partialCount,
     labels: buckets.map((b) => fmtBucket(b, spanMs)),
     datasets: labels
-      .filter((l) => [...(series.get(l)?.values() ?? [])].some((v) => v !== 0))
+      // Drop genuinely-absent auto-derived labels, but keep caller-declared
+      // series (specs) even when all-zero so e.g. a 0% cache-hit panel renders a
+      // flat line instead of looking broken/blank.
+      .filter((l) => specs || [...(series.get(l)?.values() ?? [])].some((v) => v !== 0))
       .map((l, i) => {
         const spec = specs?.[l]
         const color = spec?.color ?? PALETTE[i % PALETTE.length]

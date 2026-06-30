@@ -10,6 +10,7 @@ import type {
   UserSegmentRow,
   UserStatRow,
 } from '../types'
+import { AppCell, KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
@@ -127,11 +128,11 @@ function SegmentTag({ seg }: { seg: string }) {
 
 const userColumns: ColumnDef<UserStatRow, any>[] = [
   {
-    accessorKey: 'enduser_id',
+    accessorKey: 'id',
     header: 'User',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <UserCell r={c.row.original} />,
   },
-  { accessorKey: 'enduser_email', header: 'Email', cell: (c) => c.getValue() || '—' },
+  { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   { id: 'segment', accessorKey: 'segment', header: 'Segment', cell: (c) => <SegmentTag seg={c.getValue()} /> },
   { accessorKey: 'active_days', header: 'Active days', meta: { align: 'right' }, cell: (c) => c.getValue() },
   { accessorKey: 'requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
@@ -151,9 +152,9 @@ const userColumns: ColumnDef<UserStatRow, any>[] = [
 
 const appColumns: ColumnDef<AppAdoptionRow, any>[] = [
   {
-    accessorKey: 'service_name',
+    accessorKey: 'app_id',
     header: 'Application',
-    cell: (c) => <span className="font-mono text-xs text-gray-900 dark:text-gray-100">{c.getValue() || 'unattributed'}</span>,
+    cell: (c) => <AppCell id={c.row.original.app_id} name={c.row.original.app_name} />,
   },
   { accessorKey: 'users', header: 'Users', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
   { accessorKey: 'requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
@@ -268,7 +269,7 @@ export function Customers() {
         <TimeseriesPanel points={tokensPerRequest.data} spanMs={spanMs} specs={TOKEN_AVG_SPECS} yFmt={fmtTokens} loading={tokensPerRequest.loading} />
       </Panel>
 
-      <Panel title="Application Adoption" sub="Reach and spend per application (service_name)" className="lg:col-span-2">
+      <Panel title="Application Adoption" sub="Reach and spend per application (service.peer.name)" className="lg:col-span-2">
         {appAdoption.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (appAdoption.data ?? []).length === 0 ? (

@@ -3,20 +3,22 @@ import type { ReactNode } from 'react'
 import { apiGet } from './api'
 import type { Params } from './api'
 
-export type RangeKey = 'today' | '24h' | '3d' | '7d' | '30d' | 'custom'
+export type RangeKey = 'today' | '24h' | '3d' | '7d' | '30d'
 
 // DashSearch lives in the URL so views (range, filters) are shareable.
 export interface DashSearch {
   range?: RangeKey
   from?: string
   to?: string
-  service?: string
+  app?: string
   user?: string
+  department?: string
+  location?: string
   provider?: string
   models?: string[]
 }
 
-const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d', 'custom']
+const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d']
 
 export function validateSearch(search: Record<string, unknown>): DashSearch {
   const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
@@ -33,8 +35,10 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     range: RANGE_KEYS.includes(range as RangeKey) ? (range as RangeKey) : undefined,
     from: str(search.from),
     to: str(search.to),
-    service: str(search.service),
+    app: str(search.app),
     user: str(search.user),
+    department: str(search.department),
+    location: str(search.location),
     provider: str(search.provider),
     models,
   }
@@ -50,12 +54,9 @@ const RANGE_MS: Record<string, number> = {
 export function resolveRange(search: DashSearch) {
   const now = new Date()
   const range = search.range ?? '24h'
+  const to = now
   let from: Date
-  let to = now
-  if (range === 'custom' && search.from) {
-    from = new Date(search.from)
-    to = search.to ? new Date(search.to) : now
-  } else if (range === 'today') {
+  if (range === 'today') {
     from = new Date(now)
     from.setHours(0, 0, 0, 0)
   } else {
@@ -138,8 +139,10 @@ export function useApi<T>(path: string, extra?: Params) {
     from,
     to,
     interval,
-    service: search.service,
+    app: search.app,
     user: search.user,
+    department: search.department,
+    location: search.location,
     provider: search.provider,
     models: search.models,
     ...extra,
@@ -147,24 +150,25 @@ export function useApi<T>(path: string, extra?: Params) {
   const key = path + JSON.stringify(params) + refreshKey
 
   useEffect(() => {
-    let cancelled = false
+    // Abort the in-flight request when the key changes (filter/range change) or
+    // the component unmounts, so superseded fetches don't run to completion or
+    // land their results out of order.
+    const ctrl = new AbortController()
     setLoading(true)
-    apiGet<T>(path, params)
+    apiGet<T>(path, params, ctrl.signal)
       .then((d) => {
-        if (!cancelled) {
+        if (!ctrl.signal.aborted) {
           setData(d)
           setError(null)
         }
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e))
+        if (!ctrl.signal.aborted) setError(String(e))
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!ctrl.signal.aborted) setLoading(false)
       })
-    return () => {
-      cancelled = true
-    }
+    return () => ctrl.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 

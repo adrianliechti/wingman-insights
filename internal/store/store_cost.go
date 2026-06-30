@@ -17,9 +17,13 @@ import (
 // non-cached remainder (inclusive input minus cache), so the four token columns
 // form a disjoint ledger that lines up with the four cost columns.
 type CostRow struct {
-	EndUserID    string `json:"enduser_id,omitempty"`
-	EndUserEmail string `json:"enduser_email,omitempty"`
-	ServiceName  string `json:"service_name,omitempty"`
+	ID           string `json:"id,omitempty"`         // Entra object id when resolved, else raw OTel id
+	Name         string `json:"name,omitempty"`       // resolved display name; empty if unresolved
+	Kind         string `json:"kind,omitempty"`       // user | application; empty if unresolved
+	Department   string `json:"department,omitempty"` // resolved department; empty if unresolved/unset
+	Location     string `json:"location,omitempty"`   // resolved office location; empty if unresolved/unset
+	AppID        string `json:"app_id,omitempty"`
+	AppName      string `json:"app_name,omitempty"` // resolved app display name; empty if unresolved
 	ProviderName string `json:"provider_name,omitempty"`
 	RequestModel string `json:"request_model,omitempty"`
 
@@ -50,16 +54,31 @@ type CostRow struct {
 func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Filter) ([]CostRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	a := dirResolveApp("genai_spans", "app_id")
+	// Resolve user_id/user_email and app_id to canonical identities via the
+	// directory table (id-then-email precedence), then group by the resolved
+	// principal directly in SQL — no Go-side fold. An unresolved id passes through
+	// as itself with empty name/kind/department/location.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(user_id, '') as enduser_id,
-			COALESCE(NULLIF(MAX(user_email), ''), '') as enduser_email,
-			COALESCE(service_name, '') as service_name,
-			COALESCE(provider_name, '') as provider_name,
-			COALESCE(request_model, '') as request_model,`+spansPartCols+`
-		FROM genai_spans
-		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
-		GROUP BY user_id, service_name, provider_name, request_model
+		WITH resolved AS (
+			SELECT
+				`+r.ID+` as principal,
+				`+r.Name+` as name,
+				`+r.Kind+` as kind,
+				`+r.Dept+` as department,
+				`+r.Loc+` as location,
+				`+a.ID+` as app_id,
+				`+a.Name+` as app_name,
+				COALESCE(provider_name, '') as provider_name,
+				COALESCE(request_model, '') as request_model,
+				input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens
+			FROM genai_spans`+r.Join+a.Join+`
+			WHERE (input_tokens > 0 OR output_tokens > 0) AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
+		)
+		SELECT principal, name, kind, department, location, app_id, app_name, provider_name, request_model,`+spansPartCols+`
+		FROM resolved
+		GROUP BY principal, name, kind, department, location, app_id, app_name, provider_name, request_model
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -68,17 +87,21 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 
 	var result []CostRow
 	for rows.Next() {
-		var user, email, service, provider, model string
+		var id, name, kind, department, location, appID, appName, provider, model string
 		var p tokenParts
-		if err := rows.Scan(&user, &email, &service, &provider, &model,
+		if err := rows.Scan(&id, &name, &kind, &department, &location, &appID, &appName, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
 		price, priced := pricing.Lookup(provider, model)
 		r := CostRow{
-			EndUserID:           user,
-			EndUserEmail:        email,
-			ServiceName:         service,
+			ID:                  id,
+			Name:                name,
+			Kind:                kind,
+			Department:          department,
+			Location:            location,
+			AppID:               appID,
+			AppName:             appName,
 			ProviderName:        provider,
 			RequestModel:        model,
 			InputTokens:         p.Uncached, // billed (non-cached) input
@@ -103,15 +126,15 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
 	sortCostRows(result)
 	return result, nil
 }
 
-// AggregateCostsByUser collapses a cost breakdown to one row per user.
+// AggregateCostsByUser collapses a cost breakdown to one row per user, keyed by
+// the resolved identity id, carrying the name/kind/department/location through.
 func AggregateCostsByUser(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.EndUserID, CostRow{EndUserID: r.EndUserID, EndUserEmail: r.EndUserEmail}
+		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location}
 	})
 }
 
@@ -122,10 +145,28 @@ func AggregateCostsByModel(rows []CostRow) []CostRow {
 	})
 }
 
-// AggregateCostsByApp collapses a cost breakdown to one row per app (service).
+// AggregateCostsByApp collapses a cost breakdown to one row per app, keyed by
+// the resolved app identity (service.peer.name) and carrying its display name.
 func AggregateCostsByApp(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.ServiceName, CostRow{ServiceName: r.ServiceName}
+		return r.AppID, CostRow{AppID: r.AppID, AppName: r.AppName}
+	})
+}
+
+// AggregateCostsByDepartment collapses a cost breakdown to one row per
+// department. Rows whose user did not resolve (or has no department) fold into a
+// single empty-department bucket the UI can label "Unknown".
+func AggregateCostsByDepartment(rows []CostRow) []CostRow {
+	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
+		return r.Department, CostRow{Department: r.Department}
+	})
+}
+
+// AggregateCostsByLocation collapses a cost breakdown to one row per office
+// location, with unresolved/unset locations folding into one bucket.
+func AggregateCostsByLocation(rows []CostRow) []CostRow {
+	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
+		return r.Location, CostRow{Location: r.Location}
 	})
 }
 
@@ -161,12 +202,12 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 }
 
 // QueryCostTimeseries returns spend per time bucket, stacked by request_model
-// (groupBy "model", default) or service_name (groupBy "app"). Priced from spans
+// (groupBy "model", default) or app_id (groupBy "app"). Priced from spans
 // so cached tokens are billed at their own rate.
 func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
 	labelCol := "request_model"
 	if groupBy == "app" {
-		labelCol = "service_name"
+		labelCol = "app_id"
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
@@ -224,7 +265,7 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 }
 
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
-// request_model (groupBy "model", default) or service_name (groupBy "app").
+// request_model (groupBy "model", default) or app_id (groupBy "app").
 // Unlike QueryCostTimeseries this is consumption, not spend: it includes models
 // with no models.dev price, so unpriced usage stays visible. Volume is the
 // inclusive input + output total (cache and reasoning are subsets, not added
@@ -232,11 +273,11 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
 	labelCol := "request_model"
 	if groupBy == "app" {
-		labelCol = "service_name"
+		labelCol = "app_id"
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(`+labelCol+`, '') as label,
@@ -247,20 +288,6 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 		GROUP BY bucket, label
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []TimeseriesPoint
-	for rows.Next() {
-		var r TimeseriesPoint
-		if err := rows.Scan(&r.Bucket, &r.Label, &r.Value, &r.Count); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 // backfillSpanCost fills the cost / cache_savings columns for rows inserted

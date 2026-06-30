@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,56 +21,84 @@ func NewHandler(s *store.Store) *Handler {
 	return &Handler{store: s}
 }
 
+// apiBase is the mount point for every dashboard endpoint; it is itself mounted
+// under the UI base path (e.g. /insights/api/...). OTLP ingest lives at the root
+// /v1 instead and is registered separately in main.
+const apiBase = "/api"
+
+// routeGroup registers GET routes sharing a path prefix — the stdlib equivalent
+// of a router's route group, so each domain's prefix is written once and the
+// whole tree could be versioned by changing apiBase alone.
+type routeGroup struct {
+	mux    *http.ServeMux
+	prefix string
+}
+
+func (g routeGroup) get(path string, fn http.HandlerFunc) {
+	g.mux.HandleFunc("GET "+g.prefix+path, fn)
+}
+
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/filters", h.filterOptions)
-	mux.HandleFunc("GET /api/genai/token-summary", h.tokenSummary)
-	mux.HandleFunc("GET /api/genai/token-timeseries", h.tokenTimeseries)
-	mux.HandleFunc("GET /api/genai/operations", h.operations)
-	mux.HandleFunc("GET /api/genai/user-summary", h.userSummary)
-	mux.HandleFunc("GET /api/genai/active-users", h.activeUsers)
-	mux.HandleFunc("GET /api/genai/active-users-timeseries", h.activeUsersTimeseries)
-	mux.HandleFunc("GET /api/genai/operation-duration-timeseries", h.operationDurationTimeseries)
-	mux.HandleFunc("GET /api/genai/model-distribution", h.modelDistribution)
-	mux.HandleFunc("GET /api/genai/cache-efficiency", h.cacheEfficiency)
-	mux.HandleFunc("GET /api/genai/token-composition", h.tokenComposition)
-	mux.HandleFunc("GET /api/genai/reasoning-share", h.reasoningShare)
-	mux.HandleFunc("GET /api/genai/errors", h.genaiErrors)
-	mux.HandleFunc("GET /api/genai/anomalies", h.anomalies)
-	mux.HandleFunc("GET /api/genai/anomaly-timeseries", h.anomalyTimeseries)
-	mux.HandleFunc("GET /api/genai/cost-anomalies", h.costAnomalies)
-	mux.HandleFunc("GET /api/genai/cost-anomaly-timeseries", h.costAnomalyTimeseries)
-	mux.HandleFunc("GET /api/genai/anomaly-feed", h.anomalyFeed)
-	mux.HandleFunc("GET /api/genai/costs", h.costs)
-	mux.HandleFunc("GET /api/genai/cost-report", h.costReport)
-	mux.HandleFunc("GET /api/traces", h.traceList)
-	mux.HandleFunc("GET /api/traces/{id}", h.traceByID)
-	mux.HandleFunc("GET /api/finops/cost-timeseries", h.costTimeseries)
-	mux.HandleFunc("GET /api/finops/token-timeseries", h.tokenVolumeTimeseries)
-	mux.HandleFunc("GET /api/finops/budget", h.budget)
-	mux.HandleFunc("GET /api/product/model-mix", h.modelMix)
-	mux.HandleFunc("GET /api/product/operation-mix", h.operationMix)
-	mux.HandleFunc("GET /api/product/tokens-per-request", h.tokensPerRequest)
-	mux.HandleFunc("GET /api/product/sessions-timeseries", h.sessionsTimeseries)
-	mux.HandleFunc("GET /api/product/session-stats", h.sessionStats)
-	mux.HandleFunc("GET /api/product/interactions", h.interactions)
-	mux.HandleFunc("GET /api/customers/user-stats", h.userStats)
-	mux.HandleFunc("GET /api/customers/segments", h.userSegments)
-	mux.HandleFunc("GET /api/customers/cohort-retention", h.cohortRetention)
-	mux.HandleFunc("GET /api/customers/app-adoption", h.appAdoption)
-	mux.HandleFunc("GET /api/customers/model-preference", h.modelPreference)
-	mux.HandleFunc("GET /api/customers/burst", h.burst)
-	mux.HandleFunc("GET /api/customers/new-vs-returning", h.newVsReturning)
-	mux.HandleFunc("GET /api/ops/latency-percentiles", h.latencyPercentiles)
-	mux.HandleFunc("GET /api/ops/throughput", h.throughput)
-	mux.HandleFunc("GET /api/ops/ttfc-timeseries", h.ttfcTimeseries)
-	mux.HandleFunc("GET /api/ops/error-rate", h.genaiErrorRate)
-	mux.HandleFunc("GET /api/ops/tools", h.toolStats)
-	mux.HandleFunc("GET /api/ops/top-consumers", h.topConsumers)
-	mux.HandleFunc("GET /api/http/summary", h.httpSummary)
-	mux.HandleFunc("GET /api/http/timeseries", h.httpTimeseries)
-	mux.HandleFunc("GET /api/http/requests-timeseries", h.httpRequestsTimeseries)
-	mux.HandleFunc("GET /api/http/errors-by-code", h.httpErrorsByCode)
-	mux.HandleFunc("GET /api/http/top-routes", h.topRoutes)
+	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix} }
+
+	core := group("")
+	core.get("/filters", h.filterOptions)
+	core.get("/traces", h.traceList)
+	core.get("/traces/{id}", h.traceByID)
+
+	genai := group("/genai")
+	genai.get("/token-summary", jsonRoute(h, h.store.QueryTokenSummary))
+	genai.get("/token-timeseries", jsonRouteIv(h, h.store.QueryTokenTimeseries))
+	genai.get("/operations", jsonRoute(h, h.store.QueryOperationSummary))
+	genai.get("/active-users", h.activeUsers)
+	genai.get("/operation-duration-timeseries", jsonRouteIv(h, h.store.QueryOperationDurationTimeseries))
+	genai.get("/model-distribution", jsonRoute(h, h.store.QueryModelDistribution))
+	genai.get("/cache-efficiency", jsonRouteIv(h, h.store.QueryCacheEfficiency))
+	genai.get("/token-composition", jsonRouteIv(h, h.store.QueryTokenComposition))
+	genai.get("/reasoning-share", jsonRouteIv(h, h.store.QueryReasoningShare))
+	genai.get("/errors", jsonRoute(h, h.store.QueryGenAIErrors))
+	genai.get("/anomalies", h.anomalies)
+	genai.get("/anomaly-timeseries", h.anomalyTimeseries)
+	genai.get("/cost-anomaly-timeseries", h.costAnomalyTimeseries)
+	genai.get("/anomaly-feed", h.anomalyFeed)
+	genai.get("/costs", h.costs)
+	genai.get("/cost-report", h.costReport)
+
+	finops := group("/finops")
+	finops.get("/cost-timeseries", jsonRouteBy(h, h.store.QueryCostTimeseries))
+	finops.get("/token-timeseries", jsonRouteBy(h, h.store.QueryTokenVolumeTimeseries))
+	finops.get("/budget", h.budget)
+
+	product := group("/product")
+	product.get("/model-mix", jsonRouteIv(h, h.store.QueryModelMixTimeseries))
+	product.get("/operation-mix", jsonRouteIv(h, h.store.QueryOperationMixTimeseries))
+	product.get("/tokens-per-request", jsonRouteIv(h, h.store.QueryTokensPerRequest))
+	product.get("/sessions-timeseries", jsonRouteIv(h, h.store.QuerySessionsTimeseries))
+	product.get("/session-stats", jsonRoute(h, h.store.QuerySessionStats))
+	product.get("/interactions", h.interactions)
+
+	customers := group("/customers")
+	customers.get("/user-stats", h.userStats)
+	customers.get("/segments", jsonRoute(h, h.store.QueryUserSegments))
+	customers.get("/cohort-retention", h.cohortRetention)
+	customers.get("/app-adoption", jsonRoute(h, h.store.QueryAppAdoption))
+	customers.get("/model-preference", jsonRoute(h, h.store.QueryModelPreferenceBySegment))
+	customers.get("/burst", h.burst)
+	customers.get("/new-vs-returning", jsonRouteIv(h, h.store.QueryNewVsReturningTimeseries))
+
+	ops := group("/ops")
+	ops.get("/latency-percentiles", jsonRouteIv(h, h.store.QueryLatencyPercentiles))
+	ops.get("/throughput", jsonRouteIv(h, h.store.QueryThroughputTimeseries))
+	ops.get("/ttfc-timeseries", jsonRouteIv(h, h.store.QueryTTFCTimeseries))
+	ops.get("/error-rate", jsonRouteIv(h, h.store.QueryGenAIErrorRate))
+	ops.get("/tools", jsonRoute(h, h.store.QueryToolStats))
+	ops.get("/top-consumers", h.topConsumers)
+
+	httpg := group("/http")
+	httpg.get("/summary", jsonRoute(h, h.store.QueryHTTPSummary))
+	httpg.get("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
+	httpg.get("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
+	httpg.get("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
 }
 
 func parseTimeRange(r *http.Request) (time.Time, time.Time) {
@@ -85,16 +116,26 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 			to = t
 		}
 	}
+	// Guard an inverted range so a swapped from/to returns the intended window
+	// rather than silently empty results.
+	if from.After(to) {
+		from, to = to, from
+	}
 	return from, to
 }
 
-func parseFilter(r *http.Request) store.Filter {
+func (h *Handler) parseFilter(r *http.Request) store.Filter {
 	q := r.URL.Query()
+	// User/department/location are matched against the directory table inside the
+	// query (see Filter.clause); nothing to expand here.
 	return store.Filter{
-		Service:  q.Get("service"),
-		User:     q.Get("user"),
-		Provider: q.Get("provider"),
-		Models:   parseModels(q.Get("models")),
+		App:        q.Get("app"),
+		User:       q.Get("user"),
+		Department: q.Get("department"),
+		Location:   q.Get("location"),
+		DeptPrefix: h.store.DepartmentPrefix(),
+		Provider:   q.Get("provider"),
+		Models:     parseModels(q.Get("models")),
 	}
 }
 
@@ -112,8 +153,15 @@ func parseModels(value string) []string {
 	return result
 }
 
+// intervalRe constrains the interval to a "<n> <unit>" form before it is bound
+// into CAST(? AS INTERVAL). An out-of-shape value (which would make DuckDB raise
+// a cast error surfaced as a 500) falls back to the default rather than reaching
+// the engine. It is a bound parameter, not concatenated, so this is robustness,
+// not an injection guard.
+var intervalRe = regexp.MustCompile(`^\d{1,5} (second|minute|hour|day|week|month)s?$`)
+
 func parseInterval(r *http.Request) string {
-	if v := r.URL.Query().Get("interval"); v != "" {
+	if v := r.URL.Query().Get("interval"); intervalRe.MatchString(v) {
 		return v
 	}
 	return "1 hour"
@@ -134,5 +182,48 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func writeErr(w http.ResponseWriter, err error) {
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Log the detail server-side; return a generic message so raw engine errors
+	// (table/column names, SQL) are not disclosed to clients.
+	log.Printf("api: %v", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// jsonRoute adapts a store query of shape (ctx, from, to, filter) into a GET
+// handler: parse the range + filters, run, encode JSON (or 500). jsonRouteIv
+// adds the interval string; jsonRouteBy adds the ?by= group-by. The generic
+// signatures make a mismatched query a compile error, not a runtime one.
+func jsonRoute[T any](h *Handler, q func(context.Context, time.Time, time.Time, store.Filter) (T, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseTimeRange(r)
+		v, err := q(r.Context(), from, to, h.parseFilter(r))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, v)
+	}
+}
+
+func jsonRouteIv[T any](h *Handler, q func(context.Context, time.Time, time.Time, string, store.Filter) (T, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseTimeRange(r)
+		v, err := q(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, v)
+	}
+}
+
+func jsonRouteBy[T any](h *Handler, q func(context.Context, time.Time, time.Time, string, string, store.Filter) (T, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseTimeRange(r)
+		v, err := q(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), h.parseFilter(r))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, v)
+	}
 }

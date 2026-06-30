@@ -16,8 +16,8 @@ export function apiUrl(path: string, params: Params): string {
   return `${path.replace(/^\//, '')}?${search.toString()}`
 }
 
-export async function apiGet<T>(path: string, params: Params): Promise<T> {
-  const res = await fetch(apiUrl(path, params))
+export async function apiGet<T>(path: string, params: Params, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(apiUrl(path, params), { signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }

@@ -13,6 +13,8 @@ import (
 type AnomalyPoint struct {
 	Bucket    time.Time `json:"bucket"`
 	GroupKey  string    `json:"group_key"`
+	Name      string    `json:"name,omitempty"` // resolved when group_by=user; else empty
+	Kind      string    `json:"kind,omitempty"`
 	TokenType string    `json:"token_type"`
 	Tokens    float64   `json:"tokens"`
 	Expected  float64   `json:"expected"`
@@ -26,12 +28,22 @@ const (
 	minBaseline     = 6
 )
 
-var anomalyGroupColumns = map[string]string{
-	"none":    "''",
-	"user":    "COALESCE(enduser_id, '')",
-	"service": "COALESCE(service_name, '')",
-	"model":   "COALESCE(request_model, '')",
+// anomalyGroupCols builds the anomaly group-by dimensions for a telemetry table;
+// userCol is its end-user column (enduser_id on genai_metrics, user_id on
+// genai_spans). app_id and request_model are named the same on both tables.
+func anomalyGroupCols(userCol string) map[string]string {
+	return map[string]string{
+		"none":  "''",
+		"user":  "COALESCE(" + userCol + ", '')",
+		"app":   "COALESCE(app_id, '')",
+		"model": "COALESCE(request_model, '')",
+	}
 }
+
+var (
+	anomalyGroupColumns     = anomalyGroupCols("enduser_id")
+	spanAnomalyGroupColumns = anomalyGroupCols("user_id")
+)
 
 // QueryTokenAnomalies buckets input/output token consumption and scores each
 // bucket against the rolling mean/stddev of the preceding buckets in the same
@@ -104,6 +116,9 @@ func (s *Store) QueryTokenAnomalies(ctx context.Context, from, to time.Time, int
 		if err := rows.Scan(&r.Bucket, &r.GroupKey, &r.TokenType, &r.Tokens, &r.Expected, &r.Score); err != nil {
 			return nil, err
 		}
+		if groupBy == "user" {
+			r.Name, r.Kind = s.resolveName(r.GroupKey, "")
+		}
 		result = append(result, r)
 	}
 	return result, rows.Err()
@@ -114,18 +129,11 @@ func (s *Store) QueryTokenAnomalies(ctx context.Context, from, to time.Time, int
 type ScorePoint struct {
 	Bucket   time.Time `json:"bucket"`
 	GroupKey string    `json:"group_key"`
+	Name     string    `json:"name,omitempty"` // resolved when group_by=user; else empty
+	Kind     string    `json:"kind,omitempty"`
 	Value    float64   `json:"value"`
 	Expected float64   `json:"expected"`
 	Score    float64   `json:"score"`
-}
-
-// spanAnomalyGroupColumns mirrors anomalyGroupColumns but for genai_spans, where
-// the end user lives in user_id (genai_metrics calls it enduser_id).
-var spanAnomalyGroupColumns = map[string]string{
-	"none":    "''",
-	"user":    "COALESCE(user_id, '')",
-	"service": "COALESCE(service_name, '')",
-	"model":   "COALESCE(request_model, '')",
 }
 
 // rollingScoreSQL wraps a bucketed inner SELECT (which must yield columns named
@@ -215,26 +223,38 @@ func (s *Store) QueryCostAnomalies(ctx context.Context, from, to time.Time, inte
 		return nil, fmt.Errorf("invalid group_by %q", groupBy)
 	}
 	clause, fargs := f.spansClause()
-	return s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
+	pts, err := s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
 		"(input_tokens > 0 OR output_tokens > 0)", groupCol, clause, fargs, from, to, interval, minScore)
+	if err != nil {
+		return nil, err
+	}
+	if groupBy == "user" {
+		for i := range pts {
+			pts[i].Name, pts[i].Kind = s.resolveName(pts[i].GroupKey, "")
+		}
+	}
+	return pts, nil
 }
 
 // AnomalyFeedRow is one flagged (dimension, entity, metric) bucket in the unified
 // feed — the cross-dimension ranking that replaces manually toggling group_by.
 type AnomalyFeedRow struct {
 	Bucket    time.Time `json:"bucket"`
-	Dimension string    `json:"dimension"` // user | service | model
+	Dimension string    `json:"dimension"` // user | app | model
 	GroupKey  string    `json:"group_key"`
+	Name      string    `json:"name,omitempty"` // resolved when dimension=user; else empty
+	Kind      string    `json:"kind,omitempty"`
 	Metric    string    `json:"metric"` // cost | tokens
 	Value     float64   `json:"value"`
 	Expected  float64   `json:"expected"`
 	Score     float64   `json:"score"`
 }
 
-// QueryAnomalyFeed scores spend and token consumption across the user, service
-// and model dimensions and returns the top `limit` flagged buckets ranked by
-// z-score. Cost comes from genai_spans, tokens from genai_metrics, so the two are
-// scored separately and merged in Go.
+// QueryAnomalyFeed scores spend and token consumption across the user, app and
+// model dimensions and returns the top `limit` flagged buckets ranked by
+// z-score. Cost comes from genai_spans (the only source carrying materialized
+// cost); tokens from genai_metrics. The series are scored separately and merged
+// in Go on the raw group key, which matches across tables for every dimension.
 func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interval string, minScore float64, limit int, f Filter) ([]AnomalyFeedRow, error) {
 	if minScore <= 0 {
 		minScore = 3
@@ -251,14 +271,20 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 			if p.GroupKey == "" {
 				continue // unattributed traffic isn't an actionable culprit
 			}
-			feed = append(feed, AnomalyFeedRow{
+			row := AnomalyFeedRow{
 				Bucket: p.Bucket, Dimension: dim, GroupKey: p.GroupKey,
 				Metric: metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
-			})
+			}
+			if dim == "user" || dim == "app" {
+				// group_key is the raw principal/app_id; resolve it to the directory
+				// display name so apps read the same here as elsewhere in the UI.
+				row.Name, row.Kind = s.resolveName(p.GroupKey, "")
+			}
+			feed = append(feed, row)
 		}
 	}
 
-	for _, dim := range []string{"user", "service", "model"} {
+	for _, dim := range []string{"user", "app", "model"} {
 		cost, err := s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
 			"(input_tokens > 0 OR output_tokens > 0)", spanAnomalyGroupColumns[dim], costClause, costArgs, from, to, interval, minScore)
 		if err != nil {

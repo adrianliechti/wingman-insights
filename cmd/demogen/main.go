@@ -40,7 +40,7 @@ type modelDef struct {
 type userDef struct {
 	id        string
 	email     string
-	service   string // primary application (service_name)
+	service   string // calling application (service.peer.name)
 	joinAt    time.Time
 	churnAt   time.Time // zero => never churns
 	intensity float64   // 0..1
@@ -49,11 +49,11 @@ type userDef struct {
 var (
 	services  = []string{"chat-api", "agent-service", "embedding-worker"}
 	modelDefs = []modelDef{
-		{"openai", "gpt-4o", 800, 400, false},                    // 0 premium
-		{"openai", "gpt-4o-mini", 500, 250, false},               // 1 cheap
+		{"openai", "gpt-4o", 800, 400, false},                      // 0 premium
+		{"openai", "gpt-4o-mini", 500, 250, false},                 // 1 cheap
 		{"anthropic", "claude-sonnet-4-20250514", 1200, 600, true}, // 2 premium
-		{"anthropic", "claude-haiku-4-5", 400, 200, false},       // 3 cheap
-		{"gcp.gemini", "gemini-2.0-flash", 600, 300, true},       // 4 cheap
+		{"anthropic", "claude-haiku-4-5", 400, 200, false},         // 3 cheap
+		{"gcp.gemini", "gemini-2.0-flash", 600, 300, true},         // 4 cheap
 	}
 	premiumModels = []int{0, 2}
 	cheapModels   = []int{1, 3, 4}
@@ -62,7 +62,6 @@ var (
 		"ivan", "judy", "mallory", "niaj", "olivia", "peggy", "rupert", "sybil",
 		"trent", "victor", "walter", "wendy", "xena", "yuri", "zoe",
 	}
-	operations = []string{"chat", "embeddings", "generate_content"}
 	httpRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/completions", "/api/agents/invoke"}
 	errorCodes = []int{400, 401, 403, 404, 429, 500, 502, 503}
 
@@ -286,6 +285,9 @@ func buildBatch(t time.Time, active []userDef) *colmetrics.ExportMetricsServiceR
 			kv("user.id", u.id),
 			kv("user.email", u.email),
 			kv("gen_ai.conversation.id", sessionID),
+			// service.peer.name is the calling app on the metric data point (the
+			// gateway stamps it); the resource service.name below is the gateway.
+			kv("service.peer.name", svc),
 		}
 
 		bySvc[svc] = append(bySvc[svc],
@@ -316,7 +318,9 @@ func buildBatch(t time.Time, active []userDef) *colmetrics.ExportMetricsServiceR
 		}
 		rms = append(rms, &metrics.ResourceMetrics{
 			Resource: &resource.Resource{
-				Attributes: []*common.KeyValue{kv("service.name", svc)},
+				// The gateway emits the metrics; the calling app is service.peer.name
+				// on each data point (see baseAttrs), not the resource service.name.
+				Attributes: []*common.KeyValue{kv("service.name", "wingman")},
 			},
 			ScopeMetrics: []*metrics.ScopeMetrics{{
 				Scope:   &common.InstrumentationScope{Name: "github.com/adrianliechti/wingman"},
@@ -417,6 +421,7 @@ func buildUserTrace(t time.Time, u userDef, svc string) []*tracepb.Span {
 		kv("user.id", u.id),
 		kv("user.email", u.email),
 		kv("gen_ai.conversation.id", sessionID),
+		kv("service.peer.name", svc),
 	}
 
 	rootStart := t
@@ -532,6 +537,7 @@ func emitBurst() *coltrace.ExportTraceServiceRequest {
 		kv("user.id", u.id),
 		kv("user.email", u.email),
 		kv("gen_ai.conversation.id", session),
+		kv("service.peer.name", svc),
 	}
 
 	cursor := burstTime

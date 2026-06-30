@@ -10,11 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"insights/pkg/directory"
+
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 type Store struct {
-	db *sql.DB
+	db         *sql.DB
+	dir        directory.Directory // nil = no resolution; raw ids pass through
+	deptPrefix bool                // hierarchical department filtering
 }
 
 type TimeseriesPoint struct {
@@ -164,6 +168,16 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// columnExists reports whether table has the named column, for guarding
+// one-shot in-place column migrations (DuckDB has no RENAME COLUMN IF EXISTS).
+func (s *Store) columnExists(table, column string) bool {
+	var n int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+		table, column).Scan(&n)
+	return err == nil && n > 0
+}
+
 func (s *Store) migrate() error {
 	stmts := []string{
 		"CREATE SEQUENCE IF NOT EXISTS genai_metrics_id_seq",
@@ -172,6 +186,7 @@ func (s *Store) migrate() error {
 			received_at   TIMESTAMP NOT NULL,
 			time          TIMESTAMP NOT NULL,
 			service_name  VARCHAR,
+			app_id        VARCHAR,
 			metric_name   VARCHAR NOT NULL,
 			operation_name VARCHAR,
 			provider_name VARCHAR,
@@ -212,6 +227,9 @@ func (s *Store) migrate() error {
 	}
 	stmts = append(stmts,
 		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS session_id VARCHAR",
+		// app_id (service.peer.name) was added so the App filter narrows metric
+		// queries too, not just spans; existing DBs backfill as NULL (unattributed).
+		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS app_id VARCHAR",
 		"CREATE SEQUENCE IF NOT EXISTS genai_spans_id_seq",
 		`CREATE TABLE IF NOT EXISTS genai_spans (
 			id            BIGINT DEFAULT nextval('genai_spans_id_seq') PRIMARY KEY,
@@ -224,7 +242,7 @@ func (s *Store) migrate() error {
 			name          VARCHAR,
 			kind          VARCHAR,
 			status        VARCHAR,
-			service_name  VARCHAR,
+			app_id        VARCHAR,
 			operation_name VARCHAR,
 			provider_name VARCHAR,
 			request_model VARCHAR,
@@ -248,16 +266,74 @@ func (s *Store) migrate() error {
 		// engine and cost rollups aggregate spend without re-pricing on read.
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cost DOUBLE",
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_savings DOUBLE",
+		// directory materializes the principal directory (one row per alias) so
+		// queries resolve user_id/user_email to a canonical identity, department
+		// and location via a JOIN rather than per-row in Go. It is rebuilt from
+		// the configured directory by SyncDirectory; empty (every telemetry id
+		// passes through as itself) when no directory is configured.
+		`CREATE TABLE IF NOT EXISTS directory (
+			alias      VARCHAR PRIMARY KEY,
+			id         VARCHAR,
+			name       VARCHAR,
+			kind       VARCHAR,
+			department VARCHAR,
+			location   VARCHAR
+		)`,
 	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", stmt[:40], err)
 		}
 	}
+	// genai_spans.service_name was repurposed to the calling application's identity
+	// (service.peer.name) and renamed to app_id — the gateway's resource
+	// service.name now lives only on the metrics tables. Rename in place for DBs
+	// created before the split; on fresh DBs the column is already app_id.
+	if s.columnExists("genai_spans", "service_name") {
+		if _, err := s.db.Exec("ALTER TABLE genai_spans RENAME COLUMN service_name TO app_id"); err != nil {
+			return fmt.Errorf("rename genai_spans.service_name to app_id: %w", err)
+		}
+	}
+	// Make app_id obey the single rule (service.peer.name ?? service.name) on rows
+	// written before it, reading the peer from the stored attributes JSON.
+	if err := s.backfillAppID(context.Background()); err != nil {
+		return fmt.Errorf("backfill app_id: %w", err)
+	}
 	// Price rows inserted before the cost columns existed (NULL on every existing
 	// row). No-op once every row is priced, so it stays cheap on later starts.
 	if err := s.backfillSpanCost(context.Background()); err != nil {
 		return fmt.Errorf("backfill span cost: %w", err)
+	}
+	return nil
+}
+
+// backfillAppID makes the app_id column obey the single rule
+// app_id = service.peer.name ?? service.name on rows written before the rule (or
+// before the column existed), so an application is keyed identically across
+// genai_spans and genai_metrics. service.peer.name is read from the stored
+// attributes JSON (the '$."..."' quoting is required — the key contains dots).
+// Both statements converge to a no-op once every row conforms, like
+// backfillSpanCost, so they stay cheap on later starts.
+func (s *Store) backfillAppID(ctx context.Context) error {
+	// genai_metrics.app_id was added later and is NULL on existing rows: fill from
+	// the data-point peer attribute, else the resource service.name.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE genai_metrics
+		SET app_id = COALESCE(
+			NULLIF(json_extract_string(attributes, '$."service.peer.name"'), ''),
+			service_name)
+		WHERE app_id IS NULL OR app_id = ''`); err != nil {
+		return fmt.Errorf("genai_metrics: %w", err)
+	}
+	// genai_spans.app_id holds the resource service.name on pre-rename rows; lift
+	// it to the recorded peer where present so pre-rename OIDC spans stop being
+	// bucketed under the gateway name and match the metric rows.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE genai_spans
+		SET app_id = json_extract_string(attributes, '$."service.peer.name"')
+		WHERE NULLIF(json_extract_string(attributes, '$."service.peer.name"'), '') IS NOT NULL
+		  AND app_id IS DISTINCT FROM json_extract_string(attributes, '$."service.peer.name"')`); err != nil {
+		return fmt.Errorf("genai_spans: %w", err)
 	}
 	return nil
 }

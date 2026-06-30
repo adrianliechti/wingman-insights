@@ -2,32 +2,41 @@ package store
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"time"
 )
 
-// FilterUser pairs a user id with its most recent known email.
+// FilterUser is one selectable principal in the filter dropdown: its id (the
+// Entra object id when resolved, else the raw OTel id) and, when resolved, a
+// display name and kind.
 type FilterUser struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"` // resolved display name; empty if unresolved
+	Kind string `json:"kind,omitempty"` // user | application; empty if unresolved
 }
 
 // FilterOptions are the distinct values available for dashboard filtering
 // within a time range.
 type FilterOptions struct {
-	Services  []string     `json:"services"`
-	Users     []FilterUser `json:"users"`
-	Providers []string     `json:"providers"`
-	Models    []string     `json:"models"`
+	Apps        []FilterUser `json:"apps"`
+	Users       []FilterUser `json:"users"`
+	Departments []string     `json:"departments"`
+	Locations   []string     `json:"locations"`
+	Providers   []string     `json:"providers"`
+	Models      []string     `json:"models"`
 }
 
-// QueryFilterOptions lists distinct apps (services), users, providers and
-// models seen in the given time range. Services include HTTP-only apps.
+// QueryFilterOptions lists distinct applications, users, providers and models
+// seen in the given time range.
 func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*FilterOptions, error) {
 	opts := &FilterOptions{
-		Services:  []string{},
-		Users:     []FilterUser{},
-		Providers: []string{},
-		Models:    []string{},
+		Apps:        []FilterUser{},
+		Users:       []FilterUser{},
+		Departments: []string{},
+		Locations:   []string{},
+		Providers:   []string{},
+		Models:      []string{},
 	}
 
 	collect := func(query string, dest *[]string, args ...any) error {
@@ -44,16 +53,6 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 			*dest = append(*dest, v)
 		}
 		return rows.Err()
-	}
-
-	if err := collect(`
-		SELECT DISTINCT service_name FROM (
-			SELECT service_name FROM genai_metrics WHERE time >= ? AND time <= ?
-			UNION ALL
-			SELECT service_name FROM http_metrics WHERE time >= ? AND time <= ?
-		) WHERE service_name IS NOT NULL AND service_name != '' ORDER BY service_name
-	`, &opts.Services, from, to, from, to); err != nil {
-		return nil, err
 	}
 
 	if err := collect(`
@@ -74,23 +73,108 @@ func (s *Store) QueryFilterOptions(ctx context.Context, from, to time.Time) (*Fi
 		return nil, err
 	}
 
+	// Resolve principals via the directory table and dedupe in SQL, so a user
+	// split across several OTel ids is one entry keyed by the canonical id. The
+	// department/location dropdowns are collected from the same resolved set, so
+	// they only offer groups that actually have activity in the range.
+	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT enduser_id, COALESCE(MAX(enduser_email), '') FROM genai_metrics
-		WHERE enduser_id IS NOT NULL AND enduser_id != ''
-		  AND time >= ? AND time <= ?
-		GROUP BY enduser_id
-		ORDER BY enduser_id
+		WITH resolved AS (
+			SELECT `+r.ID+` as id, `+r.Name+` as name, `+r.Kind+` as kind,
+				`+r.Dept+` as department, `+r.Loc+` as location
+			FROM genai_metrics`+r.Join+`
+			WHERE enduser_id IS NOT NULL AND enduser_id != ''
+			  AND genai_metrics.time >= ? AND genai_metrics.time <= ?
+		)
+		SELECT id, MAX(name) as name, MAX(kind) as kind, MAX(department) as department, MAX(location) as location
+		FROM resolved
+		GROUP BY id
 	`, from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	depts := make(map[string]bool)
+	locs := make(map[string]bool)
 	for rows.Next() {
 		var u FilterUser
-		if err := rows.Scan(&u.ID, &u.Email); err != nil {
+		var department, location string
+		if err := rows.Scan(&u.ID, &u.Name, &u.Kind, &department, &location); err != nil {
 			return nil, err
+		}
+		if department != "" {
+			depts[department] = true
+		}
+		if location != "" {
+			locs[location] = true
 		}
 		opts.Users = append(opts.Users, u)
 	}
-	return opts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	opts.Departments = sortedKeys(depts)
+	opts.Locations = sortedKeys(locs)
+	label := func(u FilterUser) string {
+		if u.Name != "" {
+			return u.Name
+		}
+		return u.ID
+	}
+	sort.Slice(opts.Users, func(i, j int) bool {
+		return strings.ToLower(label(opts.Users[i])) < strings.ToLower(label(opts.Users[j]))
+	})
+
+	// Applications are keyed by app_id (service.peer.name ?? service.name) on both
+	// genai_spans and genai_metrics; union them so an app seen in either source is
+	// selectable (cost is span-sourced, token charts metric-sourced — a selection
+	// must narrow both). Resolve each to its directory display name so the
+	// dropdown shows app names, not raw ids.
+	aSpans := dirResolveApp("genai_spans", "app_id")
+	aMetrics := dirResolveApp("genai_metrics", "app_id")
+	appRows, err := s.db.QueryContext(ctx, `
+		WITH resolved AS (
+			SELECT `+aSpans.ID+` as id, `+aSpans.Name+` as name, `+aSpans.Kind+` as kind
+			FROM genai_spans`+aSpans.Join+`
+			WHERE app_id IS NOT NULL AND app_id != ''
+			  AND genai_spans.time >= ? AND genai_spans.time <= ?
+			UNION ALL
+			SELECT `+aMetrics.ID+` as id, `+aMetrics.Name+` as name, `+aMetrics.Kind+` as kind
+			FROM genai_metrics`+aMetrics.Join+`
+			WHERE app_id IS NOT NULL AND app_id != ''
+			  AND genai_metrics.time >= ? AND genai_metrics.time <= ?
+		)
+		SELECT id, MAX(name) as name, MAX(kind) as kind FROM resolved GROUP BY id
+	`, from, to, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer appRows.Close()
+	for appRows.Next() {
+		var u FilterUser
+		if err := appRows.Scan(&u.ID, &u.Name, &u.Kind); err != nil {
+			return nil, err
+		}
+		opts.Apps = append(opts.Apps, u)
+	}
+	if err := appRows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(opts.Apps, func(i, j int) bool {
+		return strings.ToLower(label(opts.Apps[i])) < strings.ToLower(label(opts.Apps[j]))
+	})
+	return opts, nil
+}
+
+// sortedKeys returns the set's keys sorted case-insensitively, for stable
+// filter-dropdown ordering.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i]) < strings.ToLower(out[j])
+	})
+	return out
 }

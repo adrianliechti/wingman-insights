@@ -109,8 +109,8 @@ function SpanDetail({ span }: { span: SpanRow }) {
 
         <div className="mt-3 flex flex-wrap gap-1.5">
           {span.session_id && <MetaBadge label="Session" value={span.session_id} variant="strong" />}
-          {(span.user_email || span.user_id) && <MetaBadge label="User" value={span.user_email || span.user_id!} variant="strong" />}
-          {span.service_name && <MetaBadge label="App" value={span.service_name} />}
+          {(span.user_name || span.user_id) && <MetaBadge label="User" value={span.user_name || span.user_id!} variant="strong" />}
+          {span.app_id && <MetaBadge label="App" value={span.app_id} />}
           {span.operation_name && <MetaBadge value={span.operation_name} />}
           <MetaBadge label="Latency" value={fmtDuration(span.duration)} />
           {span.cost > 0 && <MetaBadge label="Cost" value={fmtCost(span.cost)} />}
@@ -325,7 +325,9 @@ export function Traces() {
               <div key={session || 'no-session'} className="mb-3">
                 <p className="truncate px-1.5 pb-1 font-mono text-[11px] text-gray-400 dark:text-gray-600" title={session}>
                   {session || 'no session'}
-                  {items[0].user_email && <span className="ml-1.5">· {items[0].user_email}</span>}
+                  {(items[0].user_name || items[0].user_id) && (
+                    <span className="ml-1.5">· {items[0].user_name || items[0].user_id}</span>
+                  )}
                 </p>
                 <div className="space-y-0.5">
                   {items.map((t) => {

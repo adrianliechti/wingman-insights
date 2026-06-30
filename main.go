@@ -13,6 +13,7 @@ import (
 	"insights/internal/api"
 	"insights/internal/ingest"
 	"insights/internal/store"
+	"insights/pkg/directory/entra"
 )
 
 func main() {
@@ -24,6 +25,37 @@ func main() {
 	// flushes its WAL and closes the file intact — a hard kill mid-write can
 	// corrupt the database.
 	defer s.Close()
+
+	// Optional Entra directory: resolves the OTel user.id / user.email values
+	// (object ids, emails or usernames) to display names and kinds. Unconfigured
+	// (no INSIGHTS_ENTRA_* env) → the store keeps raw ids and adds no resolution.
+	if dir, ok := entra.FromEnv(); ok {
+		s.SetDirectory(dir)
+		s.SetDepartmentPrefix(strings.EqualFold(os.Getenv("INSIGHTS_ENTRA_DEPARTMENT_MODE"), "prefix"))
+		// Keep the directory and its in-DB mirror fresh. Queries resolve
+		// identities by JOINing the directory table (not per-row Lookup), so the
+		// table must be re-materialized after each refresh — nothing else drives
+		// it. Warm both once at startup, then re-sync on an interval.
+		go func() {
+			sync := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if err := dir.Refresh(ctx); err != nil {
+					log.Printf("directory: refresh failed: %v", err)
+					return
+				}
+				if err := s.SyncDirectory(ctx); err != nil {
+					log.Printf("directory: table sync failed: %v", err)
+				}
+			}
+			sync()
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for range t.C {
+				sync()
+			}
+		}()
+	}
 
 	mux := http.NewServeMux()
 

@@ -42,30 +42,30 @@ func (f Filter) spansClause() (string, []any) {
 func (f Filter) clause(idCol, emailCol string) (string, []any) {
 	var b strings.Builder
 	var args []any
-	add := func(c string, a ...any) {
+	add := func(c string, a []any) {
+		if c == "" {
+			return
+		}
 		b.WriteString(c)
 		args = append(args, a...)
 	}
 
-	if c, a := userClause(idCol, emailCol, f.User); c != "" {
-		add(c, a...)
-	}
-	if c, a := attrClause(idCol, emailCol, "department", f.Department, f.DeptPrefix); c != "" {
-		add(c, a...)
-	}
-	if c, a := attrClause(idCol, emailCol, "location", f.Location, false); c != "" {
-		add(c, a...)
-	}
-	if c, a := appClause(f.App); c != "" {
-		add(c, a...)
-	}
-	if f.Provider != "" {
-		add(" AND provider_name = ?", f.Provider)
-	}
-	if c, a := modelClause(f.Models); c != "" {
-		add(c, a...)
-	}
+	add(userClause(idCol, emailCol, f.User))
+	add(attrClause(idCol, emailCol, "department", f.Department, f.DeptPrefix))
+	add(attrClause(idCol, emailCol, "location", f.Location, false))
+	add(appClause(f.App))
+	add(providerClause(f.Provider))
+	add(modelClause(f.Models))
 	return b.String(), args
+}
+
+// providerClause builds an " AND provider_name = ?" condition, or returns
+// ("", nil) when unset.
+func providerClause(provider string) (string, []any) {
+	if provider == "" {
+		return "", nil
+	}
+	return " AND provider_name = ?", []any{provider}
 }
 
 // userClause matches rows whose principal is the selected user: a direct id
@@ -131,14 +131,16 @@ func likeEscape(s string) string {
 func (f Filter) httpClause() (string, []any) {
 	var b strings.Builder
 	var args []any
-	if c, a := userClause("user_id", "user_email", f.User); c != "" {
+	add := func(c string, a []any) {
+		if c == "" {
+			return
+		}
 		b.WriteString(c)
 		args = append(args, a...)
 	}
-	if c, a := appClause(f.App); c != "" {
-		b.WriteString(c)
-		args = append(args, a...)
-	}
+
+	add(userClause("user_id", "user_email", f.User))
+	add(appClause(f.App))
 	return b.String(), args
 }
 

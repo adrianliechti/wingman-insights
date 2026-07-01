@@ -25,9 +25,7 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 			OperationName: getStringAttr(attrs, "gen_ai.operation.name"),
 			ProviderName:  getStringAttr(attrs, "gen_ai.provider.name"),
 			RequestModel:  getStringAttr(attrs, "gen_ai.request.model"),
-			ResponseModel: getStringAttr(attrs, "gen_ai.response.model"),
 			TokenType:     getStringAttr(attrs, "gen_ai.token.type"),
-			ServerAddress: getStringAttr(attrs, "server.address"),
 			ErrorType:     getStringAttr(attrs, "error.type"),
 			EndUserID:     getStringAttr(attrs, "user.id"),
 			EndUserEmail:  getStringAttr(attrs, "user.email"),
@@ -36,8 +34,6 @@ func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.
 			SessionID:  firstStringAttr(attrs, "gen_ai.conversation.id", "session.id"),
 			Count:      count,
 			Sum:        sum,
-			MinVal:     min,
-			MaxVal:     max,
 			Attributes: attrsToMap(attrs),
 		})
 	}

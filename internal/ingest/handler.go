@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"insights/internal/store"
@@ -14,6 +15,7 @@ import (
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
 	metrics "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -96,7 +98,7 @@ func (h *Handler) extract(req *colmetrics.ExportMetricsServiceRequest) ([]store.
 	var httpRows []store.HTTPMetricRow
 
 	for _, rm := range req.ResourceMetrics {
-		serviceName := getResourceServiceName(rm)
+		serviceName := getResourceServiceName(rm.Resource)
 
 		for _, sm := range rm.ScopeMetrics {
 			for _, m := range sm.Metrics {
@@ -120,11 +122,13 @@ type dpFunc func(attrs []*common.KeyValue, ts time.Time, count int64, sum, min, 
 func iterateDataPoints(m *metrics.Metric, fn dpFunc) {
 	switch d := m.Data.(type) {
 	case *metrics.Metric_Histogram:
+		warnCumulative(m.Name, d.Histogram.AggregationTemporality)
 		for _, dp := range d.Histogram.DataPoints {
 			ts := tsFromNano(dp.TimeUnixNano)
 			fn(dp.Attributes, ts, int64(dp.Count), dp.GetSum(), dp.GetMin(), dp.GetMax())
 		}
 	case *metrics.Metric_Sum:
+		warnCumulative(m.Name, d.Sum.AggregationTemporality)
 		for _, dp := range d.Sum.DataPoints {
 			ts := tsFromNano(dp.TimeUnixNano)
 			val := asFloat(dp)
@@ -144,6 +148,27 @@ func iterateDataPoints(m *metrics.Metric, fn dpFunc) {
 	}
 }
 
+// warnedCumulative dedupes the temporality warning to one line per metric name.
+var warnedCumulative sync.Map
+
+// warnCumulative flags the one alignment assumption between this ingest and the
+// wingman gateway that can't be enforced in code: the store aggregates metric
+// data points by SUM() over time windows, which is only correct for DELTA
+// temporality. wingman installs a delta selector on its insights exporter
+// (pkg/otel/otel_meter.go), so this never fires in the intended setup; if some
+// other sender (or a misconfigured exporter) delivers CUMULATIVE histograms or
+// counters, each export restates the running total and every count/sum query
+// over-reports. Log once per metric so the misconfiguration is visible.
+func warnCumulative(name string, t metrics.AggregationTemporality) {
+	if t != metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
+		return
+	}
+	if _, seen := warnedCumulative.LoadOrStore(name, struct{}{}); seen {
+		return
+	}
+	log.Printf("ingest: metric %q uses CUMULATIVE aggregation temporality; the store aggregates data points as DELTA, so its counts/sums will be over-reported — configure the exporter to send delta temporality to the insights endpoint", name)
+}
+
 func asFloat(dp *metrics.NumberDataPoint) float64 {
 	switch v := dp.Value.(type) {
 	case *metrics.NumberDataPoint_AsDouble:
@@ -161,11 +186,11 @@ func tsFromNano(ns uint64) time.Time {
 	return time.Unix(0, int64(ns)).UTC()
 }
 
-func getResourceServiceName(rm *metrics.ResourceMetrics) string {
-	if rm.Resource == nil {
+func getResourceServiceName(res *resourcepb.Resource) string {
+	if res == nil {
 		return ""
 	}
-	return getStringAttr(rm.Resource.Attributes, "service.name")
+	return getStringAttr(res.Attributes, "service.name")
 }
 
 // appID resolves the calling application's identity for the app_id column: the
@@ -220,6 +245,12 @@ func getIntAttr(attrs []*common.KeyValue, key string) int64 {
 func attrsToMap(attrs []*common.KeyValue) map[string]string {
 	m := make(map[string]string, len(attrs))
 	for _, kv := range attrs {
+		// Most OTel attributes are already strings; skip the reflection-based
+		// Sprintf for that common case, which runs once per attribute per row.
+		if sv, ok := kv.Value.GetValue().(*common.AnyValue_StringValue); ok {
+			m[kv.Key] = sv.StringValue
+			continue
+		}
 		m[kv.Key] = fmt.Sprintf("%v", valueToInterface(kv.Value))
 	}
 	return m

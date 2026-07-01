@@ -287,11 +287,17 @@ func (s *Store) QueryTraceList(ctx context.Context, from, to time.Time, f Filter
 	return result, nil
 }
 
+// maxTraceSpans caps QueryTrace's result: a normal trace has at most dozens of
+// spans, but a runaway agent tool-call loop could in principle emit far more,
+// and this is the one query in the store that returns raw (unaggregated) rows
+// with no natural bound.
+const maxTraceSpans = 5000
+
 // QueryTrace returns all stored spans of one trace, oldest first, including
 // raw attributes for the detail view.
 func (s *Store) QueryTrace(ctx context.Context, traceID string) ([]SpanRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+spanColumns+`, COALESCE(attributes, '{}')
-		FROM genai_spans WHERE trace_id = ? ORDER BY time, duration DESC`, traceID)
+		FROM genai_spans WHERE trace_id = ? ORDER BY time, duration DESC LIMIT ?`, traceID, maxTraceSpans)
 	if err != nil {
 		return nil, err
 	}

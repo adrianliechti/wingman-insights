@@ -7,26 +7,21 @@ import (
 )
 
 type HTTPMetricRow struct {
-	ReceivedAt    time.Time
-	Time          time.Time
-	ServiceName   string
-	MetricName    string
-	Direction     string
-	Method        string
-	Route         string
-	StatusCode    int
-	URLScheme     string
-	ServerAddress string
-	ServerPort    int
-	ErrorType     string
-	AppID         string
-	UserID        string
-	UserEmail     string
-	Count         int64
-	Sum           float64
-	MinVal        float64
-	MaxVal        float64
-	Attributes    map[string]string
+	ReceivedAt  time.Time
+	Time        time.Time
+	ServiceName string
+	MetricName  string
+	Direction   string
+	Method      string
+	Route       string
+	StatusCode  int
+	ErrorType   string
+	AppID       string
+	UserID      string
+	UserEmail   string
+	Count       int64
+	Sum         float64
+	Attributes  map[string]string
 }
 
 type HTTPSummaryRow struct {
@@ -55,10 +50,10 @@ func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) err
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO http_metrics
 		(received_at, time, service_name, metric_name, direction, method, route,
-		 status_code, url_scheme, server_address, server_port, error_type,
+		 status_code, error_type,
 		 app_id, user_id, user_email,
-		 count, sum, min_val, max_val, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 count, sum, attributes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -68,9 +63,8 @@ func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) err
 		attrs, _ := json.Marshal(r.Attributes)
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.ServiceName, r.MetricName, r.Direction,
-			r.Method, r.Route, r.StatusCode, r.URLScheme, r.ServerAddress,
-			r.ServerPort, r.ErrorType, r.AppID, r.UserID, r.UserEmail,
-			r.Count, r.Sum, r.MinVal, r.MaxVal,
+			r.Method, r.Route, r.StatusCode, r.ErrorType, r.AppID, r.UserID, r.UserEmail,
+			r.Count, r.Sum,
 			string(attrs),
 		)
 		if err != nil {

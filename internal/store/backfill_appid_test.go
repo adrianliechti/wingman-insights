@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// TestBackfillAppID guards the migration that makes app_id obey
-// service.peer.name ?? service.name on pre-rule rows, reading the peer from the
-// stored attributes JSON so an app is keyed identically across both tables.
+// TestBackfillAppID guards the migrations (backfillSpansAppID + backfillAppID)
+// that make app_id obey service.peer.name ?? service.name on pre-rule rows,
+// reading the peer from the stored attributes JSON so an app is keyed
+// identically across both tables.
 func TestBackfillAppID(t *testing.T) {
 	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
 	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
@@ -45,6 +46,12 @@ func TestBackfillAppID(t *testing.T) {
 		t.Fatalf("seed spans: %v", err)
 	}
 
+	// backfillSpansAppID covers genai_spans (only run by migrate() in the same
+	// startup as the service_name -> app_id rename); backfillAppID covers the
+	// null-guarded genai_metrics/http_metrics columns on every startup.
+	if err := s.backfillSpansAppID(ctx); err != nil {
+		t.Fatalf("backfillSpansAppID: %v", err)
+	}
 	if err := s.backfillAppID(ctx); err != nil {
 		t.Fatalf("backfillAppID: %v", err)
 	}

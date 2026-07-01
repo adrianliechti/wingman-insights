@@ -80,6 +80,12 @@ func open(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
+	// One DuckDB file backing a small self-hosted dashboard: cap pooled
+	// connections so a burst of concurrent panel requests can't each open their
+	// own DuckDB client context (buffers/vectors) unbounded; database/sql still
+	// queues and reuses beyond this, it just won't grow past it.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
 	// sql.Open is lazy; this first statement actually opens the file and triggers
 	// WAL replay.
 	if _, err := db.Exec("PRAGMA database_size"); err != nil {
@@ -191,16 +197,12 @@ func (s *Store) migrate() error {
 			operation_name VARCHAR,
 			provider_name VARCHAR,
 			request_model VARCHAR,
-			response_model VARCHAR,
 			token_type    VARCHAR,
-			server_address VARCHAR,
 			error_type    VARCHAR,
 			enduser_id    VARCHAR,
 			enduser_email VARCHAR,
 			count         BIGINT,
 			sum           DOUBLE,
-			min_val       DOUBLE,
-			max_val       DOUBLE,
 			attributes    JSON
 		)`,
 		"CREATE SEQUENCE IF NOT EXISTS http_metrics_id_seq",
@@ -214,17 +216,12 @@ func (s *Store) migrate() error {
 			method        VARCHAR,
 			route         VARCHAR,
 			status_code   INTEGER,
-			url_scheme    VARCHAR,
-			server_address VARCHAR,
-			server_port   INTEGER,
 			error_type    VARCHAR,
 			app_id        VARCHAR,
 			user_id       VARCHAR,
 			user_email    VARCHAR,
 			count         BIGINT,
 			sum           DOUBLE,
-			min_val       DOUBLE,
-			max_val       DOUBLE,
 			attributes    JSON
 		)`,
 	}
@@ -240,6 +237,22 @@ func (s *Store) migrate() error {
 		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS app_id VARCHAR",
 		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS user_id VARCHAR",
 		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS user_email VARCHAR",
+		// response_model/server_address/min_val/max_val (genai_metrics) and
+		// url_scheme/server_address/server_port/min_val/max_val (http_metrics) are
+		// stored but never read by any query — genai_metrics.response_model in
+		// particular is dead only here; the same column on genai_spans is read by
+		// QueryTrace/QueryTraceList and stays. Dropped rather than left unpopulated
+		// going forward, which would otherwise leave a schema nobody could tell was
+		// intentionally retired.
+		"ALTER TABLE genai_metrics DROP COLUMN IF EXISTS response_model",
+		"ALTER TABLE genai_metrics DROP COLUMN IF EXISTS server_address",
+		"ALTER TABLE genai_metrics DROP COLUMN IF EXISTS min_val",
+		"ALTER TABLE genai_metrics DROP COLUMN IF EXISTS max_val",
+		"ALTER TABLE http_metrics DROP COLUMN IF EXISTS url_scheme",
+		"ALTER TABLE http_metrics DROP COLUMN IF EXISTS server_address",
+		"ALTER TABLE http_metrics DROP COLUMN IF EXISTS server_port",
+		"ALTER TABLE http_metrics DROP COLUMN IF EXISTS min_val",
+		"ALTER TABLE http_metrics DROP COLUMN IF EXISTS max_val",
 		"CREATE SEQUENCE IF NOT EXISTS genai_spans_id_seq",
 		`CREATE TABLE IF NOT EXISTS genai_spans (
 			id            BIGINT DEFAULT nextval('genai_spans_id_seq') PRIMARY KEY,
@@ -303,6 +316,13 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec("ALTER TABLE genai_spans RENAME COLUMN service_name TO app_id"); err != nil {
 			return fmt.Errorf("rename genai_spans.service_name to app_id: %w", err)
 		}
+		// Only rows that predate this rename can have the mismatch this fixes, so
+		// it only ever needs to run in the same startup where the rename above
+		// fires; later starts see service_name already gone and skip straight
+		// past, avoiding a whole-table JSON-extract scan on every restart forever.
+		if err := s.backfillSpansAppID(context.Background()); err != nil {
+			return fmt.Errorf("backfill genai_spans.app_id: %w", err)
+		}
 	}
 	// Make app_id obey the single rule (service.peer.name ?? service.name) on rows
 	// written before it, reading the peer from the stored attributes JSON.
@@ -314,16 +334,45 @@ func (s *Store) migrate() error {
 	if err := s.backfillSpanCost(context.Background()); err != nil {
 		return fmt.Errorf("backfill span cost: %w", err)
 	}
+	// trace_id is a high-selectivity point/IN lookup: QueryTrace filters
+	// trace_id = ? and QueryTraceList does trace_id IN (...). An ART index turns
+	// those from full scans into index probes. (time is left to zonemaps since
+	// rows arrive in ~time order; low-cardinality columns like metric_name
+	// wouldn't benefit.) Created last, after every ALTER/RENAME above: DuckDB
+	// refuses to alter a table's columns while an index depends on it, so a
+	// pre-existing index would block the service_name → app_id rename on old DBs.
+	if _, err := s.db.Exec("CREATE INDEX IF NOT EXISTS idx_genai_spans_trace_id ON genai_spans(trace_id)"); err != nil {
+		return fmt.Errorf("create genai_spans trace_id index: %w", err)
+	}
 	return nil
+}
+
+// backfillSpansAppID lifts genai_spans.app_id from the resource service.name
+// (its pre-rename value) to the recorded peer where present, so pre-rename OIDC
+// spans stop being bucketed under the gateway name and match the metric rows.
+// Only rows written before the service_name -> app_id rename can carry this
+// mismatch, so the caller only runs this in the same startup where that rename
+// fires — see migrate(). Unlike backfillAppID's null-guarded UPDATEs, app_id is
+// never null here (it inherited service_name), so this can't be skipped via
+// zonemap stats; restricting it to the rename's one-time window is what keeps it
+// off every later startup instead.
+func (s *Store) backfillSpansAppID(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE genai_spans
+		SET app_id = json_extract_string(attributes, '$."service.peer.name"')
+		WHERE NULLIF(json_extract_string(attributes, '$."service.peer.name"'), '') IS NOT NULL
+		  AND app_id IS DISTINCT FROM json_extract_string(attributes, '$."service.peer.name"')`)
+	return err
 }
 
 // backfillAppID makes the app_id column obey the single rule
 // app_id = service.peer.name ?? service.name on rows written before the rule (or
-// before the column existed), so an application is keyed identically across
-// genai_spans and genai_metrics. service.peer.name is read from the stored
-// attributes JSON (the '$."..."' quoting is required — the key contains dots).
-// Both statements converge to a no-op once every row conforms, like
-// backfillSpanCost, so they stay cheap on later starts.
+// before the column existed), so an application is keyed identically across the
+// metrics tables. service.peer.name is read from the stored attributes JSON (the
+// '$."..."' quoting is required — the key contains dots). Both statements are
+// guarded by "app_id IS NULL", so they converge to a no-op (skippable via
+// row-group validity stats) once every row conforms, like backfillSpanCost, and
+// stay cheap on later starts.
 func (s *Store) backfillAppID(ctx context.Context) error {
 	// genai_metrics.app_id was added later and is NULL on existing rows: fill from
 	// the data-point peer attribute, else the resource service.name.
@@ -335,15 +384,20 @@ func (s *Store) backfillAppID(ctx context.Context) error {
 		WHERE app_id IS NULL OR app_id = ''`); err != nil {
 		return fmt.Errorf("genai_metrics: %w", err)
 	}
-	// genai_spans.app_id holds the resource service.name on pre-rename rows; lift
-	// it to the recorded peer where present so pre-rename OIDC spans stop being
-	// bucketed under the gateway name and match the metric rows.
+	// http_metrics.app_id/user_id/user_email were added later and are NULL on
+	// existing rows: fill them from the same principal attributes the ingest now
+	// extracts (they were already captured in the raw attributes JSON), so the App
+	// and User filters narrow historical HTTP traffic too. app_id follows the same
+	// peer-then-service.name rule as the genai tables.
 	if _, err := s.db.ExecContext(ctx, `
-		UPDATE genai_spans
-		SET app_id = json_extract_string(attributes, '$."service.peer.name"')
-		WHERE NULLIF(json_extract_string(attributes, '$."service.peer.name"'), '') IS NOT NULL
-		  AND app_id IS DISTINCT FROM json_extract_string(attributes, '$."service.peer.name"')`); err != nil {
-		return fmt.Errorf("genai_spans: %w", err)
+		UPDATE http_metrics
+		SET app_id = COALESCE(
+				NULLIF(json_extract_string(attributes, '$."service.peer.name"'), ''),
+				service_name),
+			user_id = json_extract_string(attributes, '$."user.id"'),
+			user_email = json_extract_string(attributes, '$."user.email"')
+		WHERE app_id IS NULL OR app_id = ''`); err != nil {
+		return fmt.Errorf("http_metrics: %w", err)
 	}
 	return nil
 }

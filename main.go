@@ -86,7 +86,17 @@ func main() {
 		addr = ":4318"
 	}
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	// Timeouts bound a stalled/slow client to a fixed amount of held-open memory
+	// (goroutine + partial read buffer) instead of indefinitely — otlpBodyLimit
+	// caps size, these cap time.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	// Trap SIGINT/SIGTERM so we drain in-flight requests and close DuckDB
 	// cleanly instead of letting the default handler hard-kill the process.

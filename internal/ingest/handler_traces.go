@@ -65,10 +65,7 @@ func extractSpans(req *coltrace.ExportTraceServiceRequest) []store.SpanRow {
 	var rows []store.SpanRow
 
 	for _, rs := range req.ResourceSpans {
-		serviceName := ""
-		if rs.Resource != nil {
-			serviceName = getStringAttr(rs.Resource.Attributes, "service.name")
-		}
+		serviceName := getResourceServiceName(rs.Resource)
 		for _, ss := range rs.ScopeSpans {
 			for _, sp := range ss.Spans {
 				if !hasGenAIAttr(sp.Attributes) {

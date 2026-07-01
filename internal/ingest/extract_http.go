@@ -19,18 +19,15 @@ func extractHTTP(m *metrics.Metric, serviceName string, now time.Time) []store.H
 
 	processDP := func(attrs []*common.KeyValue, ts time.Time, count int64, sum, min, max float64) {
 		rows = append(rows, store.HTTPMetricRow{
-			ReceivedAt:    now,
-			Time:          ts,
-			ServiceName:   serviceName,
-			MetricName:    m.Name,
-			Direction:     direction,
-			Method:        getStringAttr(attrs, "http.request.method"),
-			Route:         getStringAttr(attrs, "http.route"),
-			StatusCode:    int(getIntAttr(attrs, "http.response.status_code")),
-			URLScheme:     getStringAttr(attrs, "url.scheme"),
-			ServerAddress: getStringAttr(attrs, "server.address"),
-			ServerPort:    int(getIntAttr(attrs, "server.port")),
-			ErrorType:     getStringAttr(attrs, "error.type"),
+			ReceivedAt:  now,
+			Time:        ts,
+			ServiceName: serviceName,
+			MetricName:  m.Name,
+			Direction:   direction,
+			Method:      getStringAttr(attrs, "http.request.method"),
+			Route:       getStringAttr(attrs, "http.route"),
+			StatusCode:  int(getIntAttr(attrs, "http.response.status_code")),
+			ErrorType:   getStringAttr(attrs, "error.type"),
 			// The gateway stamps the calling app (service.peer.name) and end user
 			// (user.id / user.email) onto http.server metric data points via the
 			// otelhttp labeler, so the App and User dashboard filters narrow these
@@ -41,8 +38,6 @@ func extractHTTP(m *metrics.Metric, serviceName string, now time.Time) []store.H
 			UserEmail:  getStringAttr(attrs, "user.email"),
 			Count:      count,
 			Sum:        sum,
-			MinVal:     min,
-			MaxVal:     max,
 			Attributes: attrsToMap(attrs),
 		})
 	}

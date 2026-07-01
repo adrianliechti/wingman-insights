@@ -15,17 +15,13 @@ type GenAIMetricRow struct {
 	OperationName string
 	ProviderName  string
 	RequestModel  string
-	ResponseModel string
 	TokenType     string
-	ServerAddress string
 	ErrorType     string
 	EndUserID     string
 	EndUserEmail  string
 	SessionID     string
 	Count         int64
 	Sum           float64
-	MinVal        float64
-	MaxVal        float64
 	Attributes    map[string]string
 }
 
@@ -75,10 +71,10 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_metrics
 		(received_at, time, service_name, app_id, metric_name, operation_name, provider_name,
-		 request_model, response_model, token_type,
-		 server_address, error_type, enduser_id, enduser_email, session_id,
-		 count, sum, min_val, max_val, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 request_model, token_type,
+		 error_type, enduser_id, enduser_email, session_id,
+		 count, sum, attributes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -88,10 +84,10 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 		attrs, _ := json.Marshal(r.Attributes)
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.ServiceName, r.AppID, r.MetricName, r.OperationName,
-			r.ProviderName, r.RequestModel, r.ResponseModel, r.TokenType,
-			r.ServerAddress, r.ErrorType,
+			r.ProviderName, r.RequestModel, r.TokenType,
+			r.ErrorType,
 			r.EndUserID, r.EndUserEmail, r.SessionID,
-			r.Count, r.Sum, r.MinVal, r.MaxVal, string(attrs),
+			r.Count, r.Sum, string(attrs),
 		)
 		if err != nil {
 			return err
@@ -245,18 +241,27 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*ActiveUsersRow, error) {
 	clause, fargs := f.genaiClause()
 	dir := dirResolve("genai_metrics", "enduser_id", "enduser_email")
-	// Count distinct resolved identities, so a user appearing under several OTel
-	// ids counts once.
-	sub := `(SELECT COUNT(DISTINCT ` + dir.ID + `) FROM genai_metrics` + dir.Join + `
-			 WHERE enduser_id IS NOT NULL AND enduser_id != ''
-			   AND genai_metrics.time >= ? AND genai_metrics.time <= ?` + clause + `)`
-	var args []any
-	for _, window := range []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour} {
-		args = append(args, at.Add(-window), at)
-		args = append(args, fargs...)
+	// Single scan over the widest (30d/MAU) window; DAU and WAU are carved out of
+	// the same scan with conditional COUNT(DISTINCT ...) rather than re-scanning
+	// per window. Counting distinct resolved identities means a user appearing
+	// under several OTel ids still counts once.
+	q := `SELECT
+			COUNT(DISTINCT CASE WHEN genai_metrics.time >= ? THEN ` + dir.ID + ` END) as dau,
+			COUNT(DISTINCT CASE WHEN genai_metrics.time >= ? THEN ` + dir.ID + ` END) as wau,
+			COUNT(DISTINCT ` + dir.ID + `) as mau
+		  FROM genai_metrics` + dir.Join + `
+		  WHERE enduser_id IS NOT NULL AND enduser_id != ''
+		    AND genai_metrics.time >= ? AND genai_metrics.time <= ?` + clause
+	// Placeholder order: DAU cutoff, WAU cutoff, MAU window lower bound, upper bound,
+	// then the filter clause args.
+	args := []any{
+		at.Add(-24 * time.Hour),
+		at.Add(-7 * 24 * time.Hour),
+		at.Add(-30 * 24 * time.Hour),
+		at,
 	}
-	row := s.db.QueryRowContext(ctx,
-		"SELECT "+sub+" as dau, "+sub+" as wau, "+sub+" as mau", args...)
+	args = append(args, fargs...)
+	row := s.db.QueryRowContext(ctx, q, args...)
 
 	r := &ActiveUsersRow{}
 	if err := row.Scan(&r.DAU, &r.WAU, &r.MAU); err != nil {

@@ -203,8 +203,10 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 			t.Fatalf("insert metric: %v", err)
 		}
 	}
-	// Spans drive the cost breakdown. Costs are recomputed from pricing (the
-	// stored cost column is ignored), so assertions below use token counts.
+	// Spans drive the cost breakdown. These rows are inserted directly via raw
+	// SQL (bypassing InsertSpans, so cost/priced are never set — NULL), so
+	// assertions below use token counts rather than the materialized cost
+	// columns this test doesn't populate.
 	span := func(id, email string, in, out int) {
 		t.Helper()
 		if _, err := s.db.Exec(`INSERT INTO genai_spans

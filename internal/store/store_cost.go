@@ -48,9 +48,12 @@ type CostRow struct {
 	Priced bool `json:"priced"`
 }
 
-// QueryCostBreakdown returns priced token usage per (user, provider, model),
-// sourced from the partition counters (or spans) so cached tokens are priced at
-// their own rate. Base data for the per-user / per-model cost views and the CSV.
+// QueryCostBreakdown returns priced token usage per (user, provider, model).
+// Token counts are summed from the partition counters (or spans); costs are
+// summed from the per-span materialized cost columns (priced once, at insert
+// time), not re-priced live — the same source every other cost query reads, so
+// a pricing catalog refresh can't make this page disagree with them. Base data
+// for the per-user / per-model cost views and the CSV.
 func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Filter) ([]CostRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
@@ -72,11 +75,15 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 				`+a.Name+` as app_name,
 				COALESCE(provider_name, '') as provider_name,
 				COALESCE(request_model, '') as request_model,
-				input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens
+				input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+				input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced
 			FROM genai_spans`+r.Join+a.Join+`
 			WHERE (input_tokens > 0 OR output_tokens > 0) AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
 		)
-		SELECT principal, name, kind, department, location, app_id, app_name, provider_name, request_model,`+spansPartCols+`
+		SELECT principal, name, kind, department, location, app_id, app_name, provider_name, request_model,`+spansPartCols+`,
+			COALESCE(SUM(input_cost), 0), COALESCE(SUM(output_cost), 0),
+			COALESCE(SUM(cache_read_cost), 0), COALESCE(SUM(cache_creation_cost), 0),
+			COALESCE(SUM(cost), 0), COALESCE(SUM(cache_savings), 0), BOOL_AND(COALESCE(priced, false))
 		FROM resolved
 		GROUP BY principal, name, kind, department, location, app_id, app_name, provider_name, request_model
 	`, args...)
@@ -89,38 +96,19 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 	for rows.Next() {
 		var id, name, kind, department, location, appID, appName, provider, model string
 		var p tokenParts
+		var r CostRow
 		if err := rows.Scan(&id, &name, &kind, &department, &location, &appID, &appName, &provider, &model,
-			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
+			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning,
+			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CacheSavings, &r.Priced); err != nil {
 			return nil, err
 		}
-		price, priced := pricing.Lookup(provider, model)
-		r := CostRow{
-			ID:                  id,
-			Name:                name,
-			Kind:                kind,
-			Department:          department,
-			Location:            location,
-			AppID:               appID,
-			AppName:             appName,
-			ProviderName:        provider,
-			RequestModel:        model,
-			InputTokens:         p.Uncached, // billed (non-cached) input
-			OutputTokens:        p.Response + p.Reasoning,
-			CacheReadTokens:     p.CacheRead,
-			CacheCreationTokens: p.CacheWrite,
-			ReasoningTokens:     p.Reasoning,
-			Priced:              priced,
-		}
-		if priced {
-			r.InputCost = price.TokenCost("input", p.Uncached)
-			r.OutputCost = price.TokenCost("output", p.Response+p.Reasoning)
-			r.CacheReadCost = price.TokenCost("cache_read", p.CacheRead)
-			r.CacheCreationCost = price.TokenCost("cache_creation", p.CacheWrite)
-			r.TotalCost = r.InputCost + r.OutputCost + r.CacheReadCost + r.CacheCreationCost
-			// Savings = what the cache-read tokens would have cost at the full
-			// input rate, minus what they actually cost.
-			r.CacheSavings = price.TokenCost("input", p.CacheRead) - r.CacheReadCost
-		}
+		r.ID, r.Name, r.Kind, r.Department, r.Location = id, name, kind, department, location
+		r.AppID, r.AppName, r.ProviderName, r.RequestModel = appID, appName, provider, model
+		r.InputTokens = p.Uncached // billed (non-cached) input
+		r.OutputTokens = p.Response + p.Reasoning
+		r.CacheReadTokens = p.CacheRead
+		r.CacheCreationTokens = p.CacheWrite
+		r.ReasoningTokens = p.Reasoning
 		result = append(result, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -202,8 +190,12 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 }
 
 // QueryCostTimeseries returns spend per time bucket, stacked by request_model
-// (groupBy "model", default) or app_id (groupBy "app"). Priced from spans
-// so cached tokens are billed at their own rate.
+// (groupBy "model", default) or app_id (groupBy "app"). Cost is summed from the
+// per-span materialized cost column (priced at insert time), the same source
+// every other cost query reads — not re-priced live, so a pricing catalog
+// refresh can't make this chart disagree with them. An unpriced model
+// contributes 0 (its consumption stays visible via
+// QueryTokenVolumeTimeseries, the FinOps "Tokens" view).
 func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, interval, groupBy string, f Filter) ([]TimeseriesPoint, error) {
 	labelCol := "request_model"
 	if groupBy == "app" {
@@ -211,57 +203,17 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 	}
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTimeseries(ctx, `
 		SELECT
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(`+labelCol+`, '') as label,
-			COALESCE(provider_name, '') as provider_name,
-			COALESCE(request_model, '') as request_model,`+spansPartCols+`
+			COALESCE(SUM(cost), 0) as value,
+			COUNT(*) as count
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
-		GROUP BY bucket, label, provider_name, request_model
+		GROUP BY bucket, label
 		ORDER BY bucket
 	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	type key struct {
-		bucket time.Time
-		label  string
-	}
-	costs := make(map[key]float64)
-	var order []key
-	for rows.Next() {
-		var bucket time.Time
-		var label, provider, model string
-		var p tokenParts
-		if err := rows.Scan(&bucket, &label, &provider, &model,
-			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
-			return nil, err
-		}
-		price, priced := pricing.Lookup(provider, model)
-		if !priced {
-			// No price → no cost line. Unpriced consumption is not lost: it is
-			// surfaced by QueryTokenVolumeTimeseries (the FinOps "Tokens" view).
-			continue
-		}
-		k := key{bucket, label}
-		if _, seen := costs[k]; !seen {
-			order = append(order, k)
-		}
-		costs[k] += p.cost(price)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	result := make([]TimeseriesPoint, 0, len(order))
-	for _, k := range order {
-		result = append(result, TimeseriesPoint{Bucket: k.bucket, Label: k.label, Value: costs[k]})
-	}
-	return result, nil
 }
 
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
@@ -290,15 +242,18 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 	`, args...)
 }
 
-// backfillSpanCost fills the cost / cache_savings columns for rows inserted
-// before those columns existed (NULL on every pre-existing row). It prices once
-// per distinct (provider, model) — a handful of UPDATEs, not one per row, using
-// the same arithmetic as pricing.Price.Cost — then zeroes anything still NULL
-// (unpriced models) so the columns are never NULL afterward and this is a no-op
-// on subsequent starts.
+// backfillSpanCost fills the per-category cost columns (and their sum, cost /
+// cache_savings) for rows inserted before those columns existed — NULL on
+// every pre-existing row, since input_cost is the newest of the set and its
+// nullness is what gates every row that needs (re)pricing here, whether it
+// predates the original cost/cache_savings columns or just this later
+// per-category split. Priced once per distinct (provider, model) — a handful
+// of UPDATEs, not one per row — using the same arithmetic as
+// SpanRow.costBreakdown, then zeroes anything still NULL (unpriced models) so
+// every column is non-NULL afterward and this is a no-op on subsequent starts.
 func (s *Store) backfillSpanCost(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT COALESCE(provider_name, ''), COALESCE(request_model, '')
-		FROM genai_spans WHERE cost IS NULL`)
+		FROM genai_spans WHERE input_cost IS NULL`)
 	if err != nil {
 		return err
 	}
@@ -323,20 +278,28 @@ func (s *Store) backfillSpanCost(ctx context.Context) error {
 			continue // swept to 0 below
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE genai_spans SET
+			input_cost = GREATEST(COALESCE(input_tokens,0) - COALESCE(cache_read_tokens,0) - COALESCE(cache_creation_tokens,0), 0)/1000000.0*?,
+			output_cost = COALESCE(output_tokens,0)/1000000.0*?,
+			cache_read_cost = COALESCE(cache_read_tokens,0)/1000000.0*?,
+			cache_creation_cost = COALESCE(cache_creation_tokens,0)/1000000.0*?,
 			cost = GREATEST(COALESCE(input_tokens,0) - COALESCE(cache_read_tokens,0) - COALESCE(cache_creation_tokens,0), 0)/1000000.0*?
 				+ COALESCE(cache_read_tokens,0)/1000000.0*?
 				+ COALESCE(cache_creation_tokens,0)/1000000.0*?
 				+ COALESCE(output_tokens,0)/1000000.0*?,
-			cache_savings = COALESCE(cache_read_tokens,0)/1000000.0*?
-			WHERE cost IS NULL AND COALESCE(provider_name,'') = ? AND COALESCE(request_model,'') = ?`,
+			cache_savings = COALESCE(cache_read_tokens,0)/1000000.0*?,
+			priced = true
+			WHERE input_cost IS NULL AND COALESCE(provider_name,'') = ? AND COALESCE(request_model,'') = ?`,
+			price.Input, price.Output, price.CacheRead, price.CacheWrite,
 			price.Input, price.CacheRead, price.CacheWrite, price.Output,
 			price.Input-price.CacheRead,
 			p.provider, p.model); err != nil {
 			return err
 		}
 	}
-	// Unpriced models: make the columns non-NULL so they are not retried.
-	_, err = s.db.ExecContext(ctx, `UPDATE genai_spans SET cost = 0, cache_savings = 0 WHERE cost IS NULL`)
+	// Unpriced models: make every column non-NULL so they are not retried.
+	_, err = s.db.ExecContext(ctx, `UPDATE genai_spans SET
+		cost = 0, cache_savings = 0, input_cost = 0, output_cost = 0, cache_read_cost = 0, cache_creation_cost = 0, priced = false
+		WHERE input_cost IS NULL`)
 	return err
 }
 

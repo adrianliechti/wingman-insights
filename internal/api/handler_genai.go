@@ -37,7 +37,14 @@ func (h *Handler) activeUsers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) anomalies(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	groupBy := r.URL.Query().Get("group_by")
-	if groupBy == "" {
+	switch groupBy {
+	case "user", "app", "model", "none":
+		// valid as given
+	default:
+		// Empty or unrecognized: default rather than let an invalid value reach
+		// the store's stricter validation and surface as a 500 — matches how
+		// the costs endpoint treats an unrecognized group_by (defaults, doesn't
+		// error), since this is a dashboard parameter, not a security boundary.
 		groupBy = "user"
 	}
 	rows, err := h.store.QueryTokenAnomalies(r.Context(), from, to, parseInterval(r), groupBy, 3.0, h.parseFilter(r))

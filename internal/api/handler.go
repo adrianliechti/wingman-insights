@@ -106,19 +106,28 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 	from := now.Add(-24 * time.Hour)
 	to := now
 
+	var fromSet, toSet bool
 	if v := r.URL.Query().Get("from"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			from = t
+			fromSet = true
 		}
 	}
 	if v := r.URL.Query().Get("to"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			to = t
+			toSet = true
 		}
 	}
 	// Guard an inverted range so a swapped from/to returns the intended window
-	// rather than silently empty results.
-	if from.After(to) {
+	// rather than silently empty results. Only swap when BOTH bounds were
+	// explicitly supplied: if only one was given, the other is still its
+	// default (now / now-24h), and comparing a default against an unrelated
+	// explicit value (e.g. a "to" far in the past with no "from") isn't a
+	// genuinely inverted pair — swapping there would silently turn a
+	// single-sided request into a multi-year window instead of erroring or
+	// using the sane default.
+	if fromSet && toSet && from.After(to) {
 		from, to = to, from
 	}
 	return from, to
@@ -158,7 +167,7 @@ func parseModels(value string) []string {
 // a cast error surfaced as a 500) falls back to the default rather than reaching
 // the engine. It is a bound parameter, not concatenated, so this is robustness,
 // not an injection guard.
-var intervalRe = regexp.MustCompile(`^\d{1,5} (second|minute|hour|day|week|month)s?$`)
+var intervalRe = regexp.MustCompile(`^[1-9]\d{0,4} (second|minute|hour|day|week|month)s?$`)
 
 func parseInterval(r *http.Request) string {
 	if v := r.URL.Query().Get("interval"); intervalRe.MatchString(v) {

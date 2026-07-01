@@ -284,11 +284,20 @@ func (s *Store) migrate() error {
 			reasoning_tokens BIGINT,
 			attributes    JSON
 		)`,
-		// cost / cache_savings are materialized from token counts + models.dev
-		// pricing at insert time (see SpanRow.costAndSavings) so the SQL anomaly
-		// engine and cost rollups aggregate spend without re-pricing on read.
+		// cost / cache_savings / the four per-category costs are all materialized
+		// from token counts + models.dev pricing at insert time (see
+		// SpanRow.costBreakdown) so every cost-reading query — breakdown,
+		// timeseries, trace list, anomalies, user/app stats — aggregates spend
+		// with a plain SUM/BOOL_AND over these columns instead of re-pricing at
+		// read time, which would otherwise disagree with itself (and with the
+		// other queries) the next time the pricing catalog is refreshed.
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cost DOUBLE",
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_savings DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS input_cost DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS output_cost DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_read_cost DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_creation_cost DOUBLE",
+		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS priced BOOLEAN",
 		// directory materializes the principal directory (one row per alias) so
 		// queries resolve user_id/user_email to a canonical identity, department
 		// and location via a JOIN rather than per-row in Go. It is rebuilt from

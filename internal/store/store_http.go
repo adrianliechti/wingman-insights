@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -39,15 +40,13 @@ type HTTPErrorsByCodeRow struct {
 }
 
 func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) error {
+	return s.InsertMetrics(ctx, nil, rows)
+}
+
+func insertHTTPMetrics(ctx context.Context, tx *sql.Tx, rows []HTTPMetricRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO http_metrics
 		(received_at, time, service_name, metric_name, direction, method, route,
 		 status_code, error_type,
@@ -71,7 +70,7 @@ func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) err
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) QueryHTTPSummary(ctx context.Context, from, to time.Time, f Filter) ([]HTTPSummaryRow, error) {

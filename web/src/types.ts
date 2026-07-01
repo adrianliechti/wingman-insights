@@ -59,6 +59,18 @@ export interface AnomalyPoint {
   score: number
 }
 
+// TokenPartitionsPoint is one bucket of the five disjoint token partitions —
+// the base series the composition, cache-hit-rate and reasoning-share panels
+// are derived from client-side.
+export interface TokenPartitionsPoint {
+  bucket: string
+  uncached: number
+  cache_read: number
+  cache_write: number
+  response: number
+  reasoning: number
+}
+
 export interface CostRow {
   id?: string
   name?: string

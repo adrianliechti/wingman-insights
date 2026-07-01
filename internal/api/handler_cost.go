@@ -9,6 +9,31 @@ import (
 	"insights/internal/store"
 )
 
+// aggregateCostRows applies the group_by aggregation shared by the costs and
+// cost-report endpoints. dflt names the grouping used when the parameter is
+// empty or unrecognized ("user" for the JSON endpoint, "none" — the full
+// user × model breakdown — for the CSV).
+func aggregateCostRows(rows []store.CostRow, groupBy, dflt string) []store.CostRow {
+	switch groupBy {
+	case "user", "model", "app", "department", "location", "none":
+	default:
+		groupBy = dflt
+	}
+	switch groupBy {
+	case "user":
+		return store.AggregateCostsByUser(rows)
+	case "model":
+		return store.AggregateCostsByModel(rows)
+	case "app":
+		return store.AggregateCostsByApp(rows)
+	case "department":
+		return store.AggregateCostsByDepartment(rows)
+	case "location":
+		return store.AggregateCostsByLocation(rows)
+	}
+	return rows // "none"
+}
+
 // costs returns priced token usage. group_by=user (default) | model | app |
 // department | location | none (none = full user × model breakdown).
 func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
@@ -18,23 +43,14 @@ func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	switch r.URL.Query().Get("group_by") {
-	case "model":
-		rows = store.AggregateCostsByModel(rows)
-	case "app":
-		rows = store.AggregateCostsByApp(rows)
-	case "department":
-		rows = store.AggregateCostsByDepartment(rows)
-	case "location":
-		rows = store.AggregateCostsByLocation(rows)
-	case "none":
-	default:
-		rows = store.AggregateCostsByUser(rows)
-	}
-	writeJSON(w, rows)
+	writeJSON(w, aggregateCostRows(rows, r.URL.Query().Get("group_by"), "user"))
 }
 
-// costReport streams the full user × model cost breakdown as a CSV download.
+// costReport streams a cost breakdown as a CSV download. By default it is the
+// full user × model breakdown; group_by=department (etc.) exports the same
+// aggregations the costs endpoint serves — e.g. a per-department showback for
+// cost-center chargeback. Aggregated rows leave the columns that don't apply
+// to their grouping empty.
 func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
@@ -42,8 +58,15 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	groupBy := r.URL.Query().Get("group_by")
+	rows = aggregateCostRows(rows, groupBy, "none")
 
-	filename := fmt.Sprintf("cost-report_%s_%s.csv", from.Format("2006-01-02"), to.Format("2006-01-02"))
+	name := "cost-report"
+	switch groupBy {
+	case "user", "model", "app", "department", "location":
+		name += "_by-" + groupBy
+	}
+	filename := fmt.Sprintf("%s_%s_%s.csv", name, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 

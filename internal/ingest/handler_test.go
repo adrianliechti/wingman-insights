@@ -1,9 +1,15 @@
 package ingest
 
 import (
+	"bytes"
+	"compress/gzip"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestGetIntAttr covers the int/double/string coercion that keeps token counts
@@ -45,6 +51,59 @@ func TestAppID(t *testing.T) {
 		if got := appID(c.attrs, c.serviceName); got != c.want {
 			t.Errorf("%s: appID = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// TestDecodeOTLPGzip covers transport compression: the OTel Collector's otlphttp
+// exporter gzips by default, and SDKs do with OTEL_EXPORTER_OTLP_COMPRESSION=gzip,
+// so both encodings must decode through a Content-Encoding: gzip body.
+func TestDecodeOTLPGzip(t *testing.T) {
+	pb, err := proto.Marshal(&colmetrics.ExportMetricsServiceRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	cases := []struct {
+		name, contentType string
+		body              []byte
+	}{
+		{"json", "application/json", []byte(`{"resourceMetrics":[]}`)},
+		{"protobuf", "application/x-protobuf", pb},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		gz.Write(c.body)
+		gz.Close()
+
+		r := httptest.NewRequest("POST", "/v1/metrics", &buf)
+		r.Header.Set("Content-Type", c.contentType)
+		r.Header.Set("Content-Encoding", "gzip")
+		ct, err := decodeOTLP(r, &colmetrics.ExportMetricsServiceRequest{})
+		if err != nil {
+			t.Errorf("%s: decodeOTLP = %v", c.name, err)
+		}
+		if ct != c.contentType {
+			t.Errorf("%s: content type = %q, want %q", c.name, ct, c.contentType)
+		}
+	}
+
+	// A body that claims gzip but isn't must error, not decode garbage.
+	r := httptest.NewRequest("POST", "/v1/metrics", strings.NewReader("not gzip"))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "gzip")
+	if _, err := decodeOTLP(r, &colmetrics.ExportMetricsServiceRequest{}); err == nil {
+		t.Error("bad gzip: expected error, got nil")
+	}
+}
+
+// TestDecodeOTLPBodyLimit verifies an oversized body is rejected with an
+// explicit limit error rather than truncated into an unmarshal failure.
+func TestDecodeOTLPBodyLimit(t *testing.T) {
+	big := bytes.Repeat([]byte("a"), otlpBodyLimit+1)
+	r := httptest.NewRequest("POST", "/v1/metrics", bytes.NewReader(big))
+	r.Header.Set("Content-Type", "application/json")
+	if _, err := decodeOTLP(r, &colmetrics.ExportMetricsServiceRequest{}); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("oversized body: err = %v, want limit error", err)
 	}
 }
 

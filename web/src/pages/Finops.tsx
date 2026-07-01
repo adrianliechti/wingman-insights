@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useApi, useDash, usePrevRange } from '../dash'
+import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
 import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
@@ -9,6 +9,7 @@ import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { ChartLegend, Doughnut, PALETTE, Pie, TimeseriesPanel } from '../components/charts'
+import { costsByApp, costsByDepartment, costsByModel, costsByUser } from '../lib/costs'
 import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
 function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
@@ -307,21 +308,26 @@ function AllocationKey({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRo
 export function Finops() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
+  const setFilter = useFilterNav()
   const [spendBy, setSpendBy] = useState<'model' | 'app'>('model')
   const [trendMetric, setTrendMetric] = useState<'cost' | 'tokens'>('cost')
-  const byUser = useApi<CostRow[]>('/api/genai/costs', { group_by: 'user' })
-  const byApp = useApi<CostRow[]>('/api/genai/costs', { group_by: 'app' })
-  const byDept = useApi<CostRow[]>('/api/genai/costs', { group_by: 'department' })
-  const byModel = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
+  // One full breakdown (group_by=none); every grouping below is derived from it
+  // client-side, instead of one DuckDB scan per grouping. Only the previous-range
+  // comparison needs its own query (different time window).
+  const breakdown = useApi<CostRow[]>('/api/genai/costs', { group_by: 'none' })
   const byModelPrev = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model', ...prev })
   const budget = useApi<BudgetResponse>('/api/finops/budget')
   const trend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries', { by: spendBy })
   const tokenTrend = useApi<TimeseriesPoint[]>('/api/finops/token-timeseries', { by: spendBy })
 
-  const models = byModel.data ?? []
+  const rows = useMemo(() => breakdown.data ?? [], [breakdown.data])
+  const byUser = useMemo(() => costsByUser(rows), [rows])
+  const byApp = useMemo(() => costsByApp(rows), [rows])
+  const byDept = useMemo(() => costsByDepartment(rows), [rows])
+  const models = useMemo(() => costsByModel(rows), [rows])
   // Only surface the department view when the directory actually attributes
   // departments (otherwise every row folds into the "Unknown" bucket).
-  const hasDepartments = (byDept.data ?? []).some((r) => !!r.department)
+  const hasDepartments = byDept.some((r) => !!r.department)
   const total = models.reduce((acc, r) => acc + r.total_cost, 0)
   const totalPrev = (byModelPrev.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
@@ -386,15 +392,15 @@ export function Finops() {
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           <div>
             <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By App</p>
-            {byApp.loading ? (
+            {breakdown.loading ? (
               <PanelMessage>Loading…</PanelMessage>
             ) : (
-              <SpendDoughnut rows={byApp.data ?? []} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
+              <SpendDoughnut rows={byApp} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
             )}
           </div>
           <div>
             <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By Model</p>
-            {byModel.loading ? (
+            {breakdown.loading ? (
               <PanelMessage>Loading…</PanelMessage>
             ) : (
               <SpendDoughnut rows={models} labelOf={(r) => r.request_model || '—'} />
@@ -407,39 +413,64 @@ export function Finops() {
         title="Cost Allocation"
         sub="Suggested cost-share split across the biggest consumers (by user.id) · small consumers rolled up as Others"
       >
-        {byUser.loading ? (
+        {breakdown.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (
-          <AllocationKey rows={byUser.data ?? []} labelOf={userLabel} />
+          <AllocationKey rows={byUser} labelOf={userLabel} />
         )}
       </Panel>
 
-      <Panel title="Cost per Application" sub="Priced token usage attributed via service.peer.name">
-        {byApp.loading ? (
+      <Panel title="Cost per Application" sub="Priced token usage attributed via service.peer.name · click a row to filter">
+        {breakdown.loading ? (
           <PanelMessage>Loading…</PanelMessage>
-        ) : (byApp.data ?? []).length === 0 ? (
+        ) : byApp.length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={byApp.data!} columns={appColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+          <DataTable
+            data={byApp}
+            columns={appColumns}
+            initialSort={[{ id: 'total_cost', desc: true }]}
+            initialLimit={25}
+            onRowClick={(r) => r.app_id && setFilter({ app: r.app_id })}
+          />
         )}
       </Panel>
 
       {hasDepartments && (
-        <Panel title="Cost per Department" sub="Priced token usage grouped by the directory department">
-          {byDept.loading ? (
+        <Panel
+          title="Cost per Department"
+          sub="Priced token usage grouped by the directory department · click a row to filter"
+          action={
+            <a
+              href={apiUrl('/api/genai/cost-report', { ...breakdown.params, group_by: 'department' })}
+              download
+              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Showback (CSV)
+            </a>
+          }
+        >
+          {breakdown.loading ? (
             <PanelMessage>Loading…</PanelMessage>
           ) : (
-            <DataTable data={byDept.data!} columns={departmentColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+            <DataTable
+              data={byDept}
+              columns={departmentColumns}
+              initialSort={[{ id: 'total_cost', desc: true }]}
+              initialLimit={25}
+              onRowClick={(r) => r.department && setFilter({ department: r.department })}
+            />
           )}
         </Panel>
       )}
 
       <Panel
         title="Cost per User"
-        sub="Priced token usage attributed via user.id"
+        sub="Priced token usage attributed via user.id · click a row to filter"
         action={
           <a
-            href={apiUrl('/api/genai/cost-report', byUser.params)}
+            href={apiUrl('/api/genai/cost-report', breakdown.params)}
             download
             className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500"
           >
@@ -448,12 +479,18 @@ export function Finops() {
           </a>
         }
       >
-        {byUser.loading ? (
+        {breakdown.loading ? (
           <PanelMessage>Loading…</PanelMessage>
-        ) : (byUser.data ?? []).length === 0 ? (
+        ) : byUser.length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={byUser.data!} columns={userColumns} initialSort={[{ id: 'total_cost', desc: true }]} />
+          <DataTable
+            data={byUser}
+            columns={userColumns}
+            initialSort={[{ id: 'total_cost', desc: true }]}
+            initialLimit={25}
+            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+          />
         )}
       </Panel>
     </div>

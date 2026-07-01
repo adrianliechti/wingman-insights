@@ -17,7 +17,7 @@ func extractHTTP(m *metrics.Metric, serviceName string, now time.Time) []store.H
 		direction = "client"
 	}
 
-	processDP := func(attrs []*common.KeyValue, ts time.Time, count int64, sum, min, max float64) {
+	processDP := func(attrs []*common.KeyValue, ts time.Time, count int64, sum float64) {
 		rows = append(rows, store.HTTPMetricRow{
 			ReceivedAt:  now,
 			Time:        ts,

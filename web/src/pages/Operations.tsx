@@ -210,7 +210,7 @@ export function Operations() {
         ) : (httpSummary.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={httpSummary.data!} columns={httpSummaryColumns} initialSort={[{ id: 'total_requests', desc: true }]} />
+          <DataTable data={httpSummary.data!} columns={httpSummaryColumns} initialSort={[{ id: 'total_requests', desc: true }]} initialLimit={25} />
         )}
       </Panel>
     </div>

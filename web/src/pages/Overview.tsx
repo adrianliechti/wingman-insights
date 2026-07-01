@@ -10,6 +10,7 @@ import type {
   ModelDistributionRow,
   OperationRow,
   TimeseriesPoint,
+  TokenPartitionsPoint,
   TokenSummaryRow,
 } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
@@ -92,9 +93,26 @@ export function Overview() {
   const operations = useApi<OperationRow[]>('/api/genai/operations')
   const errors = useApi<GenAIErrorRow[]>('/api/genai/errors')
   const duration = useApi<TimeseriesPoint[]>('/api/genai/operation-duration-timeseries')
-  const composition = useApi<TimeseriesPoint[]>('/api/genai/token-composition')
-  const cache = useApi<TimeseriesPoint[]>('/api/genai/cache-efficiency')
-  const reasoning = useApi<TimeseriesPoint[]>('/api/genai/reasoning-share')
+  const partitions = useApi<TokenPartitionsPoint[]>('/api/genai/token-partitions')
+
+  // Composition, cache hit rate and reasoning share are all arithmetic over the
+  // same per-bucket token partitions — one fetch, three views.
+  const parts = partitions.data ?? []
+  const composition: TimeseriesPoint[] = parts.flatMap((p) => [
+    { bucket: p.bucket, label: 'input', value: p.uncached, count: 0 },
+    { bucket: p.bucket, label: 'cache_read', value: p.cache_read, count: 0 },
+    { bucket: p.bucket, label: 'cache_creation', value: p.cache_write, count: 0 },
+    { bucket: p.bucket, label: 'output', value: p.response, count: 0 },
+    { bucket: p.bucket, label: 'reasoning', value: p.reasoning, count: 0 },
+  ])
+  const cache: TimeseriesPoint[] = parts.map((p) => {
+    const input = p.uncached + p.cache_read + p.cache_write
+    return { bucket: p.bucket, value: input > 0 ? (100 * p.cache_read) / input : 0, count: 0 }
+  })
+  const reasoning: TimeseriesPoint[] = parts.map((p) => {
+    const output = p.response + p.reasoning
+    return { bucket: p.bucket, value: output > 0 ? (100 * p.reasoning) / output : 0, count: 0 }
+  })
 
   const rows = summary.data ?? []
   const totalsByType = (type: string) =>
@@ -154,12 +172,12 @@ export function Overview() {
         className="lg:col-span-2"
       >
         <TimeseriesPanel
-          points={composition.data}
+          points={composition}
           spanMs={spanMs}
           specs={COMPOSITION_SPECS}
           yFmt={fmtTokens}
           stacked
-          loading={composition.loading}
+          loading={partitions.loading}
         />
       </Panel>
 
@@ -187,21 +205,21 @@ export function Overview() {
 
       <Panel title="Cache Hit Rate" sub="Share of input tokens served from cache">
         <TimeseriesPanel
-          points={cache.data}
+          points={cache}
           spanMs={spanMs}
           yFmt={(v) => v.toFixed(0) + '%'}
           specs={{ '': { label: 'Cache read share', color: '#22d3ee', fill: true } }}
-          loading={cache.loading}
+          loading={partitions.loading}
         />
       </Panel>
 
       <Panel title="Reasoning Share" sub="Share of output tokens spent on reasoning">
         <TimeseriesPanel
-          points={reasoning.data}
+          points={reasoning}
           spanMs={spanMs}
           yFmt={(v) => v.toFixed(0) + '%'}
           specs={{ '': { label: 'Reasoning share', color: '#f472b6', fill: true } }}
-          loading={reasoning.loading}
+          loading={partitions.loading}
         />
       </Panel>
 

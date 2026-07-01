@@ -11,7 +11,7 @@ import (
 
 func extractGenAI(m *metrics.Metric, serviceName string, now time.Time) []store.GenAIMetricRow {
 	var rows []store.GenAIMetricRow
-	processDP := func(attrs []*common.KeyValue, ts time.Time, count int64, sum, min, max float64) {
+	processDP := func(attrs []*common.KeyValue, ts time.Time, count int64, sum float64) {
 		rows = append(rows, store.GenAIMetricRow{
 			ReceivedAt:  now,
 			Time:        ts,

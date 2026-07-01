@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -59,8 +61,12 @@ type GenAIErrorRow struct {
 	Count        int64  `json:"count"`
 }
 
-func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) error {
-	if len(rows) == 0 {
+// InsertMetrics stores both metric families of one OTLP export in a single
+// transaction, so a mid-request failure can't persist half the payload: OTLP
+// senders retry the whole request on a 5xx, and a partially-committed export
+// would then be double-counted on the retry.
+func (s *Store) InsertMetrics(ctx context.Context, genai []GenAIMetricRow, http []HTTPMetricRow) error {
+	if len(genai) == 0 && len(http) == 0 {
 		return nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -68,7 +74,23 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 		return err
 	}
 	defer tx.Rollback()
+	if err := insertGenAIMetrics(ctx, tx, genai); err != nil {
+		return fmt.Errorf("genai metrics: %w", err)
+	}
+	if err := insertHTTPMetrics(ctx, tx, http); err != nil {
+		return fmt.Errorf("http metrics: %w", err)
+	}
+	return tx.Commit()
+}
 
+func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) error {
+	return s.InsertMetrics(ctx, rows, nil)
+}
+
+func insertGenAIMetrics(ctx context.Context, tx *sql.Tx, rows []GenAIMetricRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO genai_metrics
 		(received_at, time, service_name, app_id, metric_name, operation_name, provider_name,
 		 request_model, token_type,
@@ -93,7 +115,7 @@ func (s *Store) InsertGenAIMetrics(ctx context.Context, rows []GenAIMetricRow) e
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) QueryTokenSummary(ctx context.Context, from, to time.Time, f Filter) ([]TokenSummaryRow, error) {
@@ -318,16 +340,22 @@ func (s *Store) QueryModelDistribution(ctx context.Context, from, to time.Time, 
 	return result, rows.Err()
 }
 
-// bucketParts is the five token partitions aggregated into one time bucket.
-type bucketParts struct {
-	Bucket time.Time
-	Parts  tokenParts
+// TokenPartitionsPoint is one bucket of the five disjoint token partitions
+// (from spans). It is the single base series behind the token-composition,
+// cache-hit-rate and reasoning-share panels — those views are pure arithmetic
+// over these columns, derived client-side, so the dashboard runs this scan once
+// instead of once per panel.
+type TokenPartitionsPoint struct {
+	Bucket     time.Time `json:"bucket"`
+	Uncached   float64   `json:"uncached"`
+	CacheRead  float64   `json:"cache_read"`
+	CacheWrite float64   `json:"cache_write"`
+	Response   float64   `json:"response"`
+	Reasoning  float64   `json:"reasoning"`
 }
 
-// queryPartitionTimeseries aggregates the five token partitions per bucket from
-// whichever source has data (partition counters, else spans). Cache hit rate,
-// reasoning share and token composition are all derived from it.
-func (s *Store) queryPartitionTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]bucketParts, error) {
+// QueryTokenPartitions aggregates the five token partitions per bucket.
+func (s *Store) QueryTokenPartitions(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TokenPartitionsPoint, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
@@ -342,75 +370,16 @@ func (s *Store) queryPartitionTimeseries(ctx context.Context, from, to time.Time
 	}
 	defer rows.Close()
 
-	var result []bucketParts
+	var result []TokenPartitionsPoint
 	for rows.Next() {
-		var b bucketParts
-		if err := rows.Scan(&b.Bucket, &b.Parts.Uncached, &b.Parts.CacheRead,
-			&b.Parts.CacheWrite, &b.Parts.Response, &b.Parts.Reasoning); err != nil {
+		var p TokenPartitionsPoint
+		if err := rows.Scan(&p.Bucket, &p.Uncached, &p.CacheRead,
+			&p.CacheWrite, &p.Response, &p.Reasoning); err != nil {
 			return nil, err
 		}
-		result = append(result, b)
+		result = append(result, p)
 	}
 	return result, rows.Err()
-}
-
-// QueryCacheEfficiency is the share of prompt tokens served from cache per
-// bucket: cache read / total input (uncached + read + write).
-func (s *Store) QueryCacheEfficiency(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]TimeseriesPoint, 0, len(buckets))
-	for _, b := range buckets {
-		input := b.Parts.Uncached + b.Parts.CacheRead + b.Parts.CacheWrite
-		var v float64
-		if input > 0 {
-			v = 100 * b.Parts.CacheRead / input
-		}
-		result = append(result, TimeseriesPoint{Bucket: b.Bucket, Value: v})
-	}
-	return result, nil
-}
-
-// QueryReasoningShare is the share of output tokens spent on reasoning per
-// bucket: reasoning / total output (response + reasoning).
-func (s *Store) QueryReasoningShare(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]TimeseriesPoint, 0, len(buckets))
-	for _, b := range buckets {
-		output := b.Parts.Response + b.Parts.Reasoning
-		var v float64
-		if output > 0 {
-			v = 100 * b.Parts.Reasoning / output
-		}
-		result = append(result, TimeseriesPoint{Bucket: b.Bucket, Value: v})
-	}
-	return result, nil
-}
-
-// QueryTokenComposition breaks token volume into its disjoint parts per bucket:
-// non-cached input, cache read, cache write, response output and reasoning. The
-// five series stack to the full token total.
-func (s *Store) QueryTokenComposition(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	buckets, err := s.queryPartitionTimeseries(ctx, from, to, interval, f)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]TimeseriesPoint, 0, len(buckets)*5)
-	for _, b := range buckets {
-		result = append(result,
-			TimeseriesPoint{Bucket: b.Bucket, Label: "input", Value: b.Parts.Uncached},
-			TimeseriesPoint{Bucket: b.Bucket, Label: "cache_read", Value: b.Parts.CacheRead},
-			TimeseriesPoint{Bucket: b.Bucket, Label: "cache_creation", Value: b.Parts.CacheWrite},
-			TimeseriesPoint{Bucket: b.Bucket, Label: "output", Value: b.Parts.Response},
-			TimeseriesPoint{Bucket: b.Bucket, Label: "reasoning", Value: b.Parts.Reasoning},
-		)
-	}
-	return result, nil
 }
 
 func (s *Store) QueryGenAIErrors(ctx context.Context, from, to time.Time, f Filter) ([]GenAIErrorRow, error) {

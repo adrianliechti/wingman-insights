@@ -1,5 +1,5 @@
 import type { ColumnDef } from '@tanstack/react-table'
-import { useApi, useDash, usePrevRange } from '../dash'
+import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import type {
   ActiveUsersRow,
   AppAdoptionRow,
@@ -175,6 +175,7 @@ const TOKEN_AVG_SPECS = {
 export function Customers() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
+  const setFilter = useFilterNav()
   const active = useApi<ActiveUsersRow>('/api/genai/active-users')
   const activePrev = useApi<ActiveUsersRow>('/api/genai/active-users', { to: prev.to })
   const interactions = useApi<{ count: number }>('/api/product/interactions')
@@ -269,23 +270,42 @@ export function Customers() {
         <TimeseriesPanel points={tokensPerRequest.data} spanMs={spanMs} specs={TOKEN_AVG_SPECS} yFmt={fmtTokens} loading={tokensPerRequest.loading} />
       </Panel>
 
-      <Panel title="Application Adoption" sub="Reach and spend per application (service.peer.name)" className="lg:col-span-2">
+      <Panel
+        title="Application Adoption"
+        sub="Reach and spend per application (service.peer.name) · click a row to filter"
+        className="lg:col-span-2"
+      >
         {appAdoption.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (appAdoption.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={appAdoption.data!} columns={appColumns} initialSort={[{ id: 'cost', desc: true }]} />
+          <DataTable
+            data={appAdoption.data!}
+            columns={appColumns}
+            initialSort={[{ id: 'cost', desc: true }]}
+            onRowClick={(r) => r.app_id && setFilter({ app: r.app_id })}
+          />
         )}
       </Panel>
 
-      <Panel title="Users" sub="Per-user activity, engagement segment and spend" className="lg:col-span-2">
+      <Panel
+        title="Users"
+        sub="Per-user activity, engagement segment and spend · click a row to filter"
+        className="lg:col-span-2"
+      >
         {userStats.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (userStats.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={userStats.data!} columns={userColumns} initialSort={[{ id: 'cost', desc: true }]} />
+          <DataTable
+            data={userStats.data!}
+            columns={userColumns}
+            initialSort={[{ id: 'cost', desc: true }]}
+            initialLimit={25}
+            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+          />
         )}
       </Panel>
     </div>

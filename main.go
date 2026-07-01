@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -53,6 +54,29 @@ func main() {
 			defer t.Stop()
 			for range t.C {
 				sync()
+			}
+		}()
+	}
+
+	// Optional retention: without it the database grows unboundedly. When
+	// INSIGHTS_RETENTION_DAYS is set (> 0), telemetry older than that is pruned
+	// once at startup and then hourly; unset/0 keeps everything.
+	if days, _ := strconv.Atoi(os.Getenv("INSIGHTS_RETENTION_DAYS")); days > 0 {
+		go func() {
+			prune := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if n, err := s.PruneBefore(ctx, time.Now().UTC().AddDate(0, 0, -days)); err != nil {
+					log.Printf("retention: prune failed: %v", err)
+				} else if n > 0 {
+					log.Printf("retention: pruned %d rows older than %dd", n, days)
+				}
+			}
+			prune()
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for range t.C {
+				prune()
 			}
 		}()
 	}

@@ -6,11 +6,9 @@ import {
   ComboboxOption,
   ComboboxOptions,
 } from '@headlessui/react'
-import { useNavigate } from '@tanstack/react-router'
 import { Bot, Boxes, Building2, Check, ChevronDown, Cpu, FilterX, MapPin, User } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useApi, useDash } from '../dash'
-import type { DashSearch } from '../dash'
+import { useApi, useDash, useFilterNav } from '../dash'
 import type { FilterOptions } from '../types'
 
 const MAX_VISIBLE_OPTIONS = 100
@@ -242,7 +240,7 @@ function MultiFilterSelect({
 
 export function FilterBar() {
   const { search } = useDash()
-  const navigate = useNavigate()
+  const setFilter = useFilterNav()
   // The options list itself must not shrink to the current selection, so this
   // request carries only the time range, not the active filters.
   const { data } = useApi<FilterOptions>('/api/filters', {
@@ -254,10 +252,6 @@ export function FilterBar() {
     models: undefined,
     interval: undefined,
   })
-
-  function setFilter(patch: Partial<DashSearch>) {
-    navigate({ to: '.', search: (prev: DashSearch) => ({ ...prev, ...patch }) })
-  }
 
   const hasFilter = !!(
     search.app ||

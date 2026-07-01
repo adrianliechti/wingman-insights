@@ -8,18 +8,29 @@ import {
 import type { ColumnDef, SortingState } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 
+// showMoreStep is how many extra rows each "Show more" click reveals on a
+// limited table.
+const showMoreStep = 100
+
 export function DataTable<T>({
   data,
   columns,
   initialSort,
   onRowClick,
+  initialLimit,
 }: {
   data: T[]
   columns: ColumnDef<T, any>[]
   initialSort?: SortingState
   onRowClick?: (row: T) => void
+  // initialLimit caps how many (sorted) rows render initially, with a
+  // "Show more / Show all" footer for the rest — for tables whose population is
+  // unbounded (users, departments, routes) and would otherwise render thousands
+  // of DOM rows. Unset renders everything.
+  initialLimit?: number
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSort ?? [])
+  const [limit, setLimit] = useState(initialLimit)
   const table = useReactTable({
     data,
     columns,
@@ -28,6 +39,9 @@ export function DataTable<T>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
   })
+  const allRows = table.getRowModel().rows
+  const rows = limit ? allRows.slice(0, limit) : allRows
+  const hidden = allRows.length - rows.length
 
   return (
     <div className="overflow-x-auto">
@@ -66,7 +80,7 @@ export function DataTable<T>({
           ))}
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
-          {table.getRowModel().rows.map((row) => (
+          {rows.map((row) => (
             <tr
               key={row.id}
               onClick={onRowClick ? () => onRowClick(row.original) : undefined}
@@ -84,6 +98,27 @@ export function DataTable<T>({
           ))}
         </tbody>
       </table>
+      {hidden > 0 && (
+        <div className="flex items-center justify-center gap-3 border-t border-gray-100 py-2 text-xs dark:border-gray-800/50">
+          <span className="text-gray-400 dark:text-gray-500">
+            Showing {rows.length.toLocaleString()} of {allRows.length.toLocaleString()}
+          </span>
+          <button
+            type="button"
+            onClick={() => setLimit((l) => (l ?? 0) + showMoreStep)}
+            className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+          >
+            Show more
+          </button>
+          <button
+            type="button"
+            onClick={() => setLimit(undefined)}
+            className="font-medium text-gray-500 hover:text-gray-900 dark:hover:text-white"
+          >
+            Show all
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,16 @@ type AnomalyPoint struct {
 
 // baselineBuckets is how many preceding buckets form the rolling baseline,
 // and minBaseline how many of them must exist before a bucket gets scored.
+//
+// Known bias: the ROWS window slides over buckets that actually have data —
+// empty buckets produce no row — so for a sparse series the "preceding 24
+// buckets" can span far more than 24 intervals of wall-clock time, and a spike
+// after an idle stretch is scored against the last *active* buckets, however
+// old they are. Accepted for now: gap-filling every (group, bucket) combination
+// is much more expensive, and the affected pattern (long-idle entity spiking)
+// still flags as long as its active history was materially lower. Revisit with
+// a calendar-time (RANGE / generated-series) baseline if idle-then-spike
+// anomalies start slipping through.
 const (
 	baselineBuckets = 24
 	minBaseline     = 6
@@ -265,39 +276,52 @@ func (s *Store) QueryAnomalyFeed(ctx context.Context, from, to time.Time, interv
 	costClause, costArgs := f.spansClause()
 	tokClause, tokArgs := f.genaiClause()
 
+	// The six (dimension × metric) series are independent window-function scans;
+	// run them concurrently (the pool serializes what it must) and merge in the
+	// fixed job order so the result stays deterministic.
+	type job struct{ dim, metric string }
+	var jobs []job
+	for _, dim := range []string{"user", "app", "model"} {
+		jobs = append(jobs, job{dim, "cost"}, job{dim, "tokens"})
+	}
+	series := make([][]ScorePoint, len(jobs))
+	errs := make([]error, len(jobs))
+	var wg sync.WaitGroup
+	for i, j := range jobs {
+		wg.Add(1)
+		go func(i int, j job) {
+			defer wg.Done()
+			if j.metric == "cost" {
+				series[i], errs[i] = s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
+					"(input_tokens > 0 OR output_tokens > 0)", spanAnomalyGroupColumns[j.dim], costClause, costArgs, from, to, interval, minScore)
+			} else {
+				series[i], errs[i] = s.scoredSeries(ctx, "genai_metrics", "SUM(sum)",
+					"metric_name = 'gen_ai.client.token.usage' AND token_type IN ('input', 'output')", anomalyGroupColumns[j.dim], tokClause, tokArgs, from, to, interval, minScore)
+			}
+		}(i, j)
+	}
+	wg.Wait()
+
 	var feed []AnomalyFeedRow
-	add := func(dim, metric string, pts []ScorePoint) {
-		for _, p := range pts {
+	for i, j := range jobs {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		for _, p := range series[i] {
 			if p.GroupKey == "" {
 				continue // unattributed traffic isn't an actionable culprit
 			}
 			row := AnomalyFeedRow{
-				Bucket: p.Bucket, Dimension: dim, GroupKey: p.GroupKey,
-				Metric: metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
+				Bucket: p.Bucket, Dimension: j.dim, GroupKey: p.GroupKey,
+				Metric: j.metric, Value: p.Value, Expected: p.Expected, Score: p.Score,
 			}
-			if dim == "user" || dim == "app" {
+			if j.dim == "user" || j.dim == "app" {
 				// group_key is the raw principal/app_id; resolve it to the directory
 				// display name so apps read the same here as elsewhere in the UI.
 				row.Name, row.Kind = s.resolveName(p.GroupKey, "")
 			}
 			feed = append(feed, row)
 		}
-	}
-
-	for _, dim := range []string{"user", "app", "model"} {
-		cost, err := s.scoredSeries(ctx, "genai_spans", "SUM(COALESCE(cost, 0))",
-			"(input_tokens > 0 OR output_tokens > 0)", spanAnomalyGroupColumns[dim], costClause, costArgs, from, to, interval, minScore)
-		if err != nil {
-			return nil, err
-		}
-		add(dim, "cost", cost)
-
-		tok, err := s.scoredSeries(ctx, "genai_metrics", "SUM(sum)",
-			"metric_name = 'gen_ai.client.token.usage' AND token_type IN ('input', 'output')", anomalyGroupColumns[dim], tokClause, tokArgs, from, to, interval, minScore)
-		if err != nil {
-			return nil, err
-		}
-		add(dim, "tokens", tok)
 	}
 
 	sort.Slice(feed, func(i, j int) bool { return feed[i].Score > feed[j].Score })

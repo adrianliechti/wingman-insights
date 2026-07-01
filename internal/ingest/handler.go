@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log"
@@ -43,15 +44,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	genaiRows, httpRows := h.extract(req)
 
-	ctx := r.Context()
-	if err := h.store.InsertGenAIMetrics(ctx, genaiRows); err != nil {
-		log.Printf("insert genai metrics: %v", err)
-		http.Error(w, "store genai: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := h.store.InsertHTTPMetrics(ctx, httpRows); err != nil {
-		log.Printf("insert http metrics: %v", err)
-		http.Error(w, "store http: "+err.Error(), http.StatusInternalServerError)
+	// One transaction for the whole export: OTLP senders retry the full request
+	// on a 5xx, so persisting one family and failing the other would double-count
+	// the persisted rows on the retry.
+	if err := h.store.InsertMetrics(r.Context(), genaiRows, httpRows); err != nil {
+		log.Printf("insert metrics: %v", err)
+		http.Error(w, "store metrics: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -66,11 +64,28 @@ const otlpBodyLimit = 10 << 20
 
 // decodeOTLP reads and unmarshals an OTLP request body into msg, choosing
 // protobuf vs JSON by Content-Type, and returns the Content-Type so the response
-// is encoded to match.
+// is encoded to match. Gzip transport compression is transparently decoded —
+// the OTel Collector's otlphttp exporter compresses by default, and SDKs do when
+// OTEL_EXPORTER_OTLP_COMPRESSION=gzip is set. The body limit applies to the
+// decompressed bytes, so a compressed body can't expand past it.
 func decodeOTLP(r *http.Request, msg proto.Message) (string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, otlpBodyLimit))
+	reader := io.Reader(r.Body)
+	if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return "", fmt.Errorf("gzip: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	// Read one byte past the limit so an oversized body is rejected with a clear
+	// error instead of being silently truncated into an unmarshal failure.
+	body, err := io.ReadAll(io.LimitReader(reader, otlpBodyLimit+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > otlpBodyLimit {
+		return "", fmt.Errorf("body exceeds %d byte limit", otlpBodyLimit)
 	}
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "protobuf") {
@@ -117,28 +132,23 @@ func (h *Handler) extract(req *colmetrics.ExportMetricsServiceRequest) ([]store.
 
 // --- shared helpers ---
 
-type dpFunc func(attrs []*common.KeyValue, ts time.Time, count int64, sum, min, max float64)
+type dpFunc func(attrs []*common.KeyValue, ts time.Time, count int64, sum float64)
 
 func iterateDataPoints(m *metrics.Metric, fn dpFunc) {
 	switch d := m.Data.(type) {
 	case *metrics.Metric_Histogram:
 		warnCumulative(m.Name, d.Histogram.AggregationTemporality)
 		for _, dp := range d.Histogram.DataPoints {
-			ts := tsFromNano(dp.TimeUnixNano)
-			fn(dp.Attributes, ts, int64(dp.Count), dp.GetSum(), dp.GetMin(), dp.GetMax())
+			fn(dp.Attributes, tsFromNano(dp.TimeUnixNano), int64(dp.Count), dp.GetSum())
 		}
 	case *metrics.Metric_Sum:
 		warnCumulative(m.Name, d.Sum.AggregationTemporality)
 		for _, dp := range d.Sum.DataPoints {
-			ts := tsFromNano(dp.TimeUnixNano)
-			val := asFloat(dp)
-			fn(dp.Attributes, ts, 1, val, val, val)
+			fn(dp.Attributes, tsFromNano(dp.TimeUnixNano), 1, asFloat(dp))
 		}
 	case *metrics.Metric_Gauge:
 		for _, dp := range d.Gauge.DataPoints {
-			ts := tsFromNano(dp.TimeUnixNano)
-			val := asFloat(dp)
-			fn(dp.Attributes, ts, 1, val, val, val)
+			fn(dp.Attributes, tsFromNano(dp.TimeUnixNano), 1, asFloat(dp))
 		}
 	default:
 		// ExponentialHistogram / Summary aren't handled; log so the data loss is

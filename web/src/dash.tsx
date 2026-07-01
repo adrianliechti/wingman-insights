@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { apiGet } from './api'
 import type { Params } from './api'
 
@@ -51,12 +52,27 @@ const RANGE_MS: Record<string, number> = {
   '30d': 30 * 24 * 3600e3,
 }
 
+// parseDate returns a valid Date for an ISO string, or null.
+function parseDate(s?: string): Date | null {
+  if (!s) return null
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
 export function resolveRange(search: DashSearch) {
   const now = new Date()
   const range = search.range ?? '24h'
-  const to = now
+  let to = now
   let from: Date
-  if (range === 'today') {
+  const customFrom = parseDate(search.from)
+  const customTo = parseDate(search.to)
+  if (customFrom) {
+    // Explicit from/to in the URL (shareable custom window) win over the preset;
+    // the Header clears them whenever a preset is picked.
+    from = customFrom
+    to = customTo ?? now
+    if (from > to) [from, to] = [to, from]
+  } else if (range === 'today') {
     from = new Date(now)
     from.setHours(0, 0, 0, 0)
   } else {
@@ -116,6 +132,15 @@ export function useDash(): DashState {
   const ctx = useContext(DashContext)
   if (!ctx) throw new Error('useDash outside DashProvider')
   return ctx
+}
+
+// useFilterNav returns a setter that patches the global filters in the URL
+// search — used by the filter bar and by click-to-filter table rows, so
+// clicking an entity anywhere narrows every page to it.
+export function useFilterNav() {
+  const navigate = useNavigate()
+  return (patch: Partial<DashSearch>) =>
+    navigate({ to: '.', search: (prev: DashSearch) => ({ ...prev, ...patch }) })
 }
 
 // usePrevRange returns the equal-length window immediately before the active

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useApi, useDash } from '../dash'
+import { useApi, useDash, useFilterNav } from '../dash'
 import type { AnomalyFeedRow, BurstRow, ScorePoint, TopConsumerRow } from '../types'
 import type { TimeseriesPoint } from '../types'
 import { KindBadge, UserCell } from '../components/UserCell'
@@ -138,6 +138,7 @@ const DIMS = [
 
 export function Anomalies() {
   const [heatDim, setHeatDim] = useState('user')
+  const setFilter = useFilterNav()
   const feed = useApi<AnomalyFeedRow[]>('/api/genai/anomaly-feed')
   const costSpikes = useApi<ScorePoint[]>('/api/genai/cost-anomaly-timeseries')
   const topConsumers = useApi<TopConsumerRow[]>('/api/ops/top-consumers')
@@ -189,7 +190,13 @@ export function Anomalies() {
     for (const r of dimRows) byEntity.set(r.group_key, Math.max(byEntity.get(r.group_key) ?? 0, r.score))
     return [...byEntity.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k]) => k)
   })()
-  const heatScore = new Map(dimRows.map((r) => [r.group_key + '\0' + r.bucket, r.score]))
+  // Cost and token rows share (entity, bucket) keys — keep the max score, not
+  // whichever row happens to come last.
+  const heatScore = new Map<string, number>()
+  for (const r of dimRows) {
+    const k = r.group_key + '\0' + r.bucket
+    heatScore.set(k, Math.max(heatScore.get(k) ?? 0, r.score))
+  }
   const heatLabel = new Map(dimRows.map((r) => [r.group_key, r.name || r.group_key])) // name for users
 
   return (
@@ -213,7 +220,7 @@ export function Anomalies() {
 
       <Panel
         title="Anomaly Feed"
-        sub="Strongest spend and token spikes ranked across users, applications and models"
+        sub="Strongest spend and token spikes ranked across users, applications and models · click a row to filter"
         className="lg:col-span-2"
       >
         {feed.loading ? (
@@ -224,7 +231,17 @@ export function Anomalies() {
             No anomalies in this time range
           </PanelMessage>
         ) : (
-          <DataTable data={rows} columns={feedColumns} initialSort={[{ id: 'score', desc: true }]} />
+          <DataTable
+            data={rows}
+            columns={feedColumns}
+            initialSort={[{ id: 'score', desc: true }]}
+            onRowClick={(r) => {
+              if (!r.group_key) return
+              if (r.dimension === 'user') setFilter({ user: r.group_key })
+              else if (r.dimension === 'app') setFilter({ app: r.group_key })
+              else setFilter({ models: [r.group_key] })
+            }}
+          />
         )}
       </Panel>
 
@@ -278,23 +295,33 @@ export function Anomalies() {
         )}
       </Panel>
 
-      <Panel title="Top Consumers" sub="Heaviest users by token volume — who to throttle when load spikes">
+      <Panel title="Top Consumers" sub="Heaviest users by token volume — click a row to filter to them">
         {topConsumers.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (topConsumers.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={topConsumers.data!} columns={consumerColumns} initialSort={[{ id: 'total_tokens', desc: true }]} />
+          <DataTable
+            data={topConsumers.data!}
+            columns={consumerColumns}
+            initialSort={[{ id: 'total_tokens', desc: true }]}
+            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+          />
         )}
       </Panel>
 
-      <Panel title="Request Bursts" sub="Peak requests/min per user — a runaway agent loop spikes here">
+      <Panel title="Request Bursts" sub="Peak requests/min per user — a runaway agent loop spikes here · click a row to filter">
         {burst.loading ? (
           <PanelMessage>Loading…</PanelMessage>
         ) : (burst.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={burst.data!} columns={burstColumns} initialSort={[{ id: 'peak_rpm', desc: true }]} />
+          <DataTable
+            data={burst.data!}
+            columns={burstColumns}
+            initialSort={[{ id: 'peak_rpm', desc: true }]}
+            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+          />
         )}
       </Panel>
     </div>

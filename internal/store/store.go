@@ -218,6 +218,9 @@ func (s *Store) migrate() error {
 			server_address VARCHAR,
 			server_port   INTEGER,
 			error_type    VARCHAR,
+			app_id        VARCHAR,
+			user_id       VARCHAR,
+			user_email    VARCHAR,
 			count         BIGINT,
 			sum           DOUBLE,
 			min_val       DOUBLE,
@@ -230,6 +233,13 @@ func (s *Store) migrate() error {
 		// app_id (service.peer.name) was added so the App filter narrows metric
 		// queries too, not just spans; existing DBs backfill as NULL (unattributed).
 		"ALTER TABLE genai_metrics ADD COLUMN IF NOT EXISTS app_id VARCHAR",
+		// http_metrics carry the same principal attributes (service.peer.name /
+		// user.id / user.email, stamped via the otelhttp labeler) so the App and
+		// User filters narrow the operational HTTP panels too; existing DBs backfill
+		// as NULL (unattributed).
+		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS app_id VARCHAR",
+		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+		"ALTER TABLE http_metrics ADD COLUMN IF NOT EXISTS user_email VARCHAR",
 		"CREATE SEQUENCE IF NOT EXISTS genai_spans_id_seq",
 		`CREATE TABLE IF NOT EXISTS genai_spans (
 			id            BIGINT DEFAULT nextval('genai_spans_id_seq') PRIMARY KEY,

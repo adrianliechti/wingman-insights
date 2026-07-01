@@ -121,10 +121,25 @@ func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-// httpClause returns SQL conditions for http_metrics, which carry no user,
-// model or application attributes — so no dashboard filter narrows them.
+// httpClause returns SQL conditions for http_metrics. These rows carry the
+// calling app (app_id, from service.peer.name) and end user (user_id /
+// user_email), stamped onto http.server metric data points via the gateway's
+// otelhttp labeler, so the App and User filters narrow the operational HTTP
+// panels. They carry no provider / model / directory attributes, so those
+// filters don't apply here. Reuses the same directory-alias expansion as the
+// GenAI clauses.
 func (f Filter) httpClause() (string, []any) {
-	return "", nil
+	var b strings.Builder
+	var args []any
+	if c, a := userClause("user_id", "user_email", f.User); c != "" {
+		b.WriteString(c)
+		args = append(args, a...)
+	}
+	if c, a := appClause(f.App); c != "" {
+		b.WriteString(c)
+		args = append(args, a...)
+	}
+	return b.String(), args
 }
 
 // modelClause builds an " AND request_model IN (?, ...)" condition for the given

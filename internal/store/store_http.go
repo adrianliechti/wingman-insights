@@ -19,6 +19,9 @@ type HTTPMetricRow struct {
 	ServerAddress string
 	ServerPort    int
 	ErrorType     string
+	AppID         string
+	UserID        string
+	UserEmail     string
 	Count         int64
 	Sum           float64
 	MinVal        float64
@@ -53,8 +56,9 @@ func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) err
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO http_metrics
 		(received_at, time, service_name, metric_name, direction, method, route,
 		 status_code, url_scheme, server_address, server_port, error_type,
+		 app_id, user_id, user_email,
 		 count, sum, min_val, max_val, attributes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -65,7 +69,8 @@ func (s *Store) InsertHTTPMetrics(ctx context.Context, rows []HTTPMetricRow) err
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.ServiceName, r.MetricName, r.Direction,
 			r.Method, r.Route, r.StatusCode, r.URLScheme, r.ServerAddress,
-			r.ServerPort, r.ErrorType, r.Count, r.Sum, r.MinVal, r.MaxVal,
+			r.ServerPort, r.ErrorType, r.AppID, r.UserID, r.UserEmail,
+			r.Count, r.Sum, r.MinVal, r.MaxVal,
 			string(attrs),
 		)
 		if err != nil {

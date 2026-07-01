@@ -31,11 +31,19 @@ func extractHTTP(m *metrics.Metric, serviceName string, now time.Time) []store.H
 			ServerAddress: getStringAttr(attrs, "server.address"),
 			ServerPort:    int(getIntAttr(attrs, "server.port")),
 			ErrorType:     getStringAttr(attrs, "error.type"),
-			Count:         count,
-			Sum:           sum,
-			MinVal:        min,
-			MaxVal:        max,
-			Attributes:    attrsToMap(attrs),
+			// The gateway stamps the calling app (service.peer.name) and end user
+			// (user.id / user.email) onto http.server metric data points via the
+			// otelhttp labeler, so the App and User dashboard filters narrow these
+			// rows. app_id falls back to service_name when no peer was stamped — see
+			// appID, matching genai_metrics.
+			AppID:      appID(attrs, serviceName),
+			UserID:     getStringAttr(attrs, "user.id"),
+			UserEmail:  getStringAttr(attrs, "user.email"),
+			Count:      count,
+			Sum:        sum,
+			MinVal:     min,
+			MaxVal:     max,
+			Attributes: attrsToMap(attrs),
 		})
 	}
 	iterateDataPoints(m, processDP)

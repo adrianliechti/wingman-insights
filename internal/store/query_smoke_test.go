@@ -47,6 +47,7 @@ func TestAllQueriesExecute(t *testing.T) {
 			"CostAnomalies/none":   func() error { _, e := s.QueryCostAnomalies(ctx, from, to, iv, "none", 0, f); return e },
 			"AnomalyFeed":          func() error { _, e := s.QueryAnomalyFeed(ctx, from, to, iv, 0, 50, f); return e },
 			"CostBreakdown":        func() error { _, e := s.QueryCostBreakdown(ctx, from, to, f); return e },
+			"CostTotal":            func() error { _, e := s.QueryCostTotal(ctx, from, to, f); return e },
 			"CostTimeseries/app":   func() error { _, e := s.QueryCostTimeseries(ctx, from, to, iv, "app", f); return e },
 			"CostTimeseries/model": func() error { _, e := s.QueryCostTimeseries(ctx, from, to, iv, "model", f); return e },
 			"TokenVolumeTS/app":    func() error { _, e := s.QueryTokenVolumeTimeseries(ctx, from, to, iv, "app", f); return e },

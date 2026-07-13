@@ -2,23 +2,23 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"log"
 	"net/http"
-	"reflect"
-	"regexp"
-	"strings"
-	"time"
+
+	oidc "github.com/coreos/go-oidc/v3/oidc"
 
 	"insights/internal/store"
 )
 
 type Handler struct {
-	store *store.Store
+	store    *store.Store
+	verifier *oidc.IDTokenVerifier
 }
 
 func NewHandler(s *store.Store) *Handler {
-	return &Handler{store: s}
+	return &Handler{
+		store:    s,
+		verifier: newVerifierFromEnv(context.Background()),
+	}
 }
 
 // apiBase is the mount point for every dashboard endpoint; it is itself mounted
@@ -30,21 +30,23 @@ const apiBase = "/api"
 // of a router's route group, so each domain's prefix is written once and the
 // whole tree could be versioned by changing apiBase alone.
 type routeGroup struct {
-	mux    *http.ServeMux
-	prefix string
+	mux     *http.ServeMux
+	prefix  string
+	handler *Handler
 }
 
 func (g routeGroup) get(path string, fn http.HandlerFunc) {
-	g.mux.HandleFunc("GET "+g.prefix+path, fn)
+	g.mux.HandleFunc("GET "+g.prefix+path, g.handler.withAuth(fn))
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix} }
+	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix, h} }
 
 	core := group("")
 	core.get("/filters", h.filterOptions)
 	core.get("/traces", h.traceList)
 	core.get("/traces/{id}", h.traceByID)
+	core.get("/usage", h.usage)
 
 	genai := group("/genai")
 	genai.get("/token-summary", jsonRoute(h, h.store.QueryTokenSummary))
@@ -97,140 +99,4 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	httpg.get("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
 	httpg.get("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
 	httpg.get("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
-}
-
-func parseTimeRange(r *http.Request) (time.Time, time.Time) {
-	now := time.Now().UTC()
-	from := now.Add(-24 * time.Hour)
-	to := now
-
-	var fromSet, toSet bool
-	if v := r.URL.Query().Get("from"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			from = t
-			fromSet = true
-		}
-	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			to = t
-			toSet = true
-		}
-	}
-	// Guard an inverted range so a swapped from/to returns the intended window
-	// rather than silently empty results. Only swap when BOTH bounds were
-	// explicitly supplied: if only one was given, the other is still its
-	// default (now / now-24h), and comparing a default against an unrelated
-	// explicit value (e.g. a "to" far in the past with no "from") isn't a
-	// genuinely inverted pair — swapping there would silently turn a
-	// single-sided request into a multi-year window instead of erroring or
-	// using the sane default.
-	if fromSet && toSet && from.After(to) {
-		from, to = to, from
-	}
-	return from, to
-}
-
-func (h *Handler) parseFilter(r *http.Request) store.Filter {
-	q := r.URL.Query()
-	// User/department/location are matched against the directory table inside the
-	// query (see Filter.clause); nothing to expand here.
-	return store.Filter{
-		App:        q.Get("app"),
-		User:       q.Get("user"),
-		Department: q.Get("department"),
-		Location:   q.Get("location"),
-		DeptPrefix: h.store.DepartmentPrefix(),
-		Provider:   q.Get("provider"),
-		Models:     parseModels(q.Get("models")),
-	}
-}
-
-func parseModels(value string) []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, item := range strings.Split(value, ",") {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		result = append(result, item)
-	}
-	return result
-}
-
-// intervalRe constrains the interval to a "<n> <unit>" form before it is bound
-// into CAST(? AS INTERVAL). An out-of-shape value (which would make DuckDB raise
-// a cast error surfaced as a 500) falls back to the default rather than reaching
-// the engine. It is a bound parameter, not concatenated, so this is robustness,
-// not an injection guard.
-var intervalRe = regexp.MustCompile(`^[1-9]\d{0,4} (second|minute|hour|day|week|month)s?$`)
-
-func parseInterval(r *http.Request) string {
-	if v := r.URL.Query().Get("interval"); intervalRe.MatchString(v) {
-		return v
-	}
-	return "1 hour"
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if v == nil {
-		w.Write([]byte("[]"))
-		return
-	}
-	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Slice && rv.IsNil() {
-		w.Write([]byte("[]"))
-		return
-	}
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, err error) {
-	// Log the detail server-side; return a generic message so raw engine errors
-	// (table/column names, SQL) are not disclosed to clients.
-	log.Printf("api: %v", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
-}
-
-// jsonRoute adapts a store query of shape (ctx, from, to, filter) into a GET
-// handler: parse the range + filters, run, encode JSON (or 500). jsonRouteIv
-// adds the interval string; jsonRouteBy adds the ?by= group-by. The generic
-// signatures make a mismatched query a compile error, not a runtime one.
-func jsonRoute[T any](h *Handler, q func(context.Context, time.Time, time.Time, store.Filter) (T, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		from, to := parseTimeRange(r)
-		v, err := q(r.Context(), from, to, h.parseFilter(r))
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, v)
-	}
-}
-
-func jsonRouteIv[T any](h *Handler, q func(context.Context, time.Time, time.Time, string, store.Filter) (T, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		from, to := parseTimeRange(r)
-		v, err := q(r.Context(), from, to, parseInterval(r), h.parseFilter(r))
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, v)
-	}
-}
-
-func jsonRouteBy[T any](h *Handler, q func(context.Context, time.Time, time.Time, string, string, store.Filter) (T, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		from, to := parseTimeRange(r)
-		v, err := q(r.Context(), from, to, parseInterval(r), r.URL.Query().Get("by"), h.parseFilter(r))
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, v)
-	}
 }

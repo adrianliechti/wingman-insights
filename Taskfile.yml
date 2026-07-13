@@ -40,7 +40,7 @@ tasks:
     deps: [dev-backend, dev-web]
 
   dev-backend:
-    internal: true
+    # internal: true
     cmds:
       # go:embed web/dist must exist to compile; in dev the real UI is
       # served by Vite, which proxies /api and /v1 to this backend.

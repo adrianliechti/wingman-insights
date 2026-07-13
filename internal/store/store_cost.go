@@ -216,6 +216,22 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 	`, args...)
 }
 
+// QueryCostTotal returns the total cost (USD) for the given window and filter
+// as a single scalar. It reads only the materialized cost column — the same
+// source every other cost query uses — so no live re-pricing occurs. Returns 0
+// when no matching spans exist.
+func (s *Store) QueryCostTotal(ctx context.Context, from, to time.Time, f Filter) (float64, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	var total float64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(cost), 0)
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause,
+		args...).Scan(&total)
+	return total, err
+}
+
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
 // request_model (groupBy "model", default) or app_id (groupBy "app").
 // Unlike QueryCostTimeseries this is consumption, not spend: it includes models

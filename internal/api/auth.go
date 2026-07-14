@@ -6,25 +6,33 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	oidc "github.com/coreos/go-oidc/v3/oidc"
 )
 
-type ctxKeyOID struct{}
+type contextKey string
+
+const userContextKey contextKey = "auth.user"
 
 func userFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyOID{}).(string)
+	v, _ := ctx.Value(userContextKey).(string)
 	return v
 }
 
-// newVerifierFromEnv returns an OIDC token verifier for the Azure AD tenant
-// when INSIGHTS_ENTRA_TENANT_ID and INSIGHTS_ENTRA_CLIENT_ID are set, nil otherwise.
-func newVerifierFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
+func newAuthFromEnv(ctx context.Context) (*oidc.IDTokenVerifier, []string) {
 	tenantID := os.Getenv("INSIGHTS_ENTRA_TENANT_ID")
-	clientID := os.Getenv("INSIGHTS_ENTRA_CLIENT_ID")
-	if tenantID == "" || clientID == "" {
-		return nil
+
+	if tenantID == "" {
+		return nil, nil
+	}
+
+	var allowed []string
+	for a := range strings.SplitSeq(os.Getenv("INSIGHTS_API_ALLOWED_AUDIENCES"), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			allowed = append(allowed, a)
+		}
 	}
 
 	issuer := fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tenantID)
@@ -35,7 +43,19 @@ func newVerifierFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
 		log.Fatalf("oidc: provider init: %v", err)
 	}
 
-	return provider.Verifier(&oidc.Config{ClientID: clientID})
+	// Skip the built-in single-audience check; we validate aud manually below.
+	verifier := provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
+	return verifier, allowed
+}
+
+// bearerToken extracts the raw JWT from either the Authorization: Bearer header
+// or the X-Forwarded-Access-Token header set by an upstream oauth2-proxy. The
+// Authorization header takes precedence so direct API callers are unaffected.
+func bearerToken(r *http.Request) string {
+	if raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && raw != "" {
+		return raw
+	}
+	return strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -43,9 +63,9 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		var oid string
 
 		if h.verifier != nil {
-			rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			rawToken := bearerToken(r)
 
-			if !ok || rawToken == "" {
+			if rawToken == "" {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -59,7 +79,8 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 
 			var claims struct {
-				OID string `json:"oid"`
+				OID      string `json:"oid"`
+				Audience string `json:"aud"`
 			}
 
 			if err := token.Claims(&claims); err != nil {
@@ -68,9 +89,19 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
+			if !slices.Contains(h.audiences, claims.Audience) {
+				log.Printf("auth: audience not allowed: %v", claims.Audience)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
 			oid = claims.OID
+		} else {
+			// Auth disabled (no INSIGHTS_ENTRA_TENANT_ID): there is no verified
+			// placeholder so local dev works without configuring Entra.
+			oid = "dev"
 		}
 
-		next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyOID{}, oid)))
+		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey, oid)))
 	}
 }

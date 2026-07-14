@@ -15,15 +15,15 @@ type usageResponse struct {
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
-	oid := userFromContext(r.Context())
-	if oid == "" {
+	user := userFromContext(r.Context())
+	if user == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	from, to := parseTimeRange(r)
 	f := h.parseFilter(r)
-	f.User = oid
+	f.User = user
 
 	cost, err := h.store.QueryCostTotal(r.Context(), from, to, f)
 	if err != nil {

@@ -40,17 +40,24 @@ type routeGroup struct {
 }
 
 func (g routeGroup) get(path string, fn http.HandlerFunc) {
+	g.mux.HandleFunc("GET "+g.prefix+path, fn)
+}
+
+func (g routeGroup) getWithToken(path string, fn http.HandlerFunc) {
 	g.mux.HandleFunc("GET "+g.prefix+path, g.handler.withAuth(fn))
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix, h} }
 
+	// Authenticated routes — require a valid bearer token.
 	core := group("")
+	core.getWithToken("/usage", h.usage)
+
+	// Public routes — no authentication required.
 	core.get("/filters", h.filterOptions)
 	core.get("/traces", h.traceList)
 	core.get("/traces/{id}", h.traceByID)
-	core.get("/usage", h.usage)
 
 	genai := group("/genai")
 	genai.get("/token-summary", jsonRoute(h, h.store.QueryTokenSummary))

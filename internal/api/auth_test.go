@@ -138,11 +138,11 @@ func TestWithAuthAudiences(t *testing.T) {
 	k := newTestKey(t)
 
 	cases := []struct {
-		name      string
-		allowed   []string
-		tokenAud  string
-		wantCode  int
-		wantOID   string
+		name     string
+		allowed  []string
+		tokenAud string
+		wantCode int
+		wantOID  string
 	}{
 		{
 			name:     "exact match single audience",
@@ -178,10 +178,11 @@ func TestWithAuthAudiences(t *testing.T) {
 			wantCode: http.StatusUnauthorized,
 		},
 		{
-			name:     "empty audience allow-list always rejects",
+			name:     "empty audience allow-list skips audience check",
 			allowed:  []string{},
 			tokenAud: "app-id-1",
-			wantCode: http.StatusUnauthorized,
+			wantCode: http.StatusOK,
+			wantOID:  "user-oid-4",
 		},
 	}
 
@@ -221,8 +222,8 @@ func TestWithAuthRejects(t *testing.T) {
 	h := makeHandler(k.verifier, []string{"app-id-1"})
 
 	cases := []struct {
-		name      string
-		setupReq  func(r *http.Request)
+		name     string
+		setupReq func(r *http.Request)
 	}{
 		{
 			name:     "missing token",
@@ -311,10 +312,10 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 
 func TestBearerToken(t *testing.T) {
 	cases := []struct {
-		name        string
-		auth        string
-		forwarded   string
-		want        string
+		name      string
+		auth      string
+		forwarded string
+		want      string
 	}{
 		{
 			name: "Authorization Bearer header",

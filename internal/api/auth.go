@@ -89,7 +89,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			if !slices.Contains(h.audiences, claims.Audience) {
+			if len(h.audiences) > 0 && !slices.Contains(h.audiences, claims.Audience) {
 				log.Printf("auth: audience not allowed: %v", claims.Audience)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return

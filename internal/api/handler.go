@@ -47,11 +47,24 @@ func (g routeGroup) getWithToken(path string, fn http.HandlerFunc) {
 	g.mux.HandleFunc("GET "+g.prefix+path, g.handler.withAuth(fn))
 }
 
+func (h *Handler) RegisterCompanion(mux *http.ServeMux) {
+	companion := routeGroup{mux, "/companion", h}
+	companion.getWithToken("/usage", h.usage)
+
+	// /companion is an API-only namespace. Unmatched subpaths would otherwise
+	// fall through to the SPA handler (which serves index.html for anything it
+	// can't resolve); return a real 404 instead. The specific /companion/usage
+	// pattern above still wins by ServeMux precedence.
+	mux.HandleFunc("/companion/", http.NotFound)
+}
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix, h} }
 
 	// Authenticated routes — require a valid bearer token.
 	core := group("")
+
+	// can be removed, when companion points to /api/companion/usage
 	core.getWithToken("/usage", h.usage)
 
 	// Public routes — no authentication required.

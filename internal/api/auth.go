@@ -29,7 +29,7 @@ func newAuthFromEnv(ctx context.Context) (*oidc.IDTokenVerifier, []string) {
 	}
 
 	var allowed []string
-	for a := range strings.SplitSeq(os.Getenv("INSIGHTS_API_ALLOWED_AUDIENCES"), ",") {
+	for a := range strings.SplitSeq(os.Getenv("COMPANION_API_AUDIENCES"), ",") {
 		if a = strings.TrimSpace(a); a != "" {
 			allowed = append(allowed, a)
 		}

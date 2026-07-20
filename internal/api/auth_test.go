@@ -101,10 +101,10 @@ func (k *testKey) signTokenAudArray(t *testing.T, audiences []string, oid string
 	return raw
 }
 
-// makeHandler builds a Handler with a given verifier and audience allow-list.
+// makeHandler builds a Handler with a given verifier.
 // The store is nil — withAuth never touches it.
-func makeHandler(v *oidc.IDTokenVerifier, audiences []string) *Handler {
-	return &Handler{verifier: v, audiences: audiences}
+func makeHandler(v *oidc.IDTokenVerifier) *Handler {
+	return &Handler{verifier: v}
 }
 
 // recordingHandler is an http.HandlerFunc that records the OID from context.
@@ -121,7 +121,7 @@ func TestWithAuthDisabled(t *testing.T) {
 	// verifier == nil means no tenant configured; every request should pass
 	// with oid == "dev".
 	var gotOID string
-	h := makeHandler(nil, nil)
+	h := makeHandler(nil)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	h.withAuth(recordingHandler(&gotOID))(rr, req)
@@ -139,63 +139,24 @@ func TestWithAuthAudiences(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		allowed  []string
 		tokenAud string
 		wantCode int
 		wantOID  string
 	}{
 		{
-			name:     "exact match single audience",
-			allowed:  []string{"app-id-1"},
+			name:     "client id matches",
 			tokenAud: "app-id-1",
 			wantCode: http.StatusOK,
 			wantOID:  "user-oid-1",
-		},
-		{
-			name:     "audience not in allow-list",
-			allowed:  []string{"app-id-1"},
-			tokenAud: "other-app",
-			wantCode: http.StatusUnauthorized,
-		},
-		{
-			name:     "multiple allowed audiences – first matches",
-			allowed:  []string{"app-id-a", "app-id-b", "app-id-c"},
-			tokenAud: "app-id-a",
-			wantCode: http.StatusOK,
-			wantOID:  "user-oid-2",
-		},
-		{
-			name:     "multiple allowed audiences – last matches",
-			allowed:  []string{"app-id-a", "app-id-b", "app-id-c"},
-			tokenAud: "app-id-c",
-			wantCode: http.StatusOK,
-			wantOID:  "user-oid-3",
-		},
-		{
-			name:     "multiple allowed audiences – none matches",
-			allowed:  []string{"app-id-a", "app-id-b"},
-			tokenAud: "app-id-z",
-			wantCode: http.StatusUnauthorized,
-		},
-		{
-			name:     "empty audience allow-list skips audience check",
-			allowed:  []string{},
-			tokenAud: "app-id-1",
-			wantCode: http.StatusOK,
-			wantOID:  "user-oid-4",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			oidValue := tc.wantOID
-			if oidValue == "" {
-				oidValue = "irrelevant-oid"
-			}
-			raw := k.signToken(t, tc.tokenAud, oidValue, time.Hour)
+			raw := k.signToken(t, tc.tokenAud, tc.wantOID, time.Hour)
 
 			var gotOID string
-			h := makeHandler(k.verifier, tc.allowed)
+			h := makeHandler(k.verifier)
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Header.Set("Authorization", "Bearer "+raw)
@@ -219,7 +180,7 @@ func TestWithAuthRejects(t *testing.T) {
 	wrongKeySigned := wrongKey.signToken(t, "app-id-1", "some-oid", time.Hour)
 	expiredRaw := k.signToken(t, "app-id-1", "some-oid", -time.Hour)
 
-	h := makeHandler(k.verifier, []string{"app-id-1"})
+	h := makeHandler(k.verifier)
 
 	cases := []struct {
 		name     string
@@ -272,7 +233,7 @@ func TestWithAuthAudArrayUnsupported(t *testing.T) {
 	k := newTestKey(t)
 	raw := k.signTokenAudArray(t, []string{"app-id-1", "app-id-2"}, "some-oid")
 
-	h := makeHandler(k.verifier, []string{"app-id-1", "app-id-2"})
+	h := makeHandler(k.verifier)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)
@@ -291,7 +252,7 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 	raw := k.signToken(t, "my-app", wantOID, time.Hour)
 
 	var gotOID string
-	h := makeHandler(k.verifier, []string{"my-app"})
+	h := makeHandler(k.verifier)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)

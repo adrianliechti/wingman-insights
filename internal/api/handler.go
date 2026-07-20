@@ -10,18 +10,14 @@ import (
 )
 
 type Handler struct {
-	store     *store.Store
-	verifier  *oidc.IDTokenVerifier
-	audiences []string
+	store    *store.Store
+	verifier *oidc.IDTokenVerifier
 }
 
 func NewHandler(s *store.Store) *Handler {
-	verifier, audiences := newAuthFromEnv(context.Background())
-
 	return &Handler{
-		store:     s,
-		verifier:  verifier,
-		audiences: audiences,
+		store:    s,
+		verifier: newAuthFromEnv(context.Background()),
 	}
 }
 

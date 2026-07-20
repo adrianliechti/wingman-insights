@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 
 	oidc "github.com/coreos/go-oidc/v3/oidc"
@@ -21,21 +19,17 @@ func userFromContext(ctx context.Context) string {
 	return v
 }
 
-func newAuthFromEnv(ctx context.Context) (*oidc.IDTokenVerifier, []string) {
-	tenantID := os.Getenv("INSIGHTS_ENTRA_TENANT_ID")
-
-	if tenantID == "" {
-		return nil, nil
+func newAuthFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
+	if os.Getenv("COMPANION_AUTH_DISABLED") == "true" {
+		return nil
 	}
 
-	var allowed []string
-	for a := range strings.SplitSeq(os.Getenv("COMPANION_API_AUDIENCES"), ",") {
-		if a = strings.TrimSpace(a); a != "" {
-			allowed = append(allowed, a)
-		}
-	}
+	issuer := os.Getenv("COMPANION_API_ISSUER")
+	audience := os.Getenv("COMPANION_API_AUDIENCE")
 
-	issuer := fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tenantID)
+	if issuer == "" || audience == "" {
+		log.Fatal("oidc: COMPANION_API_ISSUER and COMPANION_API_AUDIENCE are required; set COMPANION_AUTH_DISABLED=true to disable auth")
+	}
 
 	provider, err := oidc.NewProvider(ctx, issuer)
 
@@ -43,9 +37,7 @@ func newAuthFromEnv(ctx context.Context) (*oidc.IDTokenVerifier, []string) {
 		log.Fatalf("oidc: provider init: %v", err)
 	}
 
-	// Skip the built-in single-audience check; we validate aud manually below.
-	verifier := provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
-	return verifier, allowed
+	return provider.Verifier(&oidc.Config{ClientID: audience})
 }
 
 // bearerToken extracts the raw JWT from either the Authorization: Bearer header
@@ -79,8 +71,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 
 			var claims struct {
-				OID      string `json:"oid"`
-				Audience string `json:"aud"`
+				OID string `json:"oid"`
 			}
 
 			if err := token.Claims(&claims); err != nil {
@@ -89,16 +80,9 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			if len(h.audiences) > 0 && !slices.Contains(h.audiences, claims.Audience) {
-				log.Printf("auth: audience not allowed: %v", claims.Audience)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
 			oid = claims.OID
 		} else {
-			// Auth disabled (no INSIGHTS_ENTRA_TENANT_ID): there is no verified
-			// placeholder so local dev works without configuring Entra.
+			// Auth disabled (COMPANION_AUTH_DISABLED=true): dev mode.
 			oid = "dev"
 		}
 

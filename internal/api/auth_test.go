@@ -64,8 +64,8 @@ func (k *testKey) signToken(t *testing.T, aud, oid string, expOffset time.Durati
 	return raw
 }
 
-// signTokenAudArray signs a JWT whose aud claim is a JSON array ([]string).
-// This exercises the multi-audience case that the handler currently does NOT support.
+// signTokenAudArray signs a JWT whose aud claim is a JSON array ([]string),
+// exercising the OIDC multi-audience case.
 func (k *testKey) signTokenAudArray(t *testing.T, audiences []string, oid string) string {
 	t.Helper()
 	now := time.Now()
@@ -224,25 +224,27 @@ func TestWithAuthRejects(t *testing.T) {
 	}
 }
 
-// TestWithAuthAudArrayUnsupported documents that the handler decodes aud as a
-// plain string. A token where aud is a JSON array (the OIDC multi-audience
-// case) fails claims decoding and is rejected with 401. This is expected
-// current behaviour; if multi-audience tokens are needed, auth.go should
-// decode aud as []string.
-func TestWithAuthAudArrayUnsupported(t *testing.T) {
+// TestWithAuthAudArray verifies a token whose aud claim is a JSON array (the
+// OIDC multi-audience case) is accepted. The handler decodes only the oid
+// claim and leaves audience validation to the oidc verifier, so an array aud
+// verifies and the request passes with the token's oid.
+func TestWithAuthAudArray(t *testing.T) {
 	k := newTestKey(t)
-	raw := k.signTokenAudArray(t, []string{"app-id-1", "app-id-2"}, "some-oid")
+	wantOID := "some-oid"
+	raw := k.signTokenAudArray(t, []string{"app-id-1", "app-id-2"}, wantOID)
 
+	var gotOID string
 	h := makeHandler(k.verifier)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)
-	h.withAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))(rr, req)
+	h.withAuth(recordingHandler(&gotOID))(rr, req)
 
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for aud-as-array token, got %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200 for aud-as-array token, got %d", rr.Code)
+	}
+	if gotOID != wantOID {
+		t.Errorf("oid = %q, want %q", gotOID, wantOID)
 	}
 }
 

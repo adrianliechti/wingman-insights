@@ -106,7 +106,7 @@ func main() {
 	app.Handle("/", newSPAHandler(basePath))
 
 	// basePath is "" at the root (then basePath+"/" is "/" and StripPrefix("")
-	// is a no-op), or "/insights" und	r a sub-path. One line covers both.
+	// is a no-op), or "/insights" under a sub-path. One line covers both.
 	mux.Handle(basePath+"/", http.StripPrefix(basePath, app))
 
 	addr := os.Getenv("INSIGHTS_ADDR")

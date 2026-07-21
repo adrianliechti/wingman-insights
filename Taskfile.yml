@@ -1,5 +1,7 @@
 version: "3"
 
+dotenv: [".env"]
+
 vars:
   REPOSITORY: ghcr.io/adrianliechti/wingman-insights
 

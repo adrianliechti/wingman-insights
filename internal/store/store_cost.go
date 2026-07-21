@@ -216,6 +216,90 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 	`, args...)
 }
 
+// UsageBucketPoint is one point in the usage timeseries: cost plus the token
+// breakdown for a model over one interval. Input is the inclusive prompt total;
+// Cached is the cached subset of that input.
+type UsageBucketPoint struct {
+	Bucket time.Time
+	Model  string
+	Cost   float64
+	Input  int64
+	Output int64
+	Cached int64
+}
+
+// QueryUsageTimeseries returns cost and token consumption per time bucket,
+// stacked by request_model. Cost is summed from the per-span materialized cost
+// column (the same source as QueryCostTimeseries); tokens come from the span
+// counters, with Cached being cache read + creation.
+func (s *Store) QueryUsageTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]UsageBucketPoint, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{interval, from, to}, fargs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			COALESCE(request_model, '') as model,
+			COALESCE(SUM(cost), 0) as cost,
+			COALESCE(SUM(input_tokens), 0) as input_tokens,
+			COALESCE(SUM(output_tokens), 0) as output_tokens,
+			COALESCE(SUM(cache_read_tokens + cache_creation_tokens), 0) as cached_tokens
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		GROUP BY bucket, model
+		ORDER BY bucket
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []UsageBucketPoint
+	for rows.Next() {
+		var p UsageBucketPoint
+		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &p.Input, &p.Output, &p.Cached); err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+// TokenTotals is the aggregate token consumption for a window and filter.
+// Input is the inclusive prompt total (cache included); Cached is the cache
+// read + creation portion of that input. Output is the completion total.
+type TokenTotals struct {
+	Input  int64 `json:"input"`
+	Output int64 `json:"output"`
+	Cached int64 `json:"cached"`
+}
+
+// UsageTotals is cost and token consumption for a window and filter, read in a
+// single scan of genai_spans.
+type UsageTotals struct {
+	Cost   float64
+	Tokens TokenTotals
+}
+
+// QueryUsageTotals returns the total cost and token counts for the given window
+// and filter in one pass over genai_spans — the source carrying both the
+// materialized cost column and the per-request cache breakdown. Returns zeroes
+// when no matching spans exist.
+func (s *Store) QueryUsageTotals(ctx context.Context, from, to time.Time, f Filter) (UsageTotals, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	var u UsageTotals
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(cost), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens + cache_creation_tokens), 0)
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause,
+		args...).Scan(&u.Cost, &u.Tokens.Input, &u.Tokens.Output, &u.Tokens.Cached)
+	return u, err
+}
+
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by
 // request_model (groupBy "model", default) or app_id (groupBy "app").
 // Unlike QueryCostTimeseries this is consumption, not spend: it includes models

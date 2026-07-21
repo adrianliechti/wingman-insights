@@ -193,6 +193,16 @@ func genUsers(start, end time.Time, n int) []userDef {
 	// Pin two always-on power users for the spike / burst windows.
 	out[0] = userDef{id: "user-001", email: "alice@example.com", service: "chat-api", joinAt: start, intensity: 0.92}
 	out[1] = userDef{id: "user-002", email: "bob@example.com", service: "agent-service", joinAt: start, intensity: 0.85}
+
+	// Pin an always-on "dev" user so the local dev identity (the placeholder set
+	// when auth is disabled) has data to view.
+	out = append(out, userDef{
+		id:        "dev",
+		email:     "dev@example.com",
+		service:   services[0],
+		joinAt:    start,
+		intensity: 0.8,
+	})
 	return out
 }
 

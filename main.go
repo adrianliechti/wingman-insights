@@ -98,7 +98,11 @@ func main() {
 	basePath := normalizeBasePath(os.Getenv("INSIGHTS_BASE_PATH"))
 
 	app := http.NewServeMux()
-	api.NewHandler(s).Register(app)
+	h := api.NewHandler(s)
+
+	h.Register(app)
+	h.RegisterCompanion(app)
+
 	app.Handle("/", newSPAHandler(basePath))
 
 	// basePath is "" at the root (then basePath+"/" is "/" and StripPrefix("")

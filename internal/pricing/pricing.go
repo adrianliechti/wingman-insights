@@ -20,6 +20,36 @@ type Price struct {
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
 	CacheWrite float64 `json:"cache_write"`
+	// Tiers are long-context premium rate cards, sorted by ascending
+	// threshold; empty for flat-priced models. See ForInput.
+	Tiers []Tier `json:"-"`
+}
+
+// Tier is a premium rate card that replaces the base rates for requests whose
+// inclusive prompt total exceeds Threshold tokens — e.g. OpenAI bills gpt-5.4/
+// gpt-5.5 input at double the base rate above 272k input tokens. Rates the
+// catalog omits for a tier are filled with the base rate at load time.
+type Tier struct {
+	Threshold  float64
+	Input      float64
+	Output     float64
+	CacheRead  float64
+	CacheWrite float64
+}
+
+// ForInput returns the rate card in effect for a request whose inclusive
+// prompt total (gen_ai.usage.input_tokens — cache included, since providers
+// apply the threshold to the full context) is n tokens: the highest tier n
+// exceeds, or the base rates. Aggregate pricing paths that no longer know
+// per-request sizes keep the base card.
+func (p Price) ForInput(n float64) Price {
+	eff := p
+	for _, t := range p.Tiers { // ascending, so the last crossed tier wins
+		if n > t.Threshold {
+			eff = Price{Input: t.Input, Output: t.Output, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite}
+		}
+	}
+	return eff
 }
 
 // TokenCost returns the USD cost for n tokens of the given OTel gen_ai.token.type.
@@ -50,8 +80,55 @@ func (p Price) Cost(input, output, cacheRead, cacheCreation float64) float64 {
 		p.TokenCost("output", output)
 }
 
+// catalogTier mirrors one models.dev cost.tiers entry. Rates are pointers so
+// an omitted rate is distinguishable from an explicit zero and can inherit the
+// base rate.
+type catalogTier struct {
+	Input      *float64 `json:"input"`
+	Output     *float64 `json:"output"`
+	CacheRead  *float64 `json:"cache_read"`
+	CacheWrite *float64 `json:"cache_write"`
+	Tier       struct {
+		Type string  `json:"type"`
+		Size float64 `json:"size"`
+	} `json:"tier"`
+}
+
+type catalogCost struct {
+	Price
+	Tiers []catalogTier `json:"tiers"`
+}
+
+// price resolves the catalog cost entry into a Price with fully-filled,
+// threshold-sorted context tiers.
+func (c catalogCost) price() Price {
+	p := c.Price
+	p.Tiers = nil
+	for _, t := range c.Tiers {
+		if t.Tier.Type != "context" || t.Tier.Size <= 0 {
+			continue
+		}
+		p.Tiers = append(p.Tiers, Tier{
+			Threshold:  t.Tier.Size,
+			Input:      orBase(t.Input, p.Input),
+			Output:     orBase(t.Output, p.Output),
+			CacheRead:  orBase(t.CacheRead, p.CacheRead),
+			CacheWrite: orBase(t.CacheWrite, p.CacheWrite),
+		})
+	}
+	sort.Slice(p.Tiers, func(i, j int) bool { return p.Tiers[i].Threshold < p.Tiers[j].Threshold })
+	return p
+}
+
+func orBase(v *float64, base float64) float64 {
+	if v != nil {
+		return *v
+	}
+	return base
+}
+
 type catalogModel struct {
-	Cost *Price `json:"cost"`
+	Cost *catalogCost `json:"cost"`
 }
 
 type catalogProvider struct {
@@ -116,7 +193,7 @@ func load() {
 				continue
 			}
 			lm := strings.ToLower(model)
-			byKey[lp+"/"+lm] = *m.Cost
+			byKey[lp+"/"+lm] = m.Cost.price()
 			provIDs[lp] = append(provIDs[lp], lm)
 		}
 	}

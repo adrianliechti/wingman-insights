@@ -25,7 +25,10 @@ type tokenParts struct {
 }
 
 // cost prices the partitions: uncached at the input rate, cache at their own
-// rates, and all output (response + reasoning) at the output rate.
+// rates, and all output (response + reasoning) at the output rate. Aggregates
+// have lost the per-request input sizes, so long-context tiers (Price.Tiers)
+// cannot apply here — everything bills at the base card. Real spend always
+// comes from the per-span materialized cost columns, which are tier-aware.
 func (p tokenParts) cost(pr pricing.Price) float64 {
 	return pr.TokenCost("input", p.Uncached) +
 		pr.TokenCost("cache_read", p.CacheRead) +

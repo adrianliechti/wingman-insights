@@ -48,7 +48,9 @@ tasks:
       # served by Vite, which proxies /api and /v1 to this backend.
       - mkdir -p web/dist
       - test -f web/dist/index.html || printf '<!doctype html><p>dev stub — use the Vite dev server on :5173</p>' > web/dist/index.html
-      - go run .
+      # No oauth2-proxy in front of the dev server, so auth defaults off here;
+      # an explicit COMPANION_AUTH_DISABLED (e.g. from .env) still wins.
+      - COMPANION_AUTH_DISABLED=${COMPANION_AUTH_DISABLED:-true} go run .
 
   dev-web:
     internal: true

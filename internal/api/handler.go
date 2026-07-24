@@ -87,6 +87,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	finops := group("/finops")
 	finops.get("/cost-timeseries", jsonRouteBy(h, h.store.QueryCostTimeseries))
 	finops.get("/token-timeseries", jsonRouteBy(h, h.store.QueryTokenVolumeTimeseries))
+	finops.get("/context-histogram", jsonRoute(h, h.store.QueryContextHistogram))
 	finops.get("/budget", h.budget)
 
 	product := group("/product")

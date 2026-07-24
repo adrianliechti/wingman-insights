@@ -54,8 +54,9 @@ var (
 		{"anthropic", "claude-sonnet-4-20250514", 1200, 600, true}, // 2 premium
 		{"anthropic", "claude-haiku-4-5", 400, 200, false},         // 3 cheap
 		{"gcp.gemini", "gemini-2.0-flash", 600, 300, true},         // 4 cheap
+		{"openai", "gpt-5.5", 30000, 1200, true},                   // 5 premium, long-context tiered
 	}
-	premiumModels = []int{0, 2}
+	premiumModels = []int{0, 2, 5}
 	cheapModels   = []int{1, 3, 4}
 	firstNames    = []string{
 		"alice", "bob", "carol", "dave", "eve", "frank", "grace", "heidi",
@@ -452,6 +453,12 @@ func buildUserTrace(t time.Time, u userDef, svc string) []*tracepb.Span {
 		outTok := int64(jitter(m.avgOut, 0.5) * factor)
 		cacheCreation, cacheRead := cacheTokens(m, "chat", m.avgIn*factor)
 		inTok := int64(jitter(m.avgIn, 0.5)*factor) + int64(cacheCreation) + int64(cacheRead)
+		// gpt-5.5 sessions occasionally dump huge contexts (doc sets, long agent
+		// histories) so the context-size histogram has a real tail and some calls
+		// cross the 272k threshold where long-context pricing doubles the rate.
+		if m.model == "gpt-5.5" && rand.Float64() < 0.3 {
+			inTok = int64(jitter(260_000, 0.8))
+		}
 		var reasoning int64
 		if m.reasons && rand.Float64() < 0.6 {
 			reasoning = int64(jitter(m.avgOut*0.45, 0.4) * factor)

@@ -3,12 +3,12 @@ import { Download } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
-import type { BudgetResponse, CostRow, TimeseriesPoint } from '../types'
+import type { BudgetResponse, ContextBucketRow, CostRow, TimeseriesPoint } from '../types'
 import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
-import { ChartLegend, Doughnut, PALETTE, Pie, TimeseriesPanel } from '../components/charts'
+import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, TimeseriesPanel } from '../components/charts'
 import { costsByApp, costsByDepartment, costsByModel, costsByUser } from '../lib/costs'
 import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
@@ -123,6 +123,50 @@ function SegToggle<T extends string>({
           {g}
         </button>
       ))}
+    </div>
+  )
+}
+
+// ContextHistogram shows how many LLM calls fall in each prompt-size bin. The
+// bins come zero-filled and ordered from the API; the 200k/272k edges mark
+// where long-context pricing kicks in, so the tail is the premium-billed share.
+function ContextHistogram({ rows, loading }: { rows: ContextBucketRow[] | null; loading: boolean }) {
+  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  const bins = rows ?? []
+  const total = bins.reduce((a, r) => a + r.requests, 0)
+  if (total === 0) return <PanelMessage>No data</PanelMessage>
+  const opts = chartOptions({ yFmt: fmtTokens })
+  return (
+    <div className="h-56">
+      <Bar
+        data={{
+          labels: bins.map((r) => r.bucket),
+          datasets: [
+            {
+              data: bins.map((r) => r.requests),
+              backgroundColor: PALETTE[0],
+              borderRadius: 4,
+              maxBarThickness: 48,
+            },
+          ],
+        }}
+        options={{
+          ...opts,
+          plugins: {
+            ...opts.plugins,
+            tooltip: {
+              ...opts.plugins.tooltip,
+              callbacks: {
+                label: (ctx: any) => {
+                  const r = bins[ctx.dataIndex]
+                  const share = ((r.requests / total) * 100).toFixed(1)
+                  return ` ${r.requests.toLocaleString()} calls (${share}%) · ${fmtCost(r.cost)}`
+                },
+              },
+            },
+          },
+        }}
+      />
     </div>
   )
 }
@@ -319,6 +363,7 @@ export function Finops() {
   const budget = useApi<BudgetResponse>('/api/finops/budget')
   const trend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries', { by: spendBy })
   const tokenTrend = useApi<TimeseriesPoint[]>('/api/finops/token-timeseries', { by: spendBy })
+  const contextHist = useApi<ContextBucketRow[]>('/api/finops/context-histogram')
 
   const rows = useMemo(() => breakdown.data ?? [], [breakdown.data])
   const byUser = useMemo(() => costsByUser(rows), [rows])
@@ -386,6 +431,13 @@ export function Finops() {
           stacked
           loading={trendMetric === 'cost' ? trend.loading : tokenTrend.loading}
         />
+      </Panel>
+
+      <Panel
+        title="Context Size"
+        sub="LLM calls by prompt size (input tokens per call) · bins above 200k / 272k bill at long-context rates on tiered models"
+      >
+        <ContextHistogram rows={contextHist.data} loading={contextHist.loading} />
       </Panel>
 
       <Panel title="Spend share" sub="Distribution of spend across apps and models">

@@ -68,6 +68,11 @@ func (r SpanRow) costBreakdown() (inputCost, outputCost, cacheReadCost, cacheCre
 	if !ok {
 		return 0, 0, 0, 0, 0, 0, false
 	}
+	// Long-context tiers: once the inclusive prompt total crosses the model's
+	// threshold (e.g. 272k for OpenAI gpt-5.4/5.5), the whole request bills at
+	// the premium rate card — decidable only here, where the per-request input
+	// size is still known.
+	p = p.ForInput(float64(r.InputTokens))
 	regular := float64(r.InputTokens) - float64(r.CacheRead) - float64(r.CacheCreation)
 	if regular < 0 {
 		regular = 0

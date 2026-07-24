@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestLookup(t *testing.T) {
 	// Resolve the canonical catalog prices we assert against, so the test
@@ -56,7 +59,7 @@ func TestLookup(t *testing.T) {
 			if priced != tt.wantPriced {
 				t.Fatalf("priced = %v, want %v (got %+v)", priced, tt.wantPriced, got)
 			}
-			if priced && got != tt.want {
+			if priced && !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("price = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -73,9 +76,58 @@ func TestLookupDeterministic(t *testing.T) {
 	}
 	for i := 0; i < 50; i++ {
 		got, ok := Lookup("", "gpt-5.1")
-		if !ok || got != want {
+		if !ok || !reflect.DeepEqual(got, want) {
 			t.Fatalf("provider-less gpt-5.1 = %+v (ok=%v), want canonical %+v", got, ok, want)
 		}
+	}
+}
+
+// TestLongContextTiers exercises the catalog's cost.tiers parsing and tier
+// selection: gpt-5.5 carries a context tier at 272k input tokens, gpt-5.1 is
+// flat. As in TestLookup, expectations resolve from the catalog itself rather
+// than hard-coding rates.
+func TestLongContextTiers(t *testing.T) {
+	flat := mustLookup(t, "openai", "gpt-5.1")
+	if len(flat.Tiers) != 0 {
+		t.Fatalf("gpt-5.1 should be flat-priced, got tiers %+v", flat.Tiers)
+	}
+	if got := flat.ForInput(1_000_000); !reflect.DeepEqual(got, flat) {
+		t.Fatalf("flat model changed rates for huge input: %+v", got)
+	}
+
+	tiered := mustLookup(t, "openai", "gpt-5.5")
+	if len(tiered.Tiers) == 0 {
+		t.Fatal("gpt-5.5 should carry a long-context tier")
+	}
+	top := tiered.Tiers[len(tiered.Tiers)-1]
+	if top.Threshold != 272_000 {
+		t.Fatalf("gpt-5.5 tier threshold = %v, want 272000", top.Threshold)
+	}
+	if top.Input <= tiered.Input {
+		t.Fatalf("tier input rate %v not above base %v", top.Input, tiered.Input)
+	}
+
+	// At the threshold: base rates. One token above: the tier card.
+	at := tiered.ForInput(top.Threshold)
+	if at.Input != tiered.Input || at.Output != tiered.Output {
+		t.Fatalf("at threshold = %+v, want base rates %+v", at, tiered)
+	}
+	over := tiered.ForInput(top.Threshold + 1)
+	if over.Input != top.Input || over.Output != top.Output || over.CacheRead != top.CacheRead {
+		t.Fatalf("over threshold = %+v, want tier rates %+v", over, top)
+	}
+
+	// A rate the catalog omits on the tier entry inherits the base rate
+	// (requesty's gemini-2.5-pro tier has no cache_write; the base does).
+	gem := mustLookup(t, "requesty", "google/gemini-2.5-pro")
+	if len(gem.Tiers) == 0 {
+		t.Fatal("requesty google/gemini-2.5-pro should carry a context tier")
+	}
+	if gem.CacheWrite == 0 {
+		t.Fatal("test premise broken: base cache_write is zero")
+	}
+	if got := gem.Tiers[0].CacheWrite; got != gem.CacheWrite {
+		t.Fatalf("omitted tier cache_write = %v, want base %v", got, gem.CacheWrite)
 	}
 }
 

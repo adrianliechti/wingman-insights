@@ -115,6 +115,12 @@ export interface BudgetResponse {
   month_elapsed: number
 }
 
+export interface ContextBucketRow {
+  bucket: string
+  requests: number
+  cost: number
+}
+
 
 export interface FilterUser {
   id: string

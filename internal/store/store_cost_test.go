@@ -193,3 +193,174 @@ func TestBackfillSpanCostCategories(t *testing.T) {
 		t.Errorf("cache_savings = %v, want %v", savings, want.savings)
 	}
 }
+
+// TestUsageTotalsMatchCostBreakdown guards that the companion /usage endpoint
+// and the FinOps cost tables report the same token ledger. Both must use the
+// five disjoint partitions: Input is the *non-cached* prompt remainder, so
+// Input + Output + Cached is the billed total with no double count. Previously
+// QueryUsageTotals summed the raw inclusive input_tokens column while
+// QueryCostBreakdown reported the uncached remainder, so a cache-heavy app's
+// input looked several times larger over the API than in the chart.
+func TestUsageTotalsMatchCostBreakdown(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	// Cache-heavy, mirroring the shape that exposed the bug: inclusive input
+	// 1,000,000 of which 800,000 is cache (600k read + 200k write), so the
+	// uncached remainder is 200,000. Output 100,000 including 40,000 reasoning.
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status, app_id,
+		 provider_name, request_model, user_id, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES (?, ?, 1.0, 't1', 's1', 'root', 'ok', 'myapp',
+		        'openai', 'gpt-5.1', 'alice', 1000000, 100000, 600000, 200000, 40000,
+		        0.25, 1.0, 0.075, 0, 1.325, 0.675, true)`,
+		ts, ts); err != nil {
+		t.Fatalf("seed span: %v", err)
+	}
+
+	ctx := context.Background()
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	breakdown, err := s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("QueryCostBreakdown: %v", err)
+	}
+	if len(breakdown) != 1 {
+		t.Fatalf("QueryCostBreakdown rows = %d, want 1", len(breakdown))
+	}
+	b := breakdown[0]
+
+	totals, err := s.QueryUsageTotals(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("QueryUsageTotals: %v", err)
+	}
+
+	if got, want := totals.Tokens.Input, int64(200000); got != want {
+		t.Errorf("usage Input = %d, want %d (uncached remainder, not inclusive input)", got, want)
+	}
+	if got, want := totals.Tokens.Input, int64(b.InputTokens); got != want {
+		t.Errorf("usage Input = %d, breakdown InputTokens = %d; must agree", got, want)
+	}
+	if got, want := totals.Tokens.Output, int64(b.OutputTokens); got != want {
+		t.Errorf("usage Output = %d, breakdown OutputTokens = %d; must agree", got, want)
+	}
+	if got, want := totals.Tokens.Cached, int64(b.CacheReadTokens+b.CacheCreationTokens); got != want {
+		t.Errorf("usage Cached = %d, breakdown cache read+write = %d; must agree", got, want)
+	}
+	if got, want := totals.Tokens.Reasoning, int64(b.ReasoningTokens); got != want {
+		t.Errorf("usage Reasoning = %d, breakdown ReasoningTokens = %d; must agree", got, want)
+	}
+	if totals.Cost != b.TotalCost {
+		t.Errorf("usage Cost = %v, breakdown TotalCost = %v; must agree", totals.Cost, b.TotalCost)
+	}
+	if totals.Tokens.CacheSavings != b.CacheSavings {
+		t.Errorf("usage CacheSavings = %v, breakdown CacheSavings = %v; must agree", totals.Tokens.CacheSavings, b.CacheSavings)
+	}
+	if !totals.Tokens.Priced {
+		t.Error("usage Priced = false, want true")
+	}
+	// The ledger must be disjoint: the three billed columns sum to the true
+	// total (1,000,000 inclusive input + 100,000 output), and reasoning is a
+	// subset of output rather than an extra term.
+	if sum := totals.Tokens.Input + totals.Tokens.Output + totals.Tokens.Cached; sum != 1100000 {
+		t.Errorf("Input+Output+Cached = %d, want 1100000 (disjoint, no double count)", sum)
+	}
+	if totals.Tokens.Reasoning > totals.Tokens.Output {
+		t.Errorf("Reasoning %d exceeds Output %d; must be a subset", totals.Tokens.Reasoning, totals.Tokens.Output)
+	}
+
+	// The bucketed view feeds the same ledger, so summing its buckets must
+	// reproduce the window totals exactly.
+	points, err := s.QueryUsageTimeseries(ctx, from, to, "1 hour", Filter{})
+	if err != nil {
+		t.Fatalf("QueryUsageTimeseries: %v", err)
+	}
+	var agg TokenTotals
+	var bucketCost float64
+	for _, p := range points {
+		bucketCost += p.Cost
+		agg.Input += p.Tokens.Input
+		agg.Output += p.Tokens.Output
+		agg.Cached += p.Tokens.Cached
+		agg.Reasoning += p.Tokens.Reasoning
+		agg.CacheSavings += p.Tokens.CacheSavings
+	}
+	if bucketCost != totals.Cost {
+		t.Errorf("summed bucket cost = %v, want window total %v", bucketCost, totals.Cost)
+	}
+	if agg.Input != totals.Tokens.Input || agg.Output != totals.Tokens.Output ||
+		agg.Cached != totals.Tokens.Cached || agg.Reasoning != totals.Tokens.Reasoning {
+		t.Errorf("summed buckets = %+v, want window totals %+v", agg, totals.Tokens)
+	}
+	if agg.CacheSavings != totals.Tokens.CacheSavings {
+		t.Errorf("summed bucket CacheSavings = %v, want %v", agg.CacheSavings, totals.Tokens.CacheSavings)
+	}
+}
+
+// TestUsageTotalsUnpricedModel verifies an unpriced model reports Priced=false
+// rather than silently contributing a zero cost that reads as free usage.
+func TestUsageTotalsUnpricedModel(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status,
+		 provider_name, request_model, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES (?, ?, 1.0, 't1', 's1', 'root', 'ok',
+		        'acme', 'no-such-model', 1000, 500, 0, 0, 0,
+		        0, 0, 0, 0, 0, 0, false)`,
+		ts, ts); err != nil {
+		t.Fatalf("seed span: %v", err)
+	}
+
+	totals, err := s.QueryUsageTotals(context.Background(), ts.Add(-time.Hour), ts.Add(time.Hour), Filter{})
+	if err != nil {
+		t.Fatalf("QueryUsageTotals: %v", err)
+	}
+	if totals.Tokens.Priced {
+		t.Error("Priced = true, want false for a model with no catalog price")
+	}
+	if totals.Tokens.Input != 1000 || totals.Tokens.Output != 500 {
+		t.Errorf("tokens = %+v, want input 1000 / output 500 (counted even when unpriced)", totals.Tokens)
+	}
+}
+
+// TestUsageTotalsEmptyWindow verifies an empty window yields zeroes with
+// Priced=true — BOOL_AND over no rows is NULL, and nothing unpriced exists.
+func TestUsageTotalsEmptyWindow(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	totals, err := s.QueryUsageTotals(context.Background(), ts.Add(-time.Hour), ts, Filter{})
+	if err != nil {
+		t.Fatalf("QueryUsageTotals: %v", err)
+	}
+	if totals.Cost != 0 || totals.Tokens.Input != 0 || totals.Tokens.Output != 0 || totals.Tokens.Cached != 0 {
+		t.Errorf("empty window totals = %+v, want zeroes", totals)
+	}
+	if !totals.Tokens.Priced {
+		t.Error("Priced = false on an empty window, want true")
+	}
+}

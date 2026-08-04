@@ -60,9 +60,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Authenticated routes — require a valid bearer token.
 	core := group("")
 
-	// can be removed, when companion points to /api/companion/usage
-	core.getWithToken("/usage", h.usage)
-
 	// Public routes — no authentication required.
 	core.get("/filters", h.filterOptions)
 	core.get("/traces", h.traceList)

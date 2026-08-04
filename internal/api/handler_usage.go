@@ -3,33 +3,27 @@ package api
 import (
 	"net/http"
 	"time"
+
+	"insights/internal/store"
 )
 
 // usageResponse is the shape of GET /api/usage. Cost is always present.
 // Buckets is included only when the caller supplies an interval parameter; it
 // is omitted entirely (not serialised as null or []) when no interval is given.
 type usageResponse struct {
-	Cost    float64       `json:"cost"`
-	Tokens  usageTokens   `json:"tokens"`
-	Buckets []usageBucket `json:"buckets,omitempty"`
-}
-
-// usageTokens is the aggregate token consumption for the window. Input is the
-// inclusive prompt total; Cached is the cached subset of that input.
-type usageTokens struct {
-	Input  int64 `json:"input"`
-	Output int64 `json:"output"`
-	Cached int64 `json:"cached"`
+	Cost    float64           `json:"cost"`
+	Tokens  store.TokenTotals `json:"tokens"`
+	Buckets []usageBucket     `json:"buckets,omitempty"`
 }
 
 // usageBucket is one point in the cost timeseries: cost (USD) and token
 // consumption for a model over one interval. It intentionally omits the
 // underlying span count.
 type usageBucket struct {
-	Bucket time.Time   `json:"bucket"`
-	Cost   float64     `json:"cost"`
-	Model  string      `json:"model,omitempty"`
-	Tokens usageTokens `json:"tokens"`
+	Bucket time.Time         `json:"bucket"`
+	Cost   float64           `json:"cost"`
+	Model  string            `json:"model,omitempty"`
+	Tokens store.TokenTotals `json:"tokens"`
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
@@ -57,17 +51,21 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 		// Ensure buckets serialises as [] rather than null when empty, because the
 		// caller already knows it requested the bucketed view.
 		buckets := make([]usageBucket, len(points))
+		resp.Tokens.Priced = true
 		for i, p := range points {
 			buckets[i] = usageBucket{
 				Bucket: p.Bucket,
 				Cost:   p.Cost,
 				Model:  p.Model,
-				Tokens: usageTokens{Input: p.Input, Output: p.Output, Cached: p.Cached},
+				Tokens: p.Tokens,
 			}
 			resp.Cost += p.Cost
-			resp.Tokens.Input += p.Input
-			resp.Tokens.Output += p.Output
-			resp.Tokens.Cached += p.Cached
+			resp.Tokens.Input += p.Tokens.Input
+			resp.Tokens.Output += p.Tokens.Output
+			resp.Tokens.Cached += p.Tokens.Cached
+			resp.Tokens.Reasoning += p.Tokens.Reasoning
+			resp.Tokens.CacheSavings += p.Tokens.CacheSavings
+			resp.Tokens.Priced = resp.Tokens.Priced && p.Tokens.Priced
 		}
 		resp.Buckets = buckets
 	} else {
@@ -77,7 +75,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.Cost = totals.Cost
-		resp.Tokens = usageTokens{Input: totals.Tokens.Input, Output: totals.Tokens.Output, Cached: totals.Tokens.Cached}
+		resp.Tokens = totals.Tokens
 	}
 
 	writeJSON(w, resp)

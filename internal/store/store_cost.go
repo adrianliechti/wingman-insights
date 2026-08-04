@@ -217,21 +217,18 @@ func (s *Store) QueryCostTimeseries(ctx context.Context, from, to time.Time, int
 }
 
 // UsageBucketPoint is one point in the usage timeseries: cost plus the token
-// breakdown for a model over one interval. Input is the inclusive prompt total;
-// Cached is the cached subset of that input.
+// breakdown for a model over one interval.
 type UsageBucketPoint struct {
 	Bucket time.Time
 	Model  string
 	Cost   float64
-	Input  int64
-	Output int64
-	Cached int64
+	Tokens TokenTotals
 }
 
 // QueryUsageTimeseries returns cost and token consumption per time bucket,
-// stacked by request_model. Cost is summed from the per-span materialized cost
-// column (the same source as QueryCostTimeseries); tokens come from the span
-// counters, with Cached being cache read + creation.
+// stacked by request_model. Cost and cache savings are summed from the per-span
+// materialized columns (the same source as QueryCostTimeseries); tokens come
+// from the five disjoint partitions, folded by usageTokenTotals.
 func (s *Store) QueryUsageTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]UsageBucketPoint, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
@@ -240,9 +237,8 @@ func (s *Store) QueryUsageTimeseries(ctx context.Context, from, to time.Time, in
 			time_bucket(CAST(? AS INTERVAL), time) as bucket,
 			COALESCE(request_model, '') as model,
 			COALESCE(SUM(cost), 0) as cost,
-			COALESCE(SUM(input_tokens), 0) as input_tokens,
-			COALESCE(SUM(output_tokens), 0) as output_tokens,
-			COALESCE(SUM(cache_read_tokens + cache_creation_tokens), 0) as cached_tokens
+			COALESCE(SUM(cache_savings), 0) as cache_savings,
+			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket, model
@@ -256,21 +252,51 @@ func (s *Store) QueryUsageTimeseries(ctx context.Context, from, to time.Time, in
 	var result []UsageBucketPoint
 	for rows.Next() {
 		var p UsageBucketPoint
-		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &p.Input, &p.Output, &p.Cached); err != nil {
+		var parts tokenParts
+		var cacheSavings float64
+		var priced bool
+		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &cacheSavings, &priced,
+			&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning); err != nil {
 			return nil, err
 		}
+		p.Tokens = usageTokenTotals(parts, cacheSavings, priced)
 		result = append(result, p)
 	}
 	return result, rows.Err()
 }
 
-// TokenTotals is the aggregate token consumption for a window and filter.
-// Input is the inclusive prompt total (cache included); Cached is the cache
-// read + creation portion of that input. Output is the completion total.
+// TokenTotals is the aggregate token consumption for a window and filter, using
+// the same disjoint ledger as CostRow: Input is the billed, non-cached prompt
+// remainder, Cached is cache read + creation (not part of Input), Output covers
+// the whole completion and Reasoning is a subset of it reported for visibility.
+// Input + Output + Cached is therefore the billed total, with no double count.
 type TokenTotals struct {
-	Input  int64 `json:"input"`
-	Output int64 `json:"output"`
-	Cached int64 `json:"cached"`
+	Input     int64 `json:"input"`
+	Output    int64 `json:"output"`
+	Cached    int64 `json:"cached"`
+	Reasoning int64 `json:"reasoning"`
+
+	// CacheSavings is what the cached tokens would have cost at the full input
+	// rate, minus what they actually cost.
+	CacheSavings float64 `json:"cache_savings"`
+	// Priced is false when any contributing model has no models.dev price, so a
+	// zero cost can be told apart from genuinely free usage.
+	Priced bool `json:"priced"`
+}
+
+// usageTokenTotals folds the five disjoint partitions into the reported ledger:
+// uncached input, all output (response + reasoning, one rate), and the two cache
+// classes merged — matching the Input / Output / Cached / Reasoning columns of
+// the FinOps cost tables so both surfaces agree.
+func usageTokenTotals(p tokenParts, cacheSavings float64, priced bool) TokenTotals {
+	return TokenTotals{
+		Input:        int64(p.Uncached),
+		Output:       int64(p.Response + p.Reasoning),
+		Cached:       int64(p.CacheRead + p.CacheWrite),
+		Reasoning:    int64(p.Reasoning),
+		CacheSavings: cacheSavings,
+		Priced:       priced,
+	}
 }
 
 // UsageTotals is cost and token consumption for a window and filter, read in a
@@ -283,21 +309,28 @@ type UsageTotals struct {
 // QueryUsageTotals returns the total cost and token counts for the given window
 // and filter in one pass over genai_spans — the source carrying both the
 // materialized cost column and the per-request cache breakdown. Returns zeroes
-// when no matching spans exist.
+// (and Priced true, nothing being unpriced) when no matching spans exist.
 func (s *Store) QueryUsageTotals(ctx context.Context, from, to time.Time, f Filter) (UsageTotals, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
 	var u UsageTotals
+	var parts tokenParts
+	var cacheSavings float64
+	var priced bool
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(cache_read_tokens + cache_creation_tokens), 0)
+			COALESCE(SUM(cache_savings), 0),
+			COALESCE(BOOL_AND(COALESCE(priced, false)), true),`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause,
-		args...).Scan(&u.Cost, &u.Tokens.Input, &u.Tokens.Output, &u.Tokens.Cached)
-	return u, err
+		args...).Scan(&u.Cost, &cacheSavings, &priced,
+		&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning)
+	if err != nil {
+		return UsageTotals{}, err
+	}
+	u.Tokens = usageTokenTotals(parts, cacheSavings, priced)
+	return u, nil
 }
 
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by

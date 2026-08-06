@@ -165,6 +165,53 @@ func TestIdentityAttributes(t *testing.T) {
 	}
 }
 
+func TestUsernameStripPrefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/oauth2/v2.0/token"):
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-123", "expires_in": 3600})
+		case strings.HasSuffix(r.URL.Path, "/users"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]any{{"id": "u1", "displayName": "Ivo Zumbrunn", "userPrincipalName": "uivz@contoso.com"}},
+			})
+		case strings.HasSuffix(r.URL.Path, "/servicePrincipals"):
+			json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	d, err := New(Config{
+		TenantID: "test-tenant", ClientID: "client", ClientSecret: "secret",
+		GraphBaseURL: srv.URL + "/v1.0", LoginBaseURL: srv.URL,
+		UsernameStripPrefix: "^[uec]",
+		Logf:                func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	got, ok := d.Lookup("uivz@contoso.com")
+	if !ok {
+		t.Fatal("Lookup miss")
+	}
+	if got.Username != "ivz" {
+		t.Errorf("Username = %q, want %q", got.Username, "ivz")
+	}
+}
+
+func TestUsernameStripPrefixInvalidRegexp(t *testing.T) {
+	if _, err := New(Config{
+		TenantID: "t", ClientID: "c", ClientSecret: "s",
+		UsernameStripPrefix: "(unterminated",
+	}); err == nil {
+		t.Error("want error for invalid UsernameStripPrefix regexp")
+	}
+}
+
 func TestExport(t *testing.T) {
 	var tokenCalls atomic.Int32
 	srv := fakeGraph(t, &tokenCalls)

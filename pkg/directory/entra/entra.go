@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,9 +54,10 @@ const (
 
 // Environment variables read by FromEnv.
 const (
-	envTenantID     = "INSIGHTS_ENTRA_TENANT_ID"
-	envClientID     = "INSIGHTS_ENTRA_CLIENT_ID"
-	envClientSecret = "INSIGHTS_ENTRA_CLIENT_SECRET"
+	envTenantID            = "INSIGHTS_ENTRA_TENANT_ID"
+	envClientID            = "INSIGHTS_ENTRA_CLIENT_ID"
+	envClientSecret        = "INSIGHTS_ENTRA_CLIENT_SECRET"
+	envUsernameStripPrefix = "INSIGHTS_ENTRA_USERNAME_STRIP_PREFIX"
 )
 
 // Config configures an Entra-backed directory. TenantID, ClientID and
@@ -78,6 +80,11 @@ type Config struct {
 	GraphBaseURL string
 	LoginBaseURL string
 
+	// UsernameStripPrefix is an optional regexp matched against the derived
+	// username (the UPN's local part, lower-cased) and removed wherever it
+	// matches — e.g. "^[uec]" turns "uivz" into "ivz". Empty disables stripping.
+	UsernameStripPrefix string
+
 	// Logf records background refresh failures. Zero uses log.Printf.
 	Logf func(format string, args ...any)
 }
@@ -94,6 +101,9 @@ type snapshot struct {
 type Directory struct {
 	cfg  Config
 	http *http.Client
+
+	// usernameStrip is the compiled Config.UsernameStripPrefix, or nil when unset.
+	usernameStrip *regexp.Regexp
 
 	snap atomic.Pointer[snapshot]
 
@@ -115,7 +125,8 @@ var (
 
 // New validates cfg and returns a directory. It performs no I/O: the first
 // directory load happens lazily on the first Lookup (or eagerly if you call
-// Refresh). It errors only when required credentials are missing.
+// Refresh). It errors when required credentials are missing or
+// UsernameStripPrefix is not a valid regexp.
 func New(cfg Config) (*Directory, error) {
 	if cfg.TenantID == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
 		return nil, errors.New("entra: TenantID, ClientID and ClientSecret are required")
@@ -129,17 +140,27 @@ func New(cfg Config) (*Directory, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = log.Printf
 	}
-	return &Directory{cfg: cfg, http: cfg.HTTPClient}, nil
+	d := &Directory{cfg: cfg, http: cfg.HTTPClient}
+	if cfg.UsernameStripPrefix != "" {
+		re, err := regexp.Compile(cfg.UsernameStripPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("entra: invalid UsernameStripPrefix: %w", err)
+		}
+		d.usernameStrip = re
+	}
+	return d, nil
 }
 
 // FromEnv builds an Entra directory from INSIGHTS_ENTRA_TENANT_ID / _CLIENT_ID /
-// _CLIENT_SECRET. ok is false when any credential is unset, so the caller can
-// fall back to no resolution.
+// _CLIENT_SECRET (and the optional INSIGHTS_ENTRA_USERNAME_STRIP_PREFIX). ok is
+// false when any credential is unset, so the caller can fall back to no
+// resolution.
 func FromEnv() (d *Directory, ok bool) {
 	d, err := New(Config{
-		TenantID:     os.Getenv(envTenantID),
-		ClientID:     os.Getenv(envClientID),
-		ClientSecret: os.Getenv(envClientSecret),
+		TenantID:            os.Getenv(envTenantID),
+		ClientID:            os.Getenv(envClientID),
+		ClientSecret:        os.Getenv(envClientSecret),
+		UsernameStripPrefix: os.Getenv(envUsernameStripPrefix),
 	})
 	if err != nil {
 		return nil, false
@@ -303,12 +324,19 @@ type graphUser struct {
 }
 
 // usernameFromUPN reduces a UPN to a short username: the local part before
-// '@', lower-cased. UPNs that aren't email-shaped pass through unchanged.
-func usernameFromUPN(upn string) string {
-	if i := strings.IndexByte(upn, '@'); i >= 0 {
-		return strings.ToLower(upn[:i])
+// '@', lower-cased, with the configured UsernameStripPrefix regexp (if any)
+// removed wherever it matches. UPNs that aren't email-shaped pass the
+// local-part step through unchanged.
+func (d *Directory) usernameFromUPN(upn string) string {
+	u := upn
+	if i := strings.IndexByte(u, '@'); i >= 0 {
+		u = u[:i]
 	}
-	return upn
+	u = strings.ToLower(u)
+	if d.usernameStrip != nil {
+		u = d.usernameStrip.ReplaceAllString(u, "")
+	}
+	return u
 }
 
 func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]directory.Identity) error {
@@ -321,7 +349,7 @@ func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]di
 				Kind:       directory.KindUser,
 				Department: u.Department,
 				Location:   u.OfficeLocation,
-				Username:   usernameFromUPN(u.UserPrincipalName),
+				Username:   d.usernameFromUPN(u.UserPrincipalName),
 			}
 			// Primary identifiers are authoritative and overwrite; secondary
 			// aliases (extra emails, usernames) only fill gaps so they can't

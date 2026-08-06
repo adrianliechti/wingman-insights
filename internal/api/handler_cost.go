@@ -70,6 +70,10 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 
+	// UTF-8 BOM: without it, Excel guesses a legacy codepage instead of UTF-8
+	// and mangles non-ASCII characters (e.g. "Zürich" renders as "Zürich").
+	w.Write([]byte{0xEF, 0xBB, 0xBF})
+
 	cw := csv.NewWriter(w)
 	cw.Write([]string{
 		"id", "name", "kind", "department", "location", "username", "app", "provider", "model",

@@ -309,8 +309,10 @@ func (s *Store) migrate() error {
 			name       VARCHAR,
 			kind       VARCHAR,
 			department VARCHAR,
-			location   VARCHAR
+			location   VARCHAR,
+			username   VARCHAR
 		)`,
+		"ALTER TABLE directory ADD COLUMN IF NOT EXISTS username VARCHAR",
 	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

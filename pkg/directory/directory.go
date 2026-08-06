@@ -48,6 +48,10 @@ type Identity struct {
 	// attribute), not the daily In-office/Remote presence toggle. Empty for
 	// applications or when unset.
 	Location string `json:"location,omitempty"`
+	// Username is the user's preferred username: the local part of the Graph
+	// "userPrincipalName" (before the '@'), lower-cased. Empty for applications
+	// or when unset.
+	Username string `json:"username,omitempty"`
 }
 
 // Directory resolves a principal identifier to a canonical Identity.
@@ -70,6 +74,7 @@ type Record struct {
 	Kind       Kind   `json:"kind,omitempty"`
 	Department string `json:"department,omitempty"`
 	Location   string `json:"location,omitempty"`
+	Username   string `json:"username,omitempty"`
 }
 
 // Lister is an optional capability for directories that can enumerate their

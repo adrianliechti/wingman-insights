@@ -77,6 +77,7 @@ export interface CostRow {
   kind?: string
   department?: string
   location?: string
+  username?: string
   app_id?: string
   app_name?: string
   provider_name?: string

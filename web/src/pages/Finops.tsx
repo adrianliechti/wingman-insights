@@ -77,6 +77,11 @@ const userColumns: ColumnDef<CostRow, any>[] = [
     cell: (c) => <UserCell r={c.row.original} />,
   },
   { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
+  {
+    accessorKey: 'username',
+    header: 'Username',
+    cell: (c) => <span className="font-mono text-xs text-gray-500 dark:text-gray-400">{c.getValue() || '—'}</span>,
+  },
   ...costCols(),
 ]
 

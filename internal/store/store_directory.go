@@ -66,9 +66,9 @@ func (s *Store) SyncDirectory(ctx context.Context) error {
 	// Explicit columns so missing JSON keys (omitempty fields) load as NULL
 	// rather than shifting the schema; format is fixed to newline-delimited.
 	if _, err := tx.ExecContext(ctx, `INSERT INTO directory
-		SELECT alias, id, name, kind, department, location
+		SELECT alias, id, name, kind, department, location, username
 		FROM read_json(?, format='newline_delimited',
-			columns={alias:'VARCHAR', id:'VARCHAR', name:'VARCHAR', kind:'VARCHAR', department:'VARCHAR', location:'VARCHAR'})`,
+			columns={alias:'VARCHAR', id:'VARCHAR', name:'VARCHAR', kind:'VARCHAR', department:'VARCHAR', location:'VARCHAR', username:'VARCHAR'})`,
 		f.Name()); err != nil {
 		return fmt.Errorf("load directory: %w", err)
 	}
@@ -87,6 +87,7 @@ type resolved struct {
 	Kind string
 	Dept string
 	Loc  string
+	User string
 }
 
 // dirResolve builds the join + expressions that resolve table's idCol then
@@ -104,6 +105,7 @@ func dirResolve(table, idCol, emailCol string) resolved {
 		Kind: "COALESCE(d1.kind, d2.kind, '')",
 		Dept: "COALESCE(d1.department, d2.department, '')",
 		Loc:  "COALESCE(d1.location, d2.location, '')",
+		User: "COALESCE(d1.username, d2.username, '')",
 	}
 }
 

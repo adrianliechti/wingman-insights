@@ -224,6 +224,7 @@ func (d *Directory) Records() iter.Seq[directory.Record] {
 				Kind:       idt.Kind,
 				Department: idt.Department,
 				Location:   idt.Location,
+				Username:   idt.Username,
 			}) {
 				return
 			}
@@ -301,6 +302,15 @@ type graphUser struct {
 	OfficeLocation string `json:"officeLocation"`
 }
 
+// usernameFromUPN reduces a UPN to a short username: the local part before
+// '@', lower-cased. UPNs that aren't email-shaped pass through unchanged.
+func usernameFromUPN(upn string) string {
+	if i := strings.IndexByte(upn, '@'); i >= 0 {
+		return strings.ToLower(upn[:i])
+	}
+	return upn
+}
+
 func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]directory.Identity) error {
 	first := d.graphBase() + "/users?$select=id,displayName,userPrincipalName,mail,mailNickname,onPremisesSamAccountName,otherMails,proxyAddresses,department,officeLocation&$top=" + strconv.Itoa(pageSize)
 	return fetchPaged(ctx, d, tok, first, func(users []graphUser) {
@@ -311,6 +321,7 @@ func (d *Directory) loadUsers(ctx context.Context, tok string, dst map[string]di
 				Kind:       directory.KindUser,
 				Department: u.Department,
 				Location:   u.OfficeLocation,
+				Username:   usernameFromUPN(u.UserPrincipalName),
 			}
 			// Primary identifiers are authoritative and overwrite; secondary
 			// aliases (extra emails, usernames) only fill gaps so they can't

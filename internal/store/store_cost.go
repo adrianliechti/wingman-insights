@@ -46,7 +46,19 @@ type CostRow struct {
 	// full input rate, minus what they actually cost.
 	CacheSavings float64 `json:"cache_savings"`
 
+	// Priced is BOOL_AND'd over every span folded into this row: false as soon
+	// as one contributing span has no catalog price, even if the rest do. It
+	// flags "some unpriced spend may be hiding here", not "these tokens are
+	// unpriced" — use UnpricedTokens for the latter, since it stays additive
+	// (a plain SUM) across any grouping instead of collapsing to all-or-nothing.
 	Priced bool `json:"priced"`
+	// UnpricedTokens is the inclusive input+output token count from only the
+	// spans that had no models.dev price, summed regardless of grouping. Unlike
+	// Priced, this composes correctly when a row mixes priced and unpriced
+	// spans (e.g. a model priced only after some usage was already ingested),
+	// so a token-share percentage computed from it reflects the true fraction
+	// instead of charging a whole bucket's volume for one unpriced straggler.
+	UnpricedTokens float64 `json:"unpriced_tokens"`
 }
 
 // QueryCostBreakdown returns priced token usage per (user, provider, model).
@@ -61,9 +73,10 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 	r := dirResolve("genai_spans", "user_id", "user_email")
 	a := dirResolveApp("genai_spans", "app_id")
 	// Resolve user_id/user_email and app_id to canonical identities via the
-	// directory table (id-then-email precedence), then group by the resolved
-	// principal directly in SQL — no Go-side fold. An unresolved id passes through
-	// as itself with empty name/kind/department/location.
+	// directory table (matched identity first, else raw email, else raw id — see
+	// dirResolve), then group by the resolved principal directly in SQL — no
+	// Go-side fold. An unresolved principal passes through as itself with empty
+	// name/kind/department/location.
 	rows, err := s.db.QueryContext(ctx, `
 		WITH resolved AS (
 			SELECT
@@ -85,7 +98,8 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		SELECT principal, name, kind, department, location, username, app_id, app_name, provider_name, request_model,`+spansPartCols+`,
 			COALESCE(SUM(input_cost), 0), COALESCE(SUM(output_cost), 0),
 			COALESCE(SUM(cache_read_cost), 0), COALESCE(SUM(cache_creation_cost), 0),
-			COALESCE(SUM(cost), 0), COALESCE(SUM(cache_savings), 0), BOOL_AND(COALESCE(priced, false))
+			COALESCE(SUM(cost), 0), COALESCE(SUM(cache_savings), 0), BOOL_AND(COALESCE(priced, false)),
+			COALESCE(SUM(CASE WHEN COALESCE(priced, false) THEN 0 ELSE input_tokens + output_tokens END), 0)
 		FROM resolved
 		GROUP BY principal, name, kind, department, location, username, app_id, app_name, provider_name, request_model
 	`, args...)
@@ -101,7 +115,8 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		var r CostRow
 		if err := rows.Scan(&id, &name, &kind, &department, &location, &username, &appID, &appName, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning,
-			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CacheSavings, &r.Priced); err != nil {
+			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CacheSavings, &r.Priced,
+			&r.UnpricedTokens); err != nil {
 			return nil, err
 		}
 		r.ID, r.Name, r.Kind, r.Department, r.Location, r.Username = id, name, kind, department, location, username
@@ -182,6 +197,7 @@ func aggregateCosts(rows []CostRow, keyFn func(CostRow) (string, CostRow)) []Cos
 		agg.TotalCost += r.TotalCost
 		agg.CacheSavings += r.CacheSavings
 		agg.Priced = agg.Priced && r.Priced
+		agg.UnpricedTokens += r.UnpricedTokens
 	}
 	result := make([]CostRow, 0, len(byKey))
 	for _, r := range byKey {
@@ -362,17 +378,18 @@ func (s *Store) QueryTokenVolumeTimeseries(ctx context.Context, from, to time.Ti
 }
 
 // backfillSpanCost fills the per-category cost columns (and their sum, cost /
-// cache_savings) for rows inserted before those columns existed — NULL on
-// every pre-existing row, since input_cost is the newest of the set and its
-// nullness is what gates every row that needs (re)pricing here, whether it
-// predates the original cost/cache_savings columns or just this later
-// per-category split. Priced once per distinct (provider, model) — a handful
-// of UPDATEs, not one per row — using the same arithmetic as
-// SpanRow.costBreakdown, then zeroes anything still NULL (unpriced models) so
-// every column is non-NULL afterward and this is a no-op on subsequent starts.
+// cache_savings) for rows inserted before those columns existed (NULL on every
+// pre-existing row) and re-prices rows still marked unpriced, so a model added
+// to the catalog after ingest gets priced retroactively on the next start
+// instead of being frozen at "unpriced" forever. Priced once per distinct
+// (provider, model) — a handful of UPDATEs, not one per row — using the same
+// arithmetic as SpanRow.costBreakdown. Rows still not found in the catalog are
+// left untouched (already 0/false from a prior run, or swept below on first
+// sight), so only the genuinely unpriced slice is rescanned on later starts,
+// never the whole table.
 func (s *Store) backfillSpanCost(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT COALESCE(provider_name, ''), COALESCE(request_model, '')
-		FROM genai_spans WHERE input_cost IS NULL`)
+		FROM genai_spans WHERE input_cost IS NULL OR priced = false`)
 	if err != nil {
 		return err
 	}
@@ -394,7 +411,7 @@ func (s *Store) backfillSpanCost(ctx context.Context) error {
 	for _, p := range pairs {
 		price, ok := pricing.Lookup(p.provider, p.model)
 		if !ok {
-			continue // swept to 0 below
+			continue // still unpriced; retried again on a later start
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE genai_spans SET
 			input_cost = GREATEST(COALESCE(input_tokens,0) - COALESCE(cache_read_tokens,0) - COALESCE(cache_creation_tokens,0), 0)/1000000.0*?,
@@ -407,7 +424,7 @@ func (s *Store) backfillSpanCost(ctx context.Context) error {
 				+ COALESCE(output_tokens,0)/1000000.0*?,
 			cache_savings = COALESCE(cache_read_tokens,0)/1000000.0*?,
 			priced = true
-			WHERE input_cost IS NULL AND COALESCE(provider_name,'') = ? AND COALESCE(request_model,'') = ?`,
+			WHERE (input_cost IS NULL OR priced = false) AND COALESCE(provider_name,'') = ? AND COALESCE(request_model,'') = ?`,
 			price.Input, price.Output, price.CacheRead, price.CacheWrite,
 			price.Input, price.CacheRead, price.CacheWrite, price.Output,
 			price.Input-price.CacheRead,
@@ -415,7 +432,9 @@ func (s *Store) backfillSpanCost(ctx context.Context) error {
 			return err
 		}
 	}
-	// Unpriced models: make every column non-NULL so they are not retried.
+	// First sight of an unpriced model: make every column non-NULL so it reads
+	// as "priced = false" (not retried by the IS NULL half above) rather than
+	// being rescanned by that clause on every later start too.
 	_, err = s.db.ExecContext(ctx, `UPDATE genai_spans SET
 		cost = 0, cache_savings = 0, input_cost = 0, output_cost = 0, cache_read_cost = 0, cache_creation_cost = 0, priced = false
 		WHERE input_cost IS NULL`)

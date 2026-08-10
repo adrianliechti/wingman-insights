@@ -3,8 +3,9 @@ import type { CostRow } from '../types'
 // Client-side twin of the server's AggregateCostsBy* helpers (store_cost.go):
 // the FinOps page fetches the full breakdown (group_by=none) once and derives
 // every grouping from it, instead of running the same DuckDB scan once per
-// grouping. Semantics match the server: sums per key, priced = AND, sorted by
-// cost then token volume.
+// grouping. Semantics match the server: sums per key (including
+// unpriced_tokens, additive so mixed priced/unpriced rows still yield an
+// accurate token share), priced = AND, sorted by cost then token volume.
 function aggregate(rows: CostRow[], baseOf: (r: CostRow) => Partial<CostRow> & { key: string }): CostRow[] {
   const byKey = new Map<string, CostRow>()
   for (const r of rows) {
@@ -25,6 +26,7 @@ function aggregate(rows: CostRow[], baseOf: (r: CostRow) => Partial<CostRow> & {
         total_cost: 0,
         cache_savings: 0,
         priced: true,
+        unpriced_tokens: 0,
       }
       byKey.set(key, agg)
     }
@@ -40,6 +42,7 @@ function aggregate(rows: CostRow[], baseOf: (r: CostRow) => Partial<CostRow> & {
     agg.total_cost += r.total_cost
     agg.cache_savings += r.cache_savings
     agg.priced = agg.priced && r.priced
+    agg.unpriced_tokens += r.unpriced_tokens
   }
   return [...byKey.values()].sort((a, b) =>
     b.total_cost !== a.total_cost

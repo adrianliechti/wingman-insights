@@ -383,12 +383,17 @@ export function Finops() {
   const savings = models.reduce((acc, r) => acc + r.cache_savings, 0)
   const b = budget.data
 
-  // Share of token volume from models with no models.dev price — surfaced so the
-  // priced "Spend" figure isn't mistaken for total usage.
+  // Share of token volume from spans with no models.dev price — surfaced so the
+  // priced "Spend" figure isn't mistaken for total usage. Summed directly from
+  // unpriced_tokens (additive per span) rather than filtering rows by `priced`
+  // (an AND over every span in the row): a model priced only partway through
+  // its history mixes priced and unpriced spans in the same row, and `priced`
+  // alone would count its *entire* volume as unpriced instead of just the
+  // fraction that actually has no catalog price.
   const rowTokens = (r: CostRow) =>
     r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens
   const allTokens = models.reduce((acc, r) => acc + rowTokens(r), 0)
-  const unpricedTokens = models.filter((r) => !r.priced).reduce((acc, r) => acc + rowTokens(r), 0)
+  const unpricedTokens = models.reduce((acc, r) => acc + r.unpriced_tokens, 0)
   const unpricedPct = allTokens > 0 ? (unpricedTokens / allTokens) * 100 : 0
 
   return (

@@ -94,6 +94,11 @@ export interface CostRow {
   total_cost: number
   cache_savings: number
   priced: boolean
+  // Inclusive input+output tokens from only the spans with no models.dev
+  // price, summed regardless of grouping — unlike `priced` (AND'd, so one
+  // unpriced straggler flips a whole mixed row/bucket to false), this stays
+  // additive and is what a token-share percentage should be computed from.
+  unpriced_tokens: number
 }
 
 export interface SessionStats {

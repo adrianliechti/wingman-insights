@@ -68,18 +68,21 @@ func providerClause(provider string) (string, []any) {
 	return " AND provider_name = ?", []any{provider}
 }
 
-// userClause matches rows whose principal is the selected user: a direct id
-// match (covering the unresolved / no-directory case) or any directory alias of
-// that identity, looked up by id then email. Returns ("", nil) when unset.
+// userClause matches rows whose principal is the selected user: a direct id or
+// email match (covering the unresolved / no-directory case — including a
+// deleted user whose grouping key fell back to its raw email because the span
+// carried no id) or any directory alias of that identity, looked up by id then
+// email. Returns ("", nil) when unset.
 func userClause(idCol, emailCol, user string) (string, []any) {
 	if user == "" {
 		return "", nil
 	}
 	sub := "SELECT alias FROM directory WHERE lower(id) = lower(?)"
 	c := " AND (lower(" + idCol + ") = lower(?)" +
+		" OR lower(" + emailCol + ") = lower(?)" +
 		" OR lower(" + idCol + ") IN (" + sub + ")" +
 		" OR lower(" + emailCol + ") IN (" + sub + "))"
-	return c, []any{user, user, user}
+	return c, []any{user, user, user, user}
 }
 
 // appClause matches rows whose calling app is the selected application: a direct

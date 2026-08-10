@@ -194,6 +194,235 @@ func TestBackfillSpanCostCategories(t *testing.T) {
 	}
 }
 
+// TestBackfillSpanCostRepricesFormerlyUnpriced verifies that a span swept to
+// priced=false (no catalog price at ingest time) gets priced retroactively on
+// a later start once the catalog gains an entry for its (provider, model) —
+// rather than staying frozen at "unpriced" forever.
+func TestBackfillSpanCostRepricesFormerlyUnpriced(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	ts := time.Now().UTC()
+	// Seeded as unpriced (as backfillSpanCost's final sweep would leave it),
+	// standing in for a span ingested before openai/gpt-5.1 existed in the
+	// catalog. regular = 1,000,000 - 200,000 - 100,000 = 700,000.
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status,
+		 provider_name, request_model, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES (?, ?, 1.0, 't1', 's1', 'root', 'ok',
+		        'openai', 'gpt-5.1', 1000000, 500000, 200000, 100000, 0,
+		        0, 0, 0, 0, 0, 0, false)`,
+		ts, ts); err != nil {
+		t.Fatalf("seed span: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s, err = New() // runs migrate() -> backfillSpanCost, now finding a catalog price
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+
+	var cost float64
+	var priced bool
+	if err := s.db.QueryRow(`SELECT cost, priced FROM genai_spans WHERE span_id = 's1'`).
+		Scan(&cost, &priced); err != nil {
+		t.Fatalf("query repriced row: %v", err)
+	}
+	if !priced {
+		t.Error("priced = false, want true after the catalog gained an entry")
+	}
+	if cost != 5.9 {
+		t.Errorf("cost = %v, want 5.9", cost)
+	}
+}
+
+// TestBackfillSpanCostLeavesStillUnpricedAlone verifies that a span whose
+// model still has no catalog price is not touched across repeated restarts —
+// backfillSpanCost's re-sweep of priced=false rows must not zero out (or
+// otherwise disturb) columns that are already settled at 0/false.
+func TestBackfillSpanCostLeavesStillUnpricedAlone(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	ts := time.Now().UTC()
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status,
+		 provider_name, request_model, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES (?, ?, 1.0, 't1', 's1', 'root', 'ok',
+		        'acme', 'no-such-model', 1000, 500, 0, 0, 0,
+		        0, 0, 0, 0, 0, 0, false)`,
+		ts, ts); err != nil {
+		t.Fatalf("seed span: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		s, err = New() // each reopen re-runs backfillSpanCost against the same still-unpriced row
+		if err != nil {
+			t.Fatalf("reopen %d: %v", i, err)
+		}
+
+		var inputCost, outputCost, cacheReadCost, cacheCreationCost, cost, savings float64
+		var priced bool
+		if err := s.db.QueryRow(`SELECT input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced
+			FROM genai_spans WHERE span_id = 's1'`).
+			Scan(&inputCost, &outputCost, &cacheReadCost, &cacheCreationCost, &cost, &savings, &priced); err != nil {
+			t.Fatalf("query row on reopen %d: %v", i, err)
+		}
+		if priced {
+			t.Errorf("reopen %d: priced = true, want false (model still not in catalog)", i)
+		}
+		if inputCost != 0 || outputCost != 0 || cacheReadCost != 0 || cacheCreationCost != 0 || cost != 0 || savings != 0 {
+			t.Errorf("reopen %d: costs = (in:%v out:%v cr:%v cc:%v cost:%v savings:%v), want all 0",
+				i, inputCost, outputCost, cacheReadCost, cacheCreationCost, cost, savings)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("close after reopen %d: %v", i, err)
+		}
+	}
+}
+
+// TestBackfillSpanCostLeavesAlreadyPricedAlone verifies a span that was priced
+// at insert time (priced=true, input_cost non-NULL) is excluded from
+// backfillSpanCost's rescan entirely — even across restarts, and even if the
+// catalog's price for its model has since changed. The stored cost, seeded
+// here to differ from what today's catalog would compute, must stay frozen;
+// the WHERE clause (input_cost IS NULL OR priced = false) must never match it.
+func TestBackfillSpanCostLeavesAlreadyPricedAlone(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	ts := time.Now().UTC()
+	const storedCost = 99.99
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status,
+		 provider_name, request_model, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES (?, ?, 1.0, 't1', 's1', 'root', 'ok',
+		        'openai', 'gpt-5.1', 1000000, 0, 0, 0, 0,
+		        ?, 0, 0, 0, ?, 0, true)`,
+		ts, ts, storedCost, storedCost); err != nil {
+		t.Fatalf("seed span: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		s, err = New() // each reopen re-runs backfillSpanCost against the same already-priced row
+		if err != nil {
+			t.Fatalf("reopen %d: %v", i, err)
+		}
+
+		var cost float64
+		var priced bool
+		if err := s.db.QueryRow(`SELECT cost, priced FROM genai_spans WHERE span_id = 's1'`).
+			Scan(&cost, &priced); err != nil {
+			t.Fatalf("query row on reopen %d: %v", i, err)
+		}
+		if !priced {
+			t.Errorf("reopen %d: priced = false, want true", i)
+		}
+		if cost != storedCost {
+			t.Errorf("reopen %d: cost = %v, want frozen stored value %v (not recomputed from the current catalog)", i, cost, storedCost)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("close after reopen %d: %v", i, err)
+		}
+	}
+}
+
+// TestUnpricedTokensStayAdditiveAcrossMixedRows guards the fix for a
+// misleading FinOps stat: a model priced only partway through its history has
+// spans that BOOL_AND to Priced=false (one unpriced span taints the whole
+// group) while TotalCost still sums the real dollars from the priced spans.
+// UnpricedTokens must reflect only the genuinely unpriced spans' tokens, not
+// the row's entire volume, so a token-share percentage computed from it isn't
+// inflated to "100% unpriced" by a single straggler next to a non-zero spend
+// figure.
+func TestUnpricedTokensStayAdditiveAcrossMixedRows(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	// Same user + same (provider, model): one span priced at ingest (real
+	// cost), one span from before the model had a catalog price (frozen at
+	// cost=0/priced=false). Both fold into the same QueryCostBreakdown group.
+	if _, err := s.db.Exec(`INSERT INTO genai_spans
+		(received_at, time, duration, trace_id, span_id, name, status, user_id,
+		 provider_name, request_model, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+		VALUES
+		(?, ?, 1.0, 't1', 's1', 'root', 'ok', 'alice',
+		 'anthropic', 'claude', 1000000, 0, 0, 0, 0, 10, 0, 0, 0, 10, 0, true),
+		(?, ?, 1.0, 't2', 's2', 'root', 'ok', 'alice',
+		 'anthropic', 'claude', 500000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false)`,
+		ts, ts, ts, ts); err != nil {
+		t.Fatalf("seed spans: %v", err)
+	}
+
+	ctx := context.Background()
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("QueryCostBreakdown: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (both spans fold into one user×model group)", len(rows))
+	}
+	r := rows[0]
+	if r.Priced {
+		t.Errorf("Priced = true, want false (one span in the group has no price)")
+	}
+	if r.TotalCost != 10 {
+		t.Errorf("TotalCost = %v, want 10 (the priced span's real cost)", r.TotalCost)
+	}
+	if r.UnpricedTokens != 500000 {
+		t.Errorf("UnpricedTokens = %v, want 500000 (only the unpriced span's tokens, not both)", r.UnpricedTokens)
+	}
+	allTokens := r.InputTokens + r.OutputTokens + r.CacheReadTokens + r.CacheCreationTokens
+	if allTokens != 1500000 {
+		t.Fatalf("allTokens = %v, want 1500000", allTokens)
+	}
+	if pct := r.UnpricedTokens / allTokens * 100; pct >= 50 {
+		t.Errorf("unpriced share = %.0f%%, want ~33%% (not 100%%, despite Priced=false for the row)", pct)
+	}
+
+	// AggregateCostsByModel must keep UnpricedTokens additive across rows too.
+	byModel := AggregateCostsByModel(rows)
+	if len(byModel) != 1 || byModel[0].UnpricedTokens != 500000 {
+		t.Errorf("AggregateCostsByModel = %+v, want UnpricedTokens 500000", byModel)
+	}
+}
+
 // TestUsageTotalsMatchCostBreakdown guards that the companion /usage endpoint
 // and the FinOps cost tables report the same token ledger. Both must use the
 // five disjoint partitions: Input is the *non-cached* prompt remainder, so

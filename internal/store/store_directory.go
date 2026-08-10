@@ -90,17 +90,25 @@ type resolved struct {
 	User string
 }
 
-// dirResolve builds the join + expressions that resolve table's idCol then
-// emailCol (the id-then-email precedence of resolveUser) against the directory
-// table. The joins use the fixed aliases d1/d2, so one query resolves a single
-// principal column. An unmatched id falls through to itself (empty name/kind).
+// dirResolve builds the join + expressions that resolve table's idCol/emailCol
+// against the directory table, preferring a matched directory identity, then
+// (once unmatched) the raw email over the raw id, then the raw id. The joins
+// use the fixed aliases d1/d2, so one query resolves a single principal
+// column. Email-before-id in the unmatched fallback matters for principals no
+// longer in the directory (e.g. an employee who has left): the raw id an app
+// stamps on a span is often app-specific (an object id, a session id, ...),
+// while the email tends to stay the one identifier shared across apps — so
+// keying the fallback on it still folds a deleted user's usage from several
+// apps into one row instead of splitting it per app. When even email is
+// empty, the raw id is still used so the row gets a stable, non-empty
+// grouping key instead of folding into the unattributed bucket.
 func dirResolve(table, idCol, emailCol string) resolved {
 	return resolved{
 		Join: fmt.Sprintf(
 			" LEFT JOIN directory d1 ON lower(%[1]s.%[2]s) = d1.alias"+
 				" LEFT JOIN directory d2 ON lower(%[1]s.%[3]s) = d2.alias",
 			table, idCol, emailCol),
-		ID:   fmt.Sprintf("COALESCE(d1.id, d2.id, %s.%s, '')", table, idCol),
+		ID:   fmt.Sprintf("COALESCE(d1.id, d2.id, NULLIF(%[1]s.%[3]s, ''), %[1]s.%[2]s, '')", table, idCol, emailCol),
 		Name: "COALESCE(d1.name, d2.name, '')",
 		Kind: "COALESCE(d1.kind, d2.kind, '')",
 		Dept: "COALESCE(d1.department, d2.department, '')",

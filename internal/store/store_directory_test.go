@@ -180,6 +180,76 @@ func TestDirectoryMapping(t *testing.T) {
 	}
 }
 
+// TestCostBreakdownEmailFallbackForDeletedUser guards the case that motivated
+// the email fallback: a user removed from the directory (and from the span's
+// user.id, if the emitting agent stops stamping ids for principals it can no
+// longer resolve) still gets a stable, distinct grouping key — its email —
+// instead of folding into the shared "" (unattributed) bucket, and remains
+// selectable via the User filter by that same key. Email is also preferred
+// over a present raw id, so the same deleted user reported by two apps under
+// two different app-specific ids still folds into one row.
+func TestCostBreakdownEmailFallbackForDeletedUser(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	span := func(id, email string, in, out int) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, user_id, user_email, provider_name, request_model,
+			 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, cost)
+			VALUES (?, ?, 1.0, ?, ?, 'root', 'ok', ?, ?, 'anthropic', 'claude', ?, ?, 0, 0, 0, 0)`,
+			ts, ts, email+"-t", email+"-s", id, email, in, out); err != nil {
+			t.Fatalf("insert span: %v", err)
+		}
+	}
+	// Two deleted users, neither known to the directory: one carries no user.id
+	// at all (only email), the other has both — email should win over a
+	// present id so the same person folds into one row across apps.
+	span("", "ghost1@corp.com", 100, 10)
+	span("ghost2-guid", "ghost2@corp.com", 50, 5)
+
+	s.SetDirectory(mappingStub{}) // neither ghost is known to it
+	ctx := context.Background()
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("cost breakdown: %v", err)
+	}
+	byID := map[string]CostRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if r, ok := byID["ghost1@corp.com"]; !ok || r.InputTokens != 100 {
+		t.Errorf("no-id user should be keyed by email; got %+v (rows=%+v)", r, rows)
+	}
+	if r, ok := byID["ghost2@corp.com"]; !ok || r.InputTokens != 50 {
+		t.Errorf("email present should win over id; got %+v (rows=%+v)", r, rows)
+	}
+	if _, dup := byID[""]; dup {
+		t.Errorf("no-id user must not fold into the empty/unattributed bucket, got %+v", rows)
+	}
+
+	// The row's key (email) must also work as a User filter value.
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{User: "ghost1@corp.com"})
+	if err != nil {
+		t.Fatalf("filtered cost breakdown: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "ghost1@corp.com" {
+		t.Fatalf("email filter = %+v, want only ghost1", rows)
+	}
+}
+
+
 // TestDepartmentFilterAndCost covers the directory-group filters and the
 // department cost grouping: a department/office-location filter expands to its
 // members' raw ids, and cost rows carry/aggregate the resolved department.

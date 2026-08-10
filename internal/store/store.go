@@ -298,11 +298,9 @@ func (s *Store) migrate() error {
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_read_cost DOUBLE",
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS cache_creation_cost DOUBLE",
 		"ALTER TABLE genai_spans ADD COLUMN IF NOT EXISTS priced BOOLEAN",
-		// directory materializes the principal directory (one row per alias) so
-		// queries resolve user_id/user_email to a canonical identity, department
-		// and location via a JOIN rather than per-row in Go. It is rebuilt from
-		// the configured directory by SyncDirectory; empty (every telemetry id
-		// passes through as itself) when no directory is configured.
+		// directory accumulates principal identities; SyncDirectory upserts rather
+		// than replaces so departed principals stay resolvable (active=false).
+		// Empty (ids pass through as-is) when no directory is configured.
 		`CREATE TABLE IF NOT EXISTS directory (
 			alias      VARCHAR PRIMARY KEY,
 			id         VARCHAR,
@@ -313,6 +311,10 @@ func (s *Store) migrate() error {
 			username   VARCHAR
 		)`,
 		"ALTER TABLE directory ADD COLUMN IF NOT EXISTS username VARCHAR",
+		// first_seen is set once; last_seen/active track the most recent snapshot.
+		"ALTER TABLE directory ADD COLUMN IF NOT EXISTS first_seen TIMESTAMP",
+		"ALTER TABLE directory ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP",
+		"ALTER TABLE directory ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE",
 	)
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

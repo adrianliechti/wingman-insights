@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"insights/pkg/directory"
 )
+
+// directoryJSONCols is shared by every SyncDirectory read_json call; explicit
+// columns prevent omitempty JSON keys from shifting the schema to NULL.
+const directoryJSONCols = `columns={alias:'VARCHAR', id:'VARCHAR', name:'VARCHAR', kind:'VARCHAR', department:'VARCHAR', location:'VARCHAR', username:'VARCHAR'}`
 
 // SetDirectory attaches a principal directory used to resolve and unify the
 // heterogeneous user.id values (object ids, UPNs, emails, app client ids) into
@@ -22,14 +27,11 @@ func (s *Store) SetDepartmentPrefix(v bool) { s.deptPrefix = v }
 // stamping it onto a Filter.
 func (s *Store) DepartmentPrefix() bool { return s.deptPrefix }
 
-// SyncDirectory rebuilds the in-database directory table from the configured
-// directory's current snapshot, so queries resolve identities via a JOIN. It
-// exports the directory to newline-delimited JSON and bulk-loads it through
-// DuckDB's read_json, replacing the table contents in one transaction. It is a
-// no-op when no directory is configured or the directory cannot enumerate its
-// mapping (does not implement directory.Lister). Callers drive it after the
-// directory refreshes; the table simply stays empty until the first successful
-// sync (so unresolved ids pass through).
+// SyncDirectory upserts the configured directory's current snapshot into the
+// in-database directory table. Aliases absent from the snapshot are marked
+// inactive (active=false) but kept, so departed principals still resolve by
+// name in historical data. No-op when no directory is configured or it does
+// not implement directory.Lister.
 func (s *Store) SyncDirectory(ctx context.Context) error {
 	if s.dir == nil {
 		return nil
@@ -50,8 +52,8 @@ func (s *Store) SyncDirectory(ctx context.Context) error {
 		return nil // directory can't enumerate; leave the table as-is
 	}
 	if fi, serr := os.Stat(f.Name()); serr == nil && fi.Size() == 0 {
-		// An empty snapshot (zero records exported) must not wipe a previously
-		// populated table — skip the destructive replace and keep what we have.
+		// An empty snapshot (zero records exported) must not deactivate a
+		// previously populated table — skip the sync and keep what we have.
 		return nil
 	}
 
@@ -60,17 +62,36 @@ func (s *Store) SyncDirectory(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM directory"); err != nil {
-		return err
+
+	now := time.Now().UTC()
+	// DISTINCT ON prevents a duplicate-alias snapshot from triggering the
+	// ON CONFLICT uniqueness violation DuckDB enforces per statement.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO directory (alias, id, name, kind, department, location, username, first_seen, last_seen, active)
+		SELECT alias, id, name, kind, department, location, username, ?, ?, TRUE
+		FROM (
+			SELECT DISTINCT ON (alias) alias, id, name, kind, department, location, username
+			FROM read_json(?, format='newline_delimited', `+directoryJSONCols+`)
+		) snapshot
+		ON CONFLICT (alias) DO UPDATE SET
+			id = excluded.id,
+			name = excluded.name,
+			kind = excluded.kind,
+			department = excluded.department,
+			location = excluded.location,
+			username = excluded.username,
+			last_seen = excluded.last_seen,
+			active = TRUE`,
+		now, now, f.Name()); err != nil {
+		return fmt.Errorf("upsert directory: %w", err)
 	}
-	// Explicit columns so missing JSON keys (omitempty fields) load as NULL
-	// rather than shifting the schema; format is fixed to newline-delimited.
-	if _, err := tx.ExecContext(ctx, `INSERT INTO directory
-		SELECT alias, id, name, kind, department, location, username
-		FROM read_json(?, format='newline_delimited',
-			columns={alias:'VARCHAR', id:'VARCHAR', name:'VARCHAR', kind:'VARCHAR', department:'VARCHAR', location:'VARCHAR', username:'VARCHAR'})`,
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE directory SET active = FALSE
+		WHERE active AND alias NOT IN (
+			SELECT alias FROM read_json(?, format='newline_delimited', `+directoryJSONCols+`)
+		)`,
 		f.Name()); err != nil {
-		return fmt.Errorf("load directory: %w", err)
+		return fmt.Errorf("deactivate stale directory rows: %w", err)
 	}
 	return tx.Commit()
 }
@@ -81,13 +102,14 @@ func (s *Store) SyncDirectory(ctx context.Context) error {
 // user split across several OTel user.id values is counted once) instead of
 // resolving and folding row-by-row in Go.
 type resolved struct {
-	Join string // LEFT JOINs to append after the FROM table
-	ID   string // canonical principal id: GROUP BY / COUNT(DISTINCT ...) on this
-	Name string
-	Kind string
-	Dept string
-	Loc  string
-	User string
+	Join   string // LEFT JOINs to append after the FROM table
+	ID     string // canonical principal id: GROUP BY / COUNT(DISTINCT ...) on this
+	Name   string
+	Kind   string
+	Dept   string
+	Loc    string
+	User   string
+	Former string // true when matched to a directory row no longer active; false if unmatched or still active
 }
 
 // dirResolve builds the join + expressions that resolve table's idCol/emailCol
@@ -108,12 +130,13 @@ func dirResolve(table, idCol, emailCol string) resolved {
 			" LEFT JOIN directory d1 ON lower(%[1]s.%[2]s) = d1.alias"+
 				" LEFT JOIN directory d2 ON lower(%[1]s.%[3]s) = d2.alias",
 			table, idCol, emailCol),
-		ID:   fmt.Sprintf("COALESCE(d1.id, d2.id, NULLIF(%[1]s.%[3]s, ''), %[1]s.%[2]s, '')", table, idCol, emailCol),
-		Name: "COALESCE(d1.name, d2.name, '')",
-		Kind: "COALESCE(d1.kind, d2.kind, '')",
-		Dept: "COALESCE(d1.department, d2.department, '')",
-		Loc:  "COALESCE(d1.location, d2.location, '')",
-		User: "COALESCE(d1.username, d2.username, '')",
+		ID:     fmt.Sprintf("COALESCE(d1.id, d2.id, NULLIF(%[1]s.%[3]s, ''), %[1]s.%[2]s, '')", table, idCol, emailCol),
+		Name:   "COALESCE(d1.name, d2.name, '')",
+		Kind:   "COALESCE(d1.kind, d2.kind, '')",
+		Dept:   "COALESCE(d1.department, d2.department, '')",
+		Loc:    "COALESCE(d1.location, d2.location, '')",
+		User:   "COALESCE(d1.username, d2.username, '')",
+		Former: "COALESCE(NOT d1.active, NOT d2.active, FALSE)",
 	}
 }
 
@@ -134,22 +157,23 @@ func dirResolveApp(table, col string) resolved {
 }
 
 // resolveName resolves a raw OTel principal to a display name and kind for
-// display-only callers (traces, anomalies) that keep the raw id/group_key. It
-// tries user.id first (which may itself be an object id, email or username),
-// then falls back to user.email; an unknown principal (or no directory) yields
-// empty name/kind. Aggregations, grouping and filtering resolve in SQL via the
-// directory table instead — this is the one remaining per-row Go lookup, kept
-// because it only annotates a handful of already-built display rows.
+// display-only callers. Tries the live directory first, then falls back to the
+// persisted table so departed principals still resolve after a sync drops them.
 func (s *Store) resolveName(rawID, rawEmail string) (name, kind string) {
-	if s.dir == nil {
+	if s.dir != nil {
+		idt, ok := s.dir.Lookup(rawID)
+		if !ok && rawEmail != "" {
+			idt, ok = s.dir.Lookup(rawEmail)
+		}
+		if ok {
+			return idt.Name, string(idt.Kind)
+		}
+	}
+	row := s.db.QueryRow(
+		`SELECT name, kind FROM directory WHERE alias = lower(?) OR alias = lower(?) LIMIT 1`,
+		rawID, rawEmail)
+	if err := row.Scan(&name, &kind); err != nil {
 		return "", ""
 	}
-	idt, ok := s.dir.Lookup(rawID)
-	if !ok && rawEmail != "" {
-		idt, ok = s.dir.Lookup(rawEmail)
-	}
-	if !ok {
-		return "", ""
-	}
-	return idt.Name, string(idt.Kind)
+	return name, kind
 }

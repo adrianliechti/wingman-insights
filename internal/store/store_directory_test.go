@@ -249,7 +249,6 @@ func TestCostBreakdownEmailFallbackForDeletedUser(t *testing.T) {
 	}
 }
 
-
 // TestDepartmentFilterAndCost covers the directory-group filters and the
 // department cost grouping: a department/office-location filter expands to its
 // members' raw ids, and cost rows carry/aggregate the resolved department.
@@ -376,6 +375,215 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 	}
 	if in != 300 {
 		t.Errorf("prefix 'En' input tokens = %v, want 300 (Eng subtree)", in)
+	}
+}
+
+// mutableStub is a directory whose Lookup only reflects the current recs slice,
+// so dropped aliases are invisible to it — only the DB table can resolve them.
+type mutableStub struct {
+	recs []directory.Record
+}
+
+func (s *mutableStub) Lookup(id string) (directory.Identity, bool) {
+	key := directory.NormalizeKey(id)
+	for _, r := range s.recs {
+		if r.Alias == key {
+			return directory.Identity{
+				ID: r.ID, Name: r.Name, Kind: r.Kind,
+				Department: r.Department, Location: r.Location, Username: r.Username,
+			}, true
+		}
+	}
+	return directory.Identity{}, false
+}
+
+func (s *mutableStub) Records() iter.Seq[directory.Record] {
+	return func(yield func(directory.Record) bool) {
+		for _, r := range s.recs {
+			if !yield(r) {
+				return
+			}
+		}
+	}
+}
+
+// TestDirectoryRetainsDepartedUser guards that a principal absent from the
+// latest snapshot keeps its row (active=false) and still resolves by name,
+// former is set, first_seen is stable, and re-appearance flips active back on.
+func TestDirectoryRetainsDepartedUser(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	aliceRecs := []directory.Record{
+		{Alias: "u-guid-1", ID: "alice-obj", Name: "Alice", Kind: directory.KindUser, Department: "Eng", Location: "Zurich", Username: "alice"},
+		{Alias: "alice-obj", ID: "alice-obj", Name: "Alice", Kind: directory.KindUser, Department: "Eng", Location: "Zurich", Username: "alice"},
+	}
+	// bob stays in every snapshot so the NDJSON is never empty (an empty
+	// snapshot is a no-op — exercised in step 4).
+	bobRecs := []directory.Record{
+		{Alias: "bob-guid", ID: "bob-obj", Name: "Bob", Kind: directory.KindUser, Department: "Sales"},
+	}
+	stub := &mutableStub{recs: append(append([]directory.Record{}, aliceRecs...), bobRecs...)}
+	s.SetDirectory(stub)
+
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	span := func(id string, in, out int) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, user_id, provider_name, request_model,
+			 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, cost)
+			VALUES (?, ?, 1.0, ?, ?, 'root', 'ok', ?, 'anthropic', 'claude', ?, ?, 0, 0, 0, 0)`,
+			ts, ts, id+"-t", id+"-s", id, in, out); err != nil {
+			t.Fatalf("insert span %q: %v", id, err)
+		}
+	}
+	span("u-guid-1", 100, 50)
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	// 1) First sync: alice resolves normally, not yet former.
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	var firstSeen time.Time
+	if err := s.db.QueryRow("SELECT first_seen FROM directory WHERE alias = 'u-guid-1'").Scan(&firstSeen); err != nil {
+		t.Fatalf("read first_seen: %v", err)
+	}
+	if firstSeen.IsZero() {
+		t.Fatal("first_seen not set on initial sync")
+	}
+
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("cost breakdown 1: %v", err)
+	}
+	byID := map[string]CostRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	alice, ok := byID["alice-obj"]
+	if !ok || alice.Name != "Alice" || alice.Department != "Eng" {
+		t.Fatalf("alice not resolved before departure: %+v", byID)
+	}
+	if alice.Former {
+		t.Errorf("alice marked former while still present in the directory")
+	}
+
+	traces, err := s.QueryTraceList(ctx, from, to, Filter{}, false, 50)
+	if err != nil {
+		t.Fatalf("trace list 1: %v", err)
+	}
+	if len(traces) != 1 || traces[0].UserName != "Alice" {
+		t.Fatalf("trace user before departure = %+v, want Alice", traces)
+	}
+
+	// 2) Alice leaves: next snapshot only has bob. Sync must not delete
+	// alice's row — it stays, marked inactive, and QueryCostBreakdown /
+	// QueryTraceList must still resolve her by name via the persisted table.
+	stub.recs = append([]directory.Record{}, bobRecs...)
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync 2 (departure): %v", err)
+	}
+
+	var firstSeen2, lastSeen2 time.Time
+	var active2 bool
+	if err := s.db.QueryRow("SELECT first_seen, last_seen, active FROM directory WHERE alias = 'u-guid-1'").
+		Scan(&firstSeen2, &lastSeen2, &active2); err != nil {
+		t.Fatalf("read post-departure row: %v", err)
+	}
+	if !firstSeen2.Equal(firstSeen) {
+		t.Errorf("first_seen changed on departure: %v -> %v", firstSeen, firstSeen2)
+	}
+	if active2 {
+		t.Error("alice still marked active after leaving the directory")
+	}
+
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("cost breakdown 2: %v", err)
+	}
+	byID = map[string]CostRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	alice, ok = byID["alice-obj"]
+	if !ok {
+		t.Fatalf("alice's row disappeared after departure instead of being retained: %+v", rows)
+	}
+	if alice.Name != "Alice" || alice.Department != "Eng" {
+		t.Errorf("departed alice lost her resolved identity: %+v", alice)
+	}
+	if !alice.Former {
+		t.Error("departed alice not flagged Former")
+	}
+
+	traces, err = s.QueryTraceList(ctx, from, to, Filter{}, false, 50)
+	if err != nil {
+		t.Fatalf("trace list 2: %v", err)
+	}
+	if len(traces) != 1 || traces[0].UserName != "Alice" || traces[0].UserKind != "user" {
+		t.Fatalf("trace user after departure = %+v, want Alice/user (DB fallback)", traces)
+	}
+
+	// AggregateCostsByUser must carry Former through the re-fold too.
+	byUser := AggregateCostsByUser(rows)
+	var foundAgg bool
+	for _, r := range byUser {
+		if r.ID == "alice-obj" {
+			foundAgg = true
+			if !r.Former {
+				t.Error("Former lost across AggregateCostsByUser")
+			}
+		}
+	}
+	if !foundAgg {
+		t.Fatal("alice missing from AggregateCostsByUser after departure")
+	}
+
+	// 3) Alice returns: active flips back on, first_seen still unchanged.
+	stub.recs = append(append([]directory.Record{}, aliceRecs...), bobRecs...)
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync 3 (return): %v", err)
+	}
+	var firstSeen3 time.Time
+	var active3 bool
+	if err := s.db.QueryRow("SELECT first_seen, active FROM directory WHERE alias = 'u-guid-1'").
+		Scan(&firstSeen3, &active3); err != nil {
+		t.Fatalf("read post-return row: %v", err)
+	}
+	if !firstSeen3.Equal(firstSeen) {
+		t.Errorf("first_seen changed on return: %v -> %v", firstSeen, firstSeen3)
+	}
+	if !active3 {
+		t.Error("alice not marked active again after returning")
+	}
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("cost breakdown 3: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == "alice-obj" && r.Former {
+			t.Error("alice still flagged Former after returning to the directory")
+		}
+	}
+
+	// 4) An empty snapshot (source can't currently enumerate anyone) must
+	// leave the table untouched rather than deactivating everyone.
+	stub.recs = nil
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync 4 (empty snapshot): %v", err)
+	}
+	var active4 bool
+	if err := s.db.QueryRow("SELECT active FROM directory WHERE alias = 'u-guid-1'").Scan(&active4); err != nil {
+		t.Fatalf("read post-empty-sync row: %v", err)
+	}
+	if !active4 {
+		t.Error("empty snapshot deactivated alice instead of leaving the table as-is")
 	}
 }
 

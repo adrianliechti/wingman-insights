@@ -23,6 +23,7 @@ type CostRow struct {
 	Department   string `json:"department,omitempty"` // resolved department; empty if unresolved/unset
 	Location     string `json:"location,omitempty"`   // resolved office location; empty if unresolved/unset
 	Username     string `json:"username,omitempty"`   // resolved preferred username; empty if unresolved/unset
+	Former       bool   `json:"former,omitempty"`     // matched a directory row no longer active (departed/deleted)
 	AppID        string `json:"app_id,omitempty"`
 	AppName      string `json:"app_name,omitempty"` // resolved app display name; empty if unresolved
 	ProviderName string `json:"provider_name,omitempty"`
@@ -86,6 +87,7 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 				`+r.Dept+` as department,
 				`+r.Loc+` as location,
 				`+r.User+` as username,
+				`+r.Former+` as former,
 				`+a.ID+` as app_id,
 				`+a.Name+` as app_name,
 				COALESCE(provider_name, '') as provider_name,
@@ -95,7 +97,7 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 			FROM genai_spans`+r.Join+a.Join+`
 			WHERE (input_tokens > 0 OR output_tokens > 0) AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
 		)
-		SELECT principal, name, kind, department, location, username, app_id, app_name, provider_name, request_model,`+spansPartCols+`,
+		SELECT principal, name, kind, department, location, username, BOOL_OR(former), app_id, app_name, provider_name, request_model,`+spansPartCols+`,
 			COALESCE(SUM(input_cost), 0), COALESCE(SUM(output_cost), 0),
 			COALESCE(SUM(cache_read_cost), 0), COALESCE(SUM(cache_creation_cost), 0),
 			COALESCE(SUM(cost), 0), COALESCE(SUM(cache_savings), 0), BOOL_AND(COALESCE(priced, false)),
@@ -113,7 +115,7 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 		var id, name, kind, department, location, username, appID, appName, provider, model string
 		var p tokenParts
 		var r CostRow
-		if err := rows.Scan(&id, &name, &kind, &department, &location, &username, &appID, &appName, &provider, &model,
+		if err := rows.Scan(&id, &name, &kind, &department, &location, &username, &r.Former, &appID, &appName, &provider, &model,
 			&p.Uncached, &p.CacheRead, &p.CacheWrite, &p.Response, &p.Reasoning,
 			&r.InputCost, &r.OutputCost, &r.CacheReadCost, &r.CacheCreationCost, &r.TotalCost, &r.CacheSavings, &r.Priced,
 			&r.UnpricedTokens); err != nil {
@@ -136,10 +138,10 @@ func (s *Store) QueryCostBreakdown(ctx context.Context, from, to time.Time, f Fi
 }
 
 // AggregateCostsByUser collapses a cost breakdown to one row per user, keyed by
-// the resolved identity id, carrying the name/kind/department/location/username through.
+// the resolved identity id, carrying the name/kind/department/location/username/former through.
 func AggregateCostsByUser(rows []CostRow) []CostRow {
 	return aggregateCosts(rows, func(r CostRow) (string, CostRow) {
-		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location, Username: r.Username}
+		return r.ID, CostRow{ID: r.ID, Name: r.Name, Kind: r.Kind, Department: r.Department, Location: r.Location, Username: r.Username, Former: r.Former}
 	})
 }
 

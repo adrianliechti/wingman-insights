@@ -78,6 +78,7 @@ export interface CostRow {
   department?: string
   location?: string
   username?: string
+  former?: boolean // matched a directory row no longer active (departed/deleted)
   app_id?: string
   app_name?: string
   provider_name?: string

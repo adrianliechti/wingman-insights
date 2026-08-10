@@ -76,7 +76,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 
 	cw := csv.NewWriter(w)
 	cw.Write([]string{
-		"id", "name", "kind", "department", "location", "username", "app", "provider", "model",
+		"id", "name", "kind", "department", "location", "username", "former", "app", "provider", "model",
 		"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
 		"input_cost_usd", "output_cost_usd", "cache_read_cost_usd", "cache_creation_cost_usd",
 		"total_cost_usd", "priced",
@@ -85,7 +85,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		totalCost += row.TotalCost
 		cw.Write([]string{
-			row.ID, row.Name, row.Kind, row.Department, row.Location, row.Username, row.AppID, row.ProviderName, row.RequestModel,
+			row.ID, row.Name, row.Kind, row.Department, row.Location, row.Username, strconv.FormatBool(row.Former), row.AppID, row.ProviderName, row.RequestModel,
 			fmtTokens(row.InputTokens), fmtTokens(row.OutputTokens),
 			fmtTokens(row.CacheReadTokens), fmtTokens(row.CacheCreationTokens), fmtTokens(row.ReasoningTokens),
 			fmtCost(row.InputCost), fmtCost(row.OutputCost),
@@ -93,7 +93,7 @@ func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 			fmtCost(row.TotalCost), strconv.FormatBool(row.Priced),
 		})
 	}
-	cw.Write([]string{"TOTAL", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", fmtCost(totalCost), ""})
+	cw.Write([]string{"TOTAL", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", fmtCost(totalCost), ""})
 	cw.Flush()
 }
 

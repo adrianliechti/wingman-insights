@@ -60,6 +60,7 @@ export const costsByUser = (rows: CostRow[]) =>
     department: r.department,
     location: r.location,
     username: r.username,
+    former: r.former,
   }))
 
 export const costsByApp = (rows: CostRow[]) =>

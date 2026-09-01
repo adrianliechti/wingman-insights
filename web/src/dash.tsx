@@ -11,11 +11,11 @@ export interface DashSearch {
   range?: RangeKey
   from?: string
   to?: string
-  app?: string
-  user?: string
-  department?: string
-  location?: string
-  provider?: string
+  app?: string[]
+  user?: string[]
+  department?: string[]
+  location?: string[]
+  provider?: string[]
   models?: string[]
 }
 
@@ -31,17 +31,16 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     return result.length > 0 ? result : undefined
   }
   const range = str(search.range)
-  const models = strList(search.models)
   return {
     range: RANGE_KEYS.includes(range as RangeKey) ? (range as RangeKey) : undefined,
     from: str(search.from),
     to: str(search.to),
-    app: str(search.app),
-    user: str(search.user),
-    department: str(search.department),
-    location: str(search.location),
-    provider: str(search.provider),
-    models,
+    app: strList(search.app),
+    user: strList(search.user),
+    department: strList(search.department),
+    location: strList(search.location),
+    provider: strList(search.provider),
+    models: strList(search.models),
   }
 }
 

@@ -237,8 +237,8 @@ export function Anomalies() {
             initialSort={[{ id: 'score', desc: true }]}
             onRowClick={(r) => {
               if (!r.group_key) return
-              if (r.dimension === 'user') setFilter({ user: r.group_key })
-              else if (r.dimension === 'app') setFilter({ app: r.group_key })
+              if (r.dimension === 'user') setFilter({ user: [r.group_key] })
+              else if (r.dimension === 'app') setFilter({ app: [r.group_key] })
               else setFilter({ models: [r.group_key] })
             }}
           />
@@ -305,7 +305,7 @@ export function Anomalies() {
             data={topConsumers.data!}
             columns={consumerColumns}
             initialSort={[{ id: 'total_tokens', desc: true }]}
-            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+            onRowClick={(r) => r.id && setFilter({ user: [r.id] })}
           />
         )}
       </Panel>
@@ -320,7 +320,7 @@ export function Anomalies() {
             data={burst.data!}
             columns={burstColumns}
             initialSort={[{ id: 'peak_rpm', desc: true }]}
-            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+            onRowClick={(r) => r.id && setFilter({ user: [r.id] })}
           />
         )}
       </Panel>

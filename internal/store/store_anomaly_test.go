@@ -42,7 +42,7 @@ func TestAnomalyAppDimensionSQL(t *testing.T) {
 		t.Fatalf("QueryCostAnomalies group_by=app: %v", err)
 	}
 	// The app filter must also bind against app_id on the spans path.
-	if _, err := s.QueryCostAnomalies(ctx, from, to, "1 hour", "app", 0, Filter{App: "checkout"}); err != nil {
+	if _, err := s.QueryCostAnomalies(ctx, from, to, "1 hour", "app", 0, Filter{App: []string{"checkout"}}); err != nil {
 		t.Fatalf("QueryCostAnomalies with App filter: %v", err)
 	}
 }

@@ -50,17 +50,18 @@ func (h *Handler) parseFilter(r *http.Request) store.Filter {
 	// User/department/location are matched against the directory table inside the
 	// query (see Filter.clause); nothing to expand here.
 	return store.Filter{
-		App:        q.Get("app"),
-		User:       q.Get("user"),
-		Department: q.Get("department"),
-		Location:   q.Get("location"),
+		App:        parseList(q.Get("app")),
+		User:       parseList(q.Get("user")),
+		Department: parseList(q.Get("department")),
+		Location:   parseList(q.Get("location")),
 		DeptPrefix: h.store.DepartmentPrefix(),
-		Provider:   q.Get("provider"),
-		Models:     parseModels(q.Get("models")),
+		Provider:   parseList(q.Get("provider")),
+		Models:     parseList(q.Get("models")),
 	}
 }
 
-func parseModels(value string) []string {
+// parseList splits a comma-joined query value into its deduped, trimmed items.
+func parseList(value string) []string {
 	seen := make(map[string]bool)
 	var result []string
 	for _, item := range strings.Split(value, ",") {

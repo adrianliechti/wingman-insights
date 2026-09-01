@@ -152,7 +152,7 @@ export function Header() {
                 search={(prev: DashSearch) => prev}
                 className="rounded-md px-3 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
                 activeProps={{
-                  className: 'rounded-md px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white shadow-sm',
+                  className: 'rounded-md px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white shadow-sm hover:text-white',
                 }}
                 activeOptions={{ exact: item.to === '/' }}
               >

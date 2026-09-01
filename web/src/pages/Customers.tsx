@@ -284,7 +284,7 @@ export function Customers() {
             data={appAdoption.data!}
             columns={appColumns}
             initialSort={[{ id: 'cost', desc: true }]}
-            onRowClick={(r) => r.app_id && setFilter({ app: r.app_id })}
+            onRowClick={(r) => r.app_id && setFilter({ app: [r.app_id] })}
           />
         )}
       </Panel>
@@ -304,7 +304,7 @@ export function Customers() {
             columns={userColumns}
             initialSort={[{ id: 'cost', desc: true }]}
             initialLimit={25}
-            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+            onRowClick={(r) => r.id && setFilter({ user: [r.id] })}
           />
         )}
       </Panel>

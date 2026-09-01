@@ -493,7 +493,7 @@ export function Finops() {
             columns={appColumns}
             initialSort={[{ id: 'total_cost', desc: true }]}
             initialLimit={25}
-            onRowClick={(r) => r.app_id && setFilter({ app: r.app_id })}
+            onRowClick={(r) => r.app_id && setFilter({ app: [r.app_id] })}
           />
         )}
       </Panel>
@@ -521,7 +521,7 @@ export function Finops() {
               columns={departmentColumns}
               initialSort={[{ id: 'total_cost', desc: true }]}
               initialLimit={25}
-              onRowClick={(r) => r.department && setFilter({ department: r.department })}
+              onRowClick={(r) => r.department && setFilter({ department: [r.department] })}
             />
           )}
         </Panel>
@@ -551,7 +551,7 @@ export function Finops() {
             columns={userColumns}
             initialSort={[{ id: 'total_cost', desc: true }]}
             initialLimit={25}
-            onRowClick={(r) => r.id && setFilter({ user: r.id })}
+            onRowClick={(r) => r.id && setFilter({ user: [r.id] })}
           />
         )}
       </Panel>

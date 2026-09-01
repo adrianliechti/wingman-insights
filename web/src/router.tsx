@@ -66,7 +66,11 @@ function parseSearch(search: string): Record<string, unknown> {
   for (const [key, value] of params.entries()) {
     result[key] = value
   }
-  return result
+  // Normalize to validateSearch's shape (e.g. app as string[]) here, so
+  // router.state.location.search always matches what Link's active-state
+  // check builds via validateSearch — otherwise a raw string vs. array
+  // mismatch makes every nav Link with a filter param look inactive.
+  return validateSearch(result) as Record<string, unknown>
 }
 
 function stringifySearch(search: Record<string, unknown>): string {

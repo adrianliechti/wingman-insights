@@ -113,7 +113,7 @@ func TestDirectoryMapping(t *testing.T) {
 
 	// 2) Email-fallback FILTER: selecting Alice must also catch the rows that
 	//    only match on the email column (the bug this guards against).
-	top, err = s.QueryTopConsumers(ctx, from, to, 10, Filter{User: "alice-obj"})
+	top, err = s.QueryTopConsumers(ctx, from, to, 10, Filter{User: []string{"alice-obj"}})
 	if err != nil {
 		t.Fatalf("filtered top consumers: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestCostBreakdownEmailFallbackForDeletedUser(t *testing.T) {
 	}
 
 	// The row's key (email) must also work as a User filter value.
-	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{User: "ghost1@corp.com"})
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{User: []string{"ghost1@corp.com"}})
 	if err != nil {
 		t.Fatalf("filtered cost breakdown: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 	}
 
 	// Department filter matches via the directory table (incl. the email-only row).
-	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "Eng"})
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"Eng"}})
 	if err != nil {
 		t.Fatalf("filtered cost breakdown: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 	}
 
 	// An unknown department matches nothing rather than everything.
-	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "Nonesuch"})
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"Nonesuch"}})
 	if err != nil {
 		t.Fatalf("unknown-dept breakdown: %v", err)
 	}
@@ -361,11 +361,11 @@ func TestDepartmentFilterAndCost(t *testing.T) {
 
 	// A parent code "En" matches nothing in direct mode, but in prefix mode rolls
 	// up the "Eng" subtree (Alice).
-	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "En"})
+	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"En"}})
 	if len(rows) != 0 {
 		t.Errorf("direct 'En' matched %d rows, want 0", len(rows))
 	}
-	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "En", DeptPrefix: true})
+	rows, err = s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"En"}, DeptPrefix: true})
 	if err != nil {
 		t.Fatalf("prefix-dept breakdown: %v", err)
 	}
@@ -641,13 +641,13 @@ func TestNoDirectory(t *testing.T) {
 	}
 
 	// Raw-id user filter works without a directory (direct equality fallback).
-	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{User: "u1"})
+	rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{User: []string{"u1"}})
 	if len(rows) != 1 || rows[0].ID != "u1" {
 		t.Errorf("user filter = %+v, want only u1", rows)
 	}
 
 	// A department filter with no directory matches nothing (empty table).
-	if rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: "X"}); len(rows) != 0 {
+	if rows, _ = s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"X"}}); len(rows) != 0 {
 		t.Errorf("dept filter w/o directory matched %d rows, want 0", len(rows))
 	}
 
@@ -711,7 +711,7 @@ func TestDepartmentPrefixEscapesWildcards(t *testing.T) {
 	ctx := context.Background()
 	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
 
-	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{Department: "a_", DeptPrefix: true})
+	rows, err := s.QueryCostBreakdown(ctx, from, to, Filter{Department: []string{"a_"}, DeptPrefix: true})
 	if err != nil {
 		t.Fatalf("prefix breakdown: %v", err)
 	}

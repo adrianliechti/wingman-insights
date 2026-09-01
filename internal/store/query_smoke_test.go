@@ -31,8 +31,8 @@ func TestAllQueriesExecute(t *testing.T) {
 	filters := map[string]Filter{
 		"empty": {},
 		"full": {
-			App: "checkout", User: "u1", Department: "Eng", Location: "Zurich",
-			Provider: "anthropic", Models: []string{"claude"},
+			App: []string{"checkout"}, User: []string{"u1"}, Department: []string{"Eng"}, Location: []string{"Zurich"},
+			Provider: []string{"anthropic"}, Models: []string{"claude"},
 		},
 	}
 

@@ -42,7 +42,7 @@ func TestAppFilterNarrowsMetrics(t *testing.T) {
 
 	to := now.Add(time.Hour)
 	from := now.Add(-time.Hour)
-	checkout := Filter{App: "checkout"}
+	checkout := Filter{App: []string{"checkout"}}
 
 	// Token summary: only checkout's 300 tokens, never billing's 999.
 	sum, err := s.QueryTokenSummary(ctx, from, to, checkout)
@@ -117,7 +117,7 @@ func TestAppFilterResolvesDirectoryAliases(t *testing.T) {
 	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
 
 	// Dropdown sends the canonical id "app-client"; it must match the sp-guid row.
-	resolved, err := s.QueryTokenSummary(ctx, from, to, Filter{App: "app-client"})
+	resolved, err := s.QueryTokenSummary(ctx, from, to, Filter{App: []string{"app-client"}})
 	if err != nil {
 		t.Fatalf("token summary (resolved app): %v", err)
 	}
@@ -130,7 +130,7 @@ func TestAppFilterResolvesDirectoryAliases(t *testing.T) {
 	}
 
 	// An unresolved raw app_id still matches directly.
-	raw, err := s.QueryTokenSummary(ctx, from, to, Filter{App: "other-app"})
+	raw, err := s.QueryTokenSummary(ctx, from, to, Filter{App: []string{"other-app"}})
 	if err != nil {
 		t.Fatalf("token summary (raw app): %v", err)
 	}

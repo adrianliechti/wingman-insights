@@ -35,7 +35,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 
 	from, to := parseTimeRange(r)
 	f := h.parseFilter(r)
-	f.User = user
+	f.User = []string{user}
 
 	resp := usageResponse{}
 

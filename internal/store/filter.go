@@ -2,8 +2,9 @@ package store
 
 import "strings"
 
-// Filter narrows queries to a single application, user, department, location,
-// provider and/or models. Zero values mean "everyone / everything".
+// Filter narrows queries to one or more applications, users, departments,
+// locations, providers and/or models; matches within a field are OR'd
+// together. Zero values mean "everyone / everything".
 //
 // App is the calling application's id (app_id), stamped on both genai_spans and
 // genai_metrics from the service.peer.name attribute, falling back to the
@@ -11,15 +12,15 @@ import "strings"
 // it narrows either source. User is a canonical identity id (or a
 // raw OTel id when no directory resolved it); Department and Location are
 // directory attribute values, matched against the directory table at query time.
-// DeptPrefix matches a department code hierarchically (the code plus its
+// DeptPrefix matches each department code hierarchically (the code plus its
 // subtree) rather than exactly.
 type Filter struct {
-	App        string
-	User       string
-	Department string
-	Location   string
+	App        []string
+	User       []string
+	Department []string
+	Location   []string
 	DeptPrefix bool
-	Provider   string
+	Provider   []string
 	Models     []string
 }
 
@@ -59,63 +60,83 @@ func (f Filter) clause(idCol, emailCol string) (string, []any) {
 	return b.String(), args
 }
 
-// providerClause builds an " AND provider_name = ?" condition, or returns
-// ("", nil) when unset.
-func providerClause(provider string) (string, []any) {
-	if provider == "" {
+// providerClause builds an " AND provider_name IN (?, ...)" condition, or
+// returns ("", nil) when unset.
+func providerClause(providers []string) (string, []any) {
+	if len(providers) == 0 {
 		return "", nil
 	}
-	return " AND provider_name = ?", []any{provider}
+	args := make([]any, len(providers))
+	for i, p := range providers {
+		args[i] = p
+	}
+	return " AND provider_name IN (" + inPlaceholders(len(providers)) + ")", args
 }
 
-// userClause matches rows whose principal is the selected user: a direct id or
-// email match (covering the unresolved / no-directory case — including a
-// deleted user whose grouping key fell back to its raw email because the span
-// carried no id) or any directory alias of that identity, looked up by id then
-// email. Returns ("", nil) when unset.
-func userClause(idCol, emailCol, user string) (string, []any) {
-	if user == "" {
+// userClause matches rows whose principal is any of the selected users: a
+// direct id or email match (covering the unresolved / no-directory case —
+// including a deleted user whose grouping key fell back to its raw email
+// because the span carried no id) or any directory alias of that identity,
+// looked up by id then email. Returns ("", nil) when unset.
+func userClause(idCol, emailCol string, users []string) (string, []any) {
+	if len(users) == 0 {
 		return "", nil
 	}
-	sub := "SELECT alias FROM directory WHERE lower(id) = lower(?)"
-	c := " AND (lower(" + idCol + ") = lower(?)" +
-		" OR lower(" + emailCol + ") = lower(?)" +
+	sub := "SELECT alias FROM directory WHERE lower(id) IN (" + lowerInPlaceholders(len(users)) + ")"
+	ph := inPlaceholders(len(users))
+	c := " AND (lower(" + idCol + ") IN (" + ph + ")" +
+		" OR lower(" + emailCol + ") IN (" + ph + ")" +
 		" OR lower(" + idCol + ") IN (" + sub + ")" +
 		" OR lower(" + emailCol + ") IN (" + sub + "))"
-	return c, []any{user, user, user, user}
+	args := lowerArgsRepeated(users, 4)
+	return c, args
 }
 
-// appClause matches rows whose calling app is the selected application: a direct
-// app_id match (the unresolved / no-directory case) or any directory alias of
-// that identity. The app dropdown sends the resolved canonical id when the app
-// is known to the directory (COALESCE(da.id, app_id) in QueryFilterOptions), so
-// — like userClause — it must expand that id back to its aliases, the raw
-// service.peer.name values carried on the rows. Returns ("", nil) when unset.
-func appClause(app string) (string, []any) {
-	if app == "" {
+// appClause matches rows whose calling app is any of the selected
+// applications: a direct app_id match (the unresolved / no-directory case) or
+// any directory alias of that identity. The app dropdown sends the resolved
+// canonical id when the app is known to the directory (COALESCE(da.id,
+// app_id) in QueryFilterOptions), so — like userClause — it must expand each
+// id back to its aliases, the raw service.peer.name values carried on the
+// rows. Returns ("", nil) when unset.
+func appClause(apps []string) (string, []any) {
+	if len(apps) == 0 {
 		return "", nil
 	}
-	sub := "SELECT alias FROM directory WHERE lower(id) = lower(?)"
-	c := " AND (lower(app_id) = lower(?) OR lower(app_id) IN (" + sub + "))"
-	return c, []any{app, app}
+	sub := "SELECT alias FROM directory WHERE lower(id) IN (" + lowerInPlaceholders(len(apps)) + ")"
+	c := " AND (lower(app_id) IN (" + inPlaceholders(len(apps)) + ") OR lower(app_id) IN (" + sub + "))"
+	return c, lowerArgsRepeated(apps, 2)
 }
 
-// attrClause matches rows whose principal carries the given directory attribute
-// (department / location). prefix selects a hierarchical starts-with match;
-// LIKE wildcards in the value are escaped so codes containing '_' stay literal.
-// With no directory loaded the directory table is empty, so it matches nothing.
-func attrClause(idCol, emailCol, col, value string, prefix bool) (string, []any) {
-	if value == "" {
+// attrClause matches rows whose principal carries any of the given directory
+// attribute values (department / location). prefix selects a hierarchical
+// starts-with match for each value; LIKE wildcards in the value are escaped so
+// codes containing '_' stay literal. With no directory loaded the directory
+// table is empty, so it matches nothing.
+func attrClause(idCol, emailCol, col string, values []string, prefix bool) (string, []any) {
+	if len(values) == 0 {
 		return "", nil
 	}
-	pred, arg := "lower("+col+") = lower(?)", value
+	pred := "lower(" + col + ") IN (" + lowerInPlaceholders(len(values)) + ")"
+	args := make([]any, len(values))
+	for i, v := range values {
+		args[i] = strings.ToLower(v)
+	}
 	if prefix {
-		pred = "lower(" + col + ") LIKE lower(?) ESCAPE '\\'"
-		arg = likeEscape(value) + "%"
+		var preds []string
+		args = nil
+		for _, v := range values {
+			preds = append(preds, "lower("+col+") LIKE lower(?) ESCAPE '\\'")
+			args = append(args, likeEscape(v)+"%")
+		}
+		pred = "(" + strings.Join(preds, " OR ") + ")"
 	}
-	sub := "SELECT alias FROM directory WHERE " + pred
-	c := " AND (lower(" + idCol + ") IN (" + sub + ") OR lower(" + emailCol + ") IN (" + sub + "))"
-	return c, []any{arg, arg}
+	// EXISTS references pred once, so args need no duplication (unlike an
+	// idCol/emailCol pair of "IN (subquery)" checks, which would each need
+	// their own copy of the same args to match the repeated subquery).
+	c := " AND EXISTS (SELECT 1 FROM directory WHERE " + pred +
+		" AND (lower(" + idCol + ") = alias OR lower(" + emailCol + ") = alias))"
+	return c, args
 }
 
 // likeEscape escapes the LIKE metacharacters so a literal value (e.g. a code
@@ -163,4 +184,25 @@ func modelClause(models []string) (string, []any) {
 // inPlaceholders returns "?,?,…" with n placeholders for a SQL IN list.
 func inPlaceholders(n int) string {
 	return strings.Repeat(",?", n)[1:]
+}
+
+// lowerInPlaceholders returns "lower(?),lower(?),…" with n placeholders, for
+// an IN list matched against an already-lowercased column.
+func lowerInPlaceholders(n int) string {
+	return strings.Repeat(",lower(?)", n)[1:]
+}
+
+// lowerArgsRepeated lowercases each value and repeats the resulting slice n
+// times, concatenated — for clauses that bind the same value list into
+// several IN(...) placeholder groups.
+func lowerArgsRepeated(values []string, n int) []any {
+	lowered := make([]any, len(values))
+	for i, v := range values {
+		lowered[i] = strings.ToLower(v)
+	}
+	args := make([]any, 0, len(lowered)*n)
+	for i := 0; i < n; i++ {
+		args = append(args, lowered...)
+	}
+	return args
 }

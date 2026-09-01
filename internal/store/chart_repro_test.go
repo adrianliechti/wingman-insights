@@ -41,7 +41,7 @@ func TestTokenChartAfterBackfill(t *testing.T) {
 	}
 
 	from, to := base.Add(-time.Hour), base.Add(4*time.Hour)
-	acme := Filter{App: "acme"}
+	acme := Filter{App: []string{"acme"}}
 
 	// Before migration: NULL app_id can't be matched by the app filter → nothing.
 	pre, err := s.QueryTokenTimeseries(ctx, from, to, "1 hour", acme)

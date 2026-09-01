@@ -53,105 +53,17 @@ function useOptionMatches(options: SelectOption[], query: string, selectedValues
   }
 }
 
-function FilterSelect({
-  icon: Icon,
-  placeholder,
-  value,
-  options,
-  onChange,
-}: {
-  icon: LucideIcon
-  placeholder: string
-  value: string | undefined
-  options: SelectOption[]
-  onChange: (v: string | undefined) => void
-}) {
-  const [query, setQuery] = useState('')
-  const { filtered, hiddenCount, selectedOptions, visibleOptions } = useOptionMatches(
-    options,
-    query,
-    value ? [value] : [],
-  )
-  const selected = selectedOptions[0]
-
-  return (
-    <Combobox
-      value={value ?? ''}
-      onChange={(v: string | null) => {
-        onChange(v || undefined)
-        setQuery('')
-      }}
-    >
-      <div className="relative">
-        <div
-          className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-            value
-              ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10'
-              : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
-          }`}
-        >
-          <Icon className={`h-3.5 w-3.5 shrink-0 ${value ? 'text-indigo-500' : 'text-gray-400 dark:text-gray-600'}`} />
-          <ComboboxInput
-            className={`w-28 bg-transparent outline-none placeholder:text-gray-500 dark:placeholder:text-gray-400 ${
-              value ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'
-            }`}
-            displayValue={() => selected?.label ?? ''}
-            placeholder={placeholder}
-            onChange={(e) => setQuery(e.target.value)}
-            onFocus={() => setQuery('')}
-          />
-          <ComboboxButton className="shrink-0">
-            <ChevronDown className="h-3.5 w-3.5 text-gray-400 dark:text-gray-600" />
-          </ComboboxButton>
-        </div>
-
-        <ComboboxOptions
-          anchor="bottom start"
-          transition
-          className="z-20 mt-1 max-h-72 w-[var(--input-width)] min-w-48 origin-top overflow-auto rounded-lg border border-gray-200 bg-white p-1 text-xs shadow-lg transition duration-100 ease-out [--anchor-gap:4px] empty:invisible focus:outline-none data-[closed]:scale-95 data-[closed]:opacity-0 dark:border-gray-800 dark:bg-gray-900"
-        >
-          {query === '' && (
-            <ComboboxOption
-              value=""
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-gray-500 select-none data-[focus]:bg-gray-100 dark:text-gray-400 dark:data-[focus]:bg-gray-800"
-            >
-              <Check className={`h-3.5 w-3.5 shrink-0 ${value ? 'invisible' : 'text-indigo-500'}`} />
-              {placeholder}
-            </ComboboxOption>
-          )}
-          {visibleOptions.map((o) => (
-            <ComboboxOption
-              key={o.value}
-              value={o.value}
-              className="group flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-gray-700 select-none data-[focus]:bg-gray-100 data-[selected]:font-medium data-[selected]:text-gray-900 dark:text-gray-300 dark:data-[focus]:bg-gray-800 dark:data-[selected]:text-white"
-            >
-              <Check className="invisible h-3.5 w-3.5 shrink-0 text-indigo-500 group-data-[selected]:visible" />
-              <span className="truncate">{o.label}</span>
-            </ComboboxOption>
-          ))}
-          {hiddenCount > 0 && (
-            <div className="px-2.5 py-1.5 text-gray-400 dark:text-gray-600">
-              Showing {visibleOptions.length.toLocaleString()} of {filtered.length.toLocaleString()}
-            </div>
-          )}
-          {filtered.length === 0 && (
-            <div className="px-2.5 py-1.5 text-gray-400 dark:text-gray-600">No matches</div>
-          )}
-        </ComboboxOptions>
-      </div>
-    </Combobox>
-  )
-}
-
 function MultiFilterSelect({
   icon: Icon,
   placeholder,
+  noun,
   value,
   options,
   onChange,
 }: {
   icon: LucideIcon
   placeholder: string
+  noun: string
   value: string[] | undefined
   options: SelectOption[]
   onChange: (v: string[] | undefined) => void
@@ -162,7 +74,7 @@ function MultiFilterSelect({
   const selectedLabel =
     selectedOptions.length === 0 ? ''
     : selectedOptions.length === 1 ? selectedOptions[0].label
-    : `${selectedOptions.length} models`
+    : `${selectedOptions.length} ${noun}`
 
   function setValues(next: string[]) {
     onChange(next.length > 0 ? next : undefined)
@@ -254,11 +166,11 @@ export function FilterBar() {
   })
 
   const hasFilter = !!(
-    search.app ||
-    search.user ||
-    search.department ||
-    search.location ||
-    search.provider ||
+    (search.app?.length ?? 0) > 0 ||
+    (search.user?.length ?? 0) > 0 ||
+    (search.department?.length ?? 0) > 0 ||
+    (search.location?.length ?? 0) > 0 ||
+    (search.provider?.length ?? 0) > 0 ||
     (search.models?.length ?? 0) > 0
   )
   const appOptions = useMemo(
@@ -288,41 +200,46 @@ export function FilterBar() {
 
   return (
     <div className="flex flex-wrap items-center gap-2 py-4">
-      <FilterSelect
+      <MultiFilterSelect
         icon={Boxes}
         placeholder="All applications"
+        noun="apps"
         value={search.app}
         options={appOptions}
         onChange={(v) => setFilter({ app: v })}
       />
-      <FilterSelect
+      <MultiFilterSelect
         icon={User}
         placeholder="All users"
+        noun="users"
         value={search.user}
         options={userOptions}
         onChange={(v) => setFilter({ user: v })}
       />
       {departmentOptions.length > 0 && (
-        <FilterSelect
+        <MultiFilterSelect
           icon={Building2}
           placeholder="All departments"
+          noun="departments"
           value={search.department}
           options={departmentOptions}
           onChange={(v) => setFilter({ department: v })}
         />
       )}
       {locationOptions.length > 0 && (
-        <FilterSelect
+        <MultiFilterSelect
           icon={MapPin}
           placeholder="All locations"
+          noun="locations"
           value={search.location}
           options={locationOptions}
           onChange={(v) => setFilter({ location: v })}
         />
       )}
-      <FilterSelect
+      <MultiFilterSelect
         icon={Bot}
         placeholder="All providers"
+        noun="providers"
         value={search.provider}
         options={providerOptions}
         onChange={(v) => setFilter({ provider: v })}
@@ -330,6 +247,7 @@ export function FilterBar() {
       <MultiFilterSelect
         icon={Cpu}
         placeholder="All models"
+        noun="models"
         value={search.models}
         options={modelOptions}
         onChange={(v) => setFilter({ models: v })}

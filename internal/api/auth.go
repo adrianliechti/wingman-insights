@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -22,17 +25,15 @@ func userFromContext(ctx context.Context) string {
 	return v
 }
 
-// adminFromContext reports whether the authenticated caller holds the admin
-// group and may see the org-wide dashboard. It is set by withAuth.
+// adminFromContext reports whether the caller holds the admin group and may
+// see the org-wide dashboard in the SPA. It is set by the identity middleware.
 func adminFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(adminContextKey).(bool)
 	return v
 }
 
-// adminGroup is the JWT groups-claim value that grants access to the org-wide
-// dashboard. When unset, no authenticated caller is treated as admin, so
-// everyone sees only the personal-usage view (secure default — grant admin
-// explicitly by configuring the group).
+// adminGroup is the JWT groups-claim value that enables the org-wide dashboard
+// in the SPA and authorizes its endpoints after oauth2-proxy authenticates.
 func adminGroup() string {
 	return os.Getenv("COMPANION_ADMIN_GROUP")
 }
@@ -55,12 +56,10 @@ func newAuthFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
 		log.Fatalf("oidc: provider init: %v", err)
 	}
 
-	// No admin group means nobody is admin: every authenticated caller sees
-	// only their personal usage. That's the secure default, but it also means
-	// the org-wide dashboard is unreachable until a group is configured, so
-	// make the choice visible at startup.
+	// No admin group means the SPA shows the personal view to everyone and no
+	// caller may use the org-wide endpoints.
 	if adminGroup() == "" {
-		log.Print("auth: COMPANION_ADMIN_GROUP is unset; all users see only personal usage and the org-wide dashboard is disabled. Set it to grant admins the full dashboard.")
+		log.Print("auth: COMPANION_ADMIN_GROUP is unset; the SPA will show the personal view to all users and org-wide endpoints are disabled.")
 	}
 
 	return provider.Verifier(&oidc.Config{ClientID: audience})
@@ -74,6 +73,73 @@ func bearerToken(r *http.Request) string {
 		return raw
 	}
 	return strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
+}
+
+// forwardedIdentity reads the identity that oauth2-proxy has already
+// authenticated and forwarded. It deliberately does not verify the JWT: the
+// proxy is the verification boundary for routes that use this middleware.
+// Consequently, it must only be used on routes that cannot be reached without
+// passing through that trusted proxy.
+func forwardedIdentity(r *http.Request) (oid string, groups []string, err error) {
+	raw := strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 || parts[1] == "" {
+		return "", nil, errInvalidForwardedToken
+	}
+
+	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1])
+	if decodeErr != nil {
+		return "", nil, errInvalidForwardedToken
+	}
+
+	var claims struct {
+		OID    string   `json:"oid"`
+		Groups []string `json:"groups"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.OID == "" {
+		return "", nil, errInvalidForwardedToken
+	}
+	return claims.OID, claims.Groups, nil
+}
+
+var errInvalidForwardedToken = errors.New("missing or malformed X-Forwarded-Access-Token")
+
+// withForwardedIdentity trusts oauth2-proxy to authenticate the request, then
+// decodes its forwarded access token only to scope a response to that user.
+func (h *Handler) withForwardedIdentity(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.verifier == nil {
+			// Local development has no oauth2-proxy. Keep its behavior explicit
+			// and consistent with the direct-token middleware.
+			ctx := context.WithValue(r.Context(), userContextKey, "dev")
+			ctx = context.WithValue(ctx, adminContextKey, os.Getenv("COMPANION_DEV_ADMIN") == "true")
+			next(w, r.WithContext(ctx))
+			return
+		}
+
+		oid, groups, err := forwardedIdentity(r)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userContextKey, oid)
+		ctx = context.WithValue(ctx, adminContextKey, isAdmin(groups))
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// withForwardedAdmin uses the group claims supplied by oauth2-proxy to gate
+// an org-wide endpoint. Like withForwardedIdentity, it relies on the proxy as
+// the JWT verification boundary.
+func (h *Handler) withForwardedAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
+		if !adminFromContext(r.Context()) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {

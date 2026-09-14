@@ -218,32 +218,74 @@ function ContextChart({ rows, loading }: { rows: ContextBucketRow[] | null; load
   )
 }
 
-// floorToHour / floorToLocalDay round an ISO instant down to the start of its
-// clock hour / local calendar day and return an ISO string. Used to align the
-// cost chart's bucket origin so bars fall on full hours and local midnights.
-function floorToHour(iso: string): string {
-  const d = new Date(iso)
-  d.setMinutes(0, 0, 0)
+// latestBucketStart returns the first of exactly `count` clock-hour or local
+// calendar-day buckets ending in the current bucket. Thus a 7-day selection
+// always shows seven labelled daily bars (including today), rather than eight
+// when a rolling 7×24h range touches parts of both its start and end dates.
+function latestBucketStart(to: string, count: number, hourly: boolean): string {
+  // `to` is the exclusive end of the selected range. Stepping back a
+  // millisecond selects the bucket that actually contains the range's end;
+  // it also handles custom ranges that finish exactly at midnight cleanly.
+  const d = new Date(new Date(to).getTime() - 1)
+  if (hourly) {
+    d.setMinutes(0, 0, 0)
+    d.setTime(d.getTime() - (count - 1) * 3600e3)
+  } else {
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() - (count - 1))
+  }
   return d.toISOString()
 }
 
-function floorToLocalDay(iso: string): string {
-  const d = new Date(iso)
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString()
+// fillCostSeries keeps every interval in the selected chart range, including
+// ones for which the API has no matching spans. Without this, Chart.js receives
+// only non-empty buckets, which makes a quiet hour or day disappear rather than
+// rendering as a zero-height bar with its time label.
+function fillCostSeries(
+  totals: Map<string, number>,
+  from: string,
+  to: string,
+  hourly: boolean,
+): { bucket: string; value: number }[] {
+  // Daily buckets are keyed by their local calendar date. The server's
+  // time_bucket origin is an instant, while local midnights move at DST; a
+  // date key keeps a cost on the right labelled day across that boundary.
+  const keyFor = (bucket: string) => (hourly ? String(new Date(bucket).getTime()) : format(new Date(bucket), 'yyyy-MM-dd'))
+  const valuesByBucket = new Map<string, number>()
+  for (const [bucket, value] of totals) {
+    const key = keyFor(bucket)
+    valuesByBucket.set(key, (valuesByBucket.get(key) ?? 0) + value)
+  }
+
+  const end = new Date(to).getTime()
+  const cursor = new Date(from)
+  const series: { bucket: string; value: number }[] = []
+  while (cursor.getTime() < end) {
+    series.push({
+      bucket: cursor.toISOString(),
+      value: valuesByBucket.get(keyFor(cursor.toISOString())) ?? 0,
+    })
+    if (hourly) {
+      cursor.setTime(cursor.getTime() + 3600e3)
+    } else {
+      // Advance calendar days in local time so labels remain one day apart
+      // when the selected range crosses a daylight-saving transition.
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  }
+  return series
 }
 
 export function Personal() {
-  const { from, to, spanMs } = useDash()
+  const { to, spanMs } = useDash()
   const [costChartType, setCostChartType] = useState<ChartType>('bar')
 
-  // The cost chart buckets on clean clock boundaries: one bar per hour for a
-  // ~day-or-less window (aligned to full hours, e.g. 08:00–09:00), and one bar
-  // per calendar day for longer windows. The server buckets from `from` as the
-  // origin, so flooring `from` to the hour / local midnight makes the bars land
-  // on those boundaries instead of the raw window start (e.g. 14:27).
+  // The cost chart uses one full set of clock-hour or calendar-day buckets,
+  // including the current partial bucket. Selecting 24h/7d therefore produces
+  // exactly 24 hourly/7 daily labels, respectively.
   const hourly = spanMs <= 26 * 3600e3
-  const alignedFrom = hourly ? floorToHour(from) : floorToLocalDay(from)
+  const bucketCount = Math.max(1, Math.ceil(spanMs / (hourly ? 3600e3 : 24 * 3600e3)))
+  const alignedFrom = latestBucketStart(to, bucketCount, hourly)
   const usage = useApi<UsageResponse>('/personal/usage', {
     from: alignedFrom,
     to,
@@ -261,9 +303,7 @@ export function Personal() {
   for (const b of buckets) {
     costTotals.set(b.bucket, (costTotals.get(b.bucket) ?? 0) + b.cost)
   }
-  const costSeries = [...costTotals.entries()]
-    .sort(([a], [z]) => a.localeCompare(z))
-    .map(([bucket, value]) => ({ bucket, value }))
+  const costSeries = fillCostSeries(costTotals, alignedFrom, to, hourly)
 
   // Per-model usage (token volume) and cost share, folded from the same buckets.
   const byModel = new Map<string, { tokens: number; cost: number }>()

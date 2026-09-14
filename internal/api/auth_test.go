@@ -308,6 +308,105 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 	}
 }
 
+// oauth2-proxy has already verified the forwarded token. This middleware must
+// only decode its claims for the proxied routes, rather than verifying it again.
+func TestWithForwardedIdentity(t *testing.T) {
+	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	proxyKey := newTestKey(t)
+	// Use a different verifier key to prove no local signature check occurs.
+	h := makeHandler(newTestKey(t).verifier)
+	raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", []string{"admins"})
+
+	var gotOID string
+	var gotAdmin bool
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/personal/usage", nil)
+	req.Header.Set("X-Forwarded-Access-Token", raw)
+	h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
+		gotOID = userFromContext(r.Context())
+		gotAdmin = adminFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if gotOID != "forwarded-oid" {
+		t.Errorf("oid = %q, want %q", gotOID, "forwarded-oid")
+	}
+	if !gotAdmin {
+		t.Error("admin = false, want true")
+	}
+}
+
+func TestWithForwardedIdentityRejectsMalformedToken(t *testing.T) {
+	h := makeHandler(newTestKey(t).verifier)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/personal/usage", nil)
+	req.Header.Set("X-Forwarded-Access-Token", "not-a-jwt")
+	h.withForwardedIdentity(recordingHandler(new(string)))(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", rr.Code)
+	}
+}
+
+func TestWithForwardedAdmin(t *testing.T) {
+	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	proxyKey := newTestKey(t)
+	// A different verifier proves the forwarded token is decoded, not verified.
+	h := makeHandler(newTestKey(t).verifier)
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		want   int
+	}{
+		{name: "configured group passes", groups: []string{"admins"}, want: http.StatusOK},
+		{name: "other group is forbidden", groups: []string{"users"}, want: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", tc.groups)
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/filters", nil)
+			req.Header.Set("X-Forwarded-Access-Token", raw)
+			h.withForwardedAdmin(ok)(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, rr.Code)
+			}
+		})
+	}
+}
+
+func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
+	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	proxyKey := newTestKey(t)
+	h := makeHandler(newTestKey(t).verifier)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		want   int
+	}{
+		{name: "admin group", groups: []string{"admins"}, want: http.StatusOK},
+		{name: "non-admin group", groups: []string{"users"}, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", tc.groups)
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			req.Header.Set("X-Forwarded-Access-Token", raw)
+			mux.ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, rr.Code)
+			}
+		})
+	}
+}
+
 // --- bearerToken tests ---
 
 func TestBearerToken(t *testing.T) {

@@ -99,7 +99,7 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
               style={{ width: `${(r.score / max) * 100}%`, backgroundColor: r.score >= 5 ? CHART.negative : CHART.warning }}
             />
           </div>
-          <span className="w-10 shrink-0 text-right text-xs tabular-nums text-gray-500">{r.score.toFixed(1)}σ</span>
+          <span className="w-10 shrink-0 text-right text-xs tabular-nums text-gray-500">{r.score.toFixed(2)}σ</span>
         </div>
       ))}
     </div>
@@ -176,9 +176,9 @@ export function Anomalies() {
       header: 'Deviation',
       meta: { align: 'right' },
       accessorFn: (r) => (r.expected > 0 ? r.value / r.expected : 0),
-      cell: (c) => <span className="font-medium text-gray-900 dark:text-white">×{(c.getValue() as number).toFixed(1)}</span>,
+      cell: (c) => <span className="font-medium text-gray-900 dark:text-white">×{(c.getValue() as number).toFixed(2)}</span>,
     },
-    { accessorKey: 'score', header: 'Z-Score', meta: { align: 'right' }, cell: (c) => (c.getValue() as number).toFixed(1) },
+    { accessorKey: 'score', header: 'Z-Score', meta: { align: 'right' }, cell: (c) => (c.getValue() as number).toFixed(2) },
     { id: 'severity', header: 'Severity', accessorFn: (r) => r.score, cell: (c) => <Severity score={c.getValue()} /> },
   ]
 
@@ -205,7 +205,7 @@ export function Anomalies() {
         <StatStrip
           stats={[
             { label: 'Open Anomalies', value: String(rows.length), sub: '≥ 3σ above baseline' },
-            { label: 'Worst Z-Score', value: worst ? worst.toFixed(1) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
+            { label: 'Worst Z-Score', value: worst ? worst.toFixed(2) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
             { label: 'Users Flagged', value: String(usersFlagged), sub: 'distinct end users' },
             { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct applications' },
           ]}
@@ -287,8 +287,8 @@ export function Anomalies() {
               return {
                 bg: `rgba(203, 44, 48, ${0.15 + alpha * 0.7})`,
                 text: alpha > 0.5 ? '#fff' : undefined,
-                title: `${heatLabel.get(e) || e} · ${fmtTime(b)} · ${s.toFixed(1)}σ`,
-                content: s.toFixed(1),
+                title: `${heatLabel.get(e) || e} · ${fmtTime(b)} · ${s.toFixed(2)}σ`,
+                content: s.toFixed(2),
               }
             }}
           />

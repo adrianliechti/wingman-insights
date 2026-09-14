@@ -171,7 +171,7 @@ export function Overview() {
           </span>
           <span className="text-xs text-amber-700 dark:text-amber-400">
             top: <span>{flagged[0].name || flagged[0].group_key || '—'}</span> at{' '}
-            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(1)}× expected
+            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(2)}× expected
           </span>
           <span className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400">View →</span>
         </Link>
@@ -220,7 +220,7 @@ export function Overview() {
         <TimeseriesPanel
           points={cache}
           spanMs={spanMs}
-          yFmt={(v) => v.toFixed(0) + '%'}
+          yFmt={(v) => v.toFixed(2) + '%'}
           specs={{ '': { label: 'Cache read share', color: CHART.petrol, fill: true } }}
           loading={partitions.loading}
         />
@@ -230,7 +230,7 @@ export function Overview() {
         <TimeseriesPanel
           points={reasoning}
           spanMs={spanMs}
-          yFmt={(v) => v.toFixed(0) + '%'}
+          yFmt={(v) => v.toFixed(2) + '%'}
           specs={{ '': { label: 'Reasoning share', color: CHART.redwine, fill: true } }}
           loading={partitions.loading}
         />

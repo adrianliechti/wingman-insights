@@ -62,7 +62,7 @@ const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
       const rate = c.getValue() as number
       return (
         <span className={rate > 0.05 ? 'text-red-500 dark:text-red-400' : rate > 0 ? 'text-amber-500' : ''}>
-          {(rate * 100).toFixed(1)}%
+          {(rate * 100).toFixed(2)}%
         </span>
       )
     },
@@ -86,7 +86,7 @@ const toolColumns: ColumnDef<ToolStatRow, any>[] = [
       const rate = c.getValue() as number
       return (
         <span className={rate > 0.05 ? 'text-red-500 dark:text-red-400' : rate > 0 ? 'text-amber-500' : ''}>
-          {(rate * 100).toFixed(1)}%
+          {(rate * 100).toFixed(2)}%
         </span>
       )
     },
@@ -122,7 +122,7 @@ export function Operations() {
           points={errorRate.data}
           spanMs={spanMs}
           specs={{ '': { label: 'Errors', color: CHART.negative, fill: true } }}
-          yFmt={(v) => v.toFixed(1) + '%'}
+          yFmt={(v) => v.toFixed(2) + '%'}
           loading={errorRate.loading}
         />
       </Panel>

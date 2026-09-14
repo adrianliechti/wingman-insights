@@ -17,7 +17,7 @@ function DeltaChip({ pct, positiveIsGood = true }: { pct: number; positiveIsGood
         : 'text-red-500 dark:text-red-400'
   return (
     <span className={`text-xs font-semibold tabular-nums ${color}`} title="vs previous period">
-      {up ? '↑' : '↓'} {Math.abs(pct).toFixed(0)}%
+      {up ? '↑' : '↓'} {Math.abs(pct).toFixed(2)}%
     </span>
   )
 }

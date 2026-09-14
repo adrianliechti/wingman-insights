@@ -108,7 +108,7 @@ function CohortRetention({ cells }: { cells: CohortCell[] }) {
           bg: `rgba(10, 169, 121, ${0.12 + (pct / 100) * 0.78})`,
           text: pct > 55 ? '#06281d' : undefined,
           title: `${a}/${n} active · week ${w}`,
-          content: pct.toFixed(0) + '%',
+          content: pct.toFixed(2) + '%',
         }
       }}
     />
@@ -217,7 +217,7 @@ export function Customers() {
             {
               label: 'Sessions',
               value: fmtTokens(sessions.data?.sessions ?? 0),
-              sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(1)} per user`,
+              sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(2)} per user`,
               delta: { pct: pctChange(sessionsPrev.data?.sessions ?? 0, sessions.data?.sessions ?? 0), positiveIsGood: true },
             },
             { label: 'Stickiness', value: `${stickiness}%`, sub: 'daily / monthly active' },

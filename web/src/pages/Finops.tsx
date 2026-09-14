@@ -164,7 +164,7 @@ function ContextHistogram({ rows, loading }: { rows: ContextBucketRow[] | null; 
               callbacks: {
                 label: (ctx: any) => {
                   const r = bins[ctx.dataIndex]
-                  const share = ((r.requests / total) * 100).toFixed(1)
+                  const share = ((r.requests / total) * 100).toFixed(2)
                   return ` ${r.requests.toLocaleString()} calls (${share}%) · ${fmtCost(r.cost)}`
                 },
               },
@@ -403,7 +403,7 @@ export function Finops() {
           {
             label: 'Spend (range)',
             value: fmtCost(total),
-            sub: unpricedPct >= 0.5 ? `⚠ ${unpricedPct.toFixed(0)}% of tokens unpriced` : 'models.dev pricing',
+            sub: unpricedPct >= 0.5 ? `⚠ ${unpricedPct.toFixed(2)}% of tokens unpriced` : 'models.dev pricing',
             delta: { pct: pctChange(totalPrev, total), positiveIsGood: false },
           },
           { label: 'Cache Savings', value: fmtCost(savings), sub: 'vs full input rate' },

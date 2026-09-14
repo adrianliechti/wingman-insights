@@ -11,11 +11,10 @@ import { BarChart3, LineChart } from 'lucide-react'
 // ChartType toggles the estimated-cost chart between grouped bars and a trend line.
 type ChartType = 'bar' | 'line'
 
-// fmtUsd formats a dollar amount with a single decimal place, so every cost on
-// the personal dashboard reads consistently (e.g. $305.8, $4.5, $0.3) rather
-// than the shared fmtCost's variable precision.
+// fmtUsd formats a dollar amount to cents, so every personal-dashboard cost
+// uses the same two-decimal precision.
 function fmtUsd(n: number): string {
-  return '$' + n.toFixed(1)
+  return '$' + n.toFixed(2)
 }
 
 // tokenVolume is the billed token total for one bucket/row: input + output +
@@ -62,7 +61,7 @@ function ShareBars({
             <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
               <span className="truncate text-gray-700 dark:text-gray-300">{r.label}</span>
               <span className="shrink-0 tabular-nums text-gray-500">
-                {fmt(r.value)} · {pct.toFixed(1)}%
+                {fmt(r.value)} · {pct.toFixed(2)}%
               </span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
@@ -206,7 +205,7 @@ function ContextChart({ rows, loading }: { rows: ContextBucketRow[] | null; load
               callbacks: {
                 label: (ctx: any) => {
                   const r = bins[ctx.dataIndex]
-                  const share = ((r.requests / total) * 100).toFixed(1)
+                  const share = ((r.requests / total) * 100).toFixed(2)
                   return ` ${r.requests.toLocaleString()} calls (${share}%) · ${fmtUsd(r.cost)}`
                 },
               },

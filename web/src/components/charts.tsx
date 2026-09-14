@@ -103,7 +103,7 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
         callbacks: {
           label: (ctx: any) => {
             const v = Number(ctx.parsed.y ?? ctx.parsed)
-            const text = extra?.yFmt ? extra.yFmt(v) : v.toFixed(1)
+            const text = extra?.yFmt ? extra.yFmt(v) : v.toFixed(2)
             return ctx.dataset.label ? ` ${ctx.dataset.label}: ${text}` : ` ${text}`
           },
         },

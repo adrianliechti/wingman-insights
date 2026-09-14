@@ -21,100 +21,101 @@ func NewHandler(s *store.Store) *Handler {
 	}
 }
 
-// apiBase is the mount point for every dashboard endpoint; it is itself mounted
-// under the UI base path (e.g. /insights/api/...). OTLP ingest lives at the root
-// /v1 instead and is registered separately in main.
 const apiBase = "/api"
 
-// routeGroup registers GET routes sharing a path prefix — the stdlib equivalent
-// of a router's route group, so each domain's prefix is written once and the
-// whole tree could be versioned by changing apiBase alone.
 type routeGroup struct {
 	mux     *http.ServeMux
 	prefix  string
 	handler *Handler
 }
 
-func (g routeGroup) get(path string, fn http.HandlerFunc) {
-	g.mux.HandleFunc("GET "+g.prefix+path, fn)
+func (g routeGroup) getWithAdmin(path string, fn http.HandlerFunc) {
+	g.mux.HandleFunc("GET "+g.prefix+path, g.handler.withAdmin(fn))
 }
 
-func (g routeGroup) getWithToken(path string, fn http.HandlerFunc) {
+func (g routeGroup) getWithAuth(path string, fn http.HandlerFunc) {
 	g.mux.HandleFunc("GET "+g.prefix+path, g.handler.withAuth(fn))
 }
 
-func (h *Handler) RegisterCompanion(mux *http.ServeMux) {
-	companion := routeGroup{mux, "/companion", h}
-	companion.getWithToken("/usage", h.usage)
+func (h *Handler) RegisterPersonal(mux *http.ServeMux) {
+	for _, prefix := range []string{"/personal", "/companion"} {
+		personal := routeGroup{mux, prefix, h}
+		personal.getWithAuth("/usage", h.usage)
+		personal.getWithAuth("/usage-by-app", h.usageByApp)
+		personal.getWithAuth("/context-histogram", h.usageContextHistogram)
 
-	// /companion is an API-only namespace. Unmatched subpaths would otherwise
-	// fall through to the SPA handler (which serves index.html for anything it
-	// can't resolve); return a real 404 instead. The specific /companion/usage
-	// pattern above still wins by ServeMux precedence.
-	mux.HandleFunc("/companion/", http.NotFound)
+		mux.HandleFunc(prefix+"/", http.NotFound)
+	}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	group := func(prefix string) routeGroup { return routeGroup{mux, apiBase + prefix, h} }
 
-	// Authenticated routes — require a valid bearer token.
 	core := group("")
 
-	// Public routes — no authentication required.
-	core.get("/filters", h.filterOptions)
-	core.get("/traces", h.traceList)
-	core.get("/traces/{id}", h.traceByID)
+	core.getWithAuth("/me", h.me)
+
+	// GET /api/debug/token reports which header (Authorization vs
+	// X-Forwarded-Access-Token) supplied the caller's token, its unverified
+	// claims, and whether it passes this server's verifier — for diagnosing
+	// audience/issuer mismatches. It deliberately bypasses withAuth so it
+	// still works when auth would fail.
+	mux.HandleFunc("GET "+apiBase+"/debug/token", h.debugToken)
+
+	core.getWithAdmin("/filters", h.filterOptions)
+	core.getWithAdmin("/traces", h.traceList)
+	core.getWithAdmin("/traces/{id}", h.traceByID)
 
 	genai := group("/genai")
-	genai.get("/token-summary", jsonRoute(h, h.store.QueryTokenSummary))
-	genai.get("/token-timeseries", jsonRouteIv(h, h.store.QueryTokenTimeseries))
-	genai.get("/operations", jsonRoute(h, h.store.QueryOperationSummary))
-	genai.get("/active-users", h.activeUsers)
-	genai.get("/operation-duration-timeseries", jsonRouteIv(h, h.store.QueryOperationDurationTimeseries))
-	genai.get("/model-distribution", jsonRoute(h, h.store.QueryModelDistribution))
-	genai.get("/token-partitions", jsonRouteIv(h, h.store.QueryTokenPartitions))
-	genai.get("/errors", jsonRoute(h, h.store.QueryGenAIErrors))
-	genai.get("/anomalies", h.anomalies)
-	genai.get("/anomaly-timeseries", h.anomalyTimeseries)
-	genai.get("/cost-anomaly-timeseries", h.costAnomalyTimeseries)
-	genai.get("/anomaly-feed", h.anomalyFeed)
-	genai.get("/costs", h.costs)
-	genai.get("/cost-report", h.costReport)
+	genai.getWithAdmin("/token-summary", jsonRoute(h, h.store.QueryTokenSummary))
+	genai.getWithAdmin("/token-timeseries", jsonRouteIv(h, h.store.QueryTokenTimeseries))
+	genai.getWithAdmin("/operations", jsonRoute(h, h.store.QueryOperationSummary))
+	genai.getWithAdmin("/active-users", h.activeUsers)
+	genai.getWithAdmin("/operation-duration-timeseries", jsonRouteIv(h, h.store.QueryOperationDurationTimeseries))
+	genai.getWithAdmin("/model-distribution", jsonRoute(h, h.store.QueryModelDistribution))
+	genai.getWithAdmin("/token-partitions", jsonRouteIv(h, h.store.QueryTokenPartitions))
+	genai.getWithAdmin("/errors", jsonRoute(h, h.store.QueryGenAIErrors))
+	genai.getWithAdmin("/anomalies", h.anomalies)
+	genai.getWithAdmin("/anomaly-timeseries", h.anomalyTimeseries)
+	genai.getWithAdmin("/cost-anomaly-timeseries", h.costAnomalyTimeseries)
+	genai.getWithAdmin("/anomaly-feed", h.anomalyFeed)
+	genai.getWithAdmin("/costs", h.costs)
+	genai.getWithAdmin("/cost-report", h.costReport)
 
 	finops := group("/finops")
-	finops.get("/cost-timeseries", jsonRouteBy(h, h.store.QueryCostTimeseries))
-	finops.get("/token-timeseries", jsonRouteBy(h, h.store.QueryTokenVolumeTimeseries))
-	finops.get("/context-histogram", jsonRoute(h, h.store.QueryContextHistogram))
-	finops.get("/budget", h.budget)
+	finops.getWithAdmin("/cost-timeseries", jsonRouteBy(h, h.store.QueryCostTimeseries))
+	finops.getWithAdmin("/token-timeseries", jsonRouteBy(h, h.store.QueryTokenVolumeTimeseries))
+	finops.getWithAdmin("/context-histogram", jsonRoute(h, h.store.QueryContextHistogram))
+	finops.getWithAdmin("/budget", h.budget)
 
 	product := group("/product")
-	product.get("/model-mix", jsonRouteIv(h, h.store.QueryModelMixTimeseries))
-	product.get("/operation-mix", jsonRouteIv(h, h.store.QueryOperationMixTimeseries))
-	product.get("/tokens-per-request", jsonRouteIv(h, h.store.QueryTokensPerRequest))
-	product.get("/sessions-timeseries", jsonRouteIv(h, h.store.QuerySessionsTimeseries))
-	product.get("/session-stats", jsonRoute(h, h.store.QuerySessionStats))
-	product.get("/interactions", h.interactions)
+	product.getWithAdmin("/model-mix", jsonRouteIv(h, h.store.QueryModelMixTimeseries))
+	product.getWithAdmin("/operation-mix", jsonRouteIv(h, h.store.QueryOperationMixTimeseries))
+	product.getWithAdmin("/tokens-per-request", jsonRouteIv(h, h.store.QueryTokensPerRequest))
+	product.getWithAdmin("/sessions-timeseries", jsonRouteIv(h, h.store.QuerySessionsTimeseries))
+	product.getWithAdmin("/session-stats", jsonRoute(h, h.store.QuerySessionStats))
+	product.getWithAdmin("/interactions", h.interactions)
 
 	customers := group("/customers")
-	customers.get("/user-stats", h.userStats)
-	customers.get("/segments", jsonRoute(h, h.store.QueryUserSegments))
-	customers.get("/cohort-retention", h.cohortRetention)
-	customers.get("/app-adoption", jsonRoute(h, h.store.QueryAppAdoption))
-	customers.get("/model-preference", jsonRoute(h, h.store.QueryModelPreferenceBySegment))
-	customers.get("/burst", h.burst)
-	customers.get("/new-vs-returning", jsonRouteIv(h, h.store.QueryNewVsReturningTimeseries))
+	customers.getWithAdmin("/user-stats", h.userStats)
+	customers.getWithAdmin("/segments", jsonRoute(h, h.store.QueryUserSegments))
+	customers.getWithAdmin("/cohort-retention", h.cohortRetention)
+	customers.getWithAdmin("/app-adoption", jsonRoute(h, h.store.QueryAppAdoption))
+	customers.getWithAdmin("/model-preference", jsonRoute(h, h.store.QueryModelPreferenceBySegment))
+	customers.getWithAdmin("/burst", h.burst)
+	customers.getWithAdmin("/new-vs-returning", jsonRouteIv(h, h.store.QueryNewVsReturningTimeseries))
 
 	ops := group("/ops")
-	ops.get("/latency-percentiles", jsonRouteIv(h, h.store.QueryLatencyPercentiles))
-	ops.get("/throughput", jsonRouteIv(h, h.store.QueryThroughputTimeseries))
-	ops.get("/ttfc-timeseries", jsonRouteIv(h, h.store.QueryTTFCTimeseries))
-	ops.get("/error-rate", jsonRouteIv(h, h.store.QueryGenAIErrorRate))
-	ops.get("/tools", jsonRoute(h, h.store.QueryToolStats))
-	ops.get("/top-consumers", h.topConsumers)
+	ops.getWithAdmin("/latency-percentiles", jsonRouteIv(h, h.store.QueryLatencyPercentiles))
+	ops.getWithAdmin("/throughput", jsonRouteIv(h, h.store.QueryThroughputTimeseries))
+	ops.getWithAdmin("/ttfc-timeseries", jsonRouteIv(h, h.store.QueryTTFCTimeseries))
+	ops.getWithAdmin("/error-rate", jsonRouteIv(h, h.store.QueryGenAIErrorRate))
+	ops.getWithAdmin("/tools", jsonRoute(h, h.store.QueryToolStats))
+	ops.getWithAdmin("/top-consumers", h.topConsumers)
 
 	httpg := group("/http")
-	httpg.get("/summary", jsonRoute(h, h.store.QueryHTTPSummary))
-	httpg.get("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
-	httpg.get("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
-	httpg.get("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
+	httpg.getWithAdmin("/summary", jsonRoute(h, h.store.QueryHTTPSummary))
+	httpg.getWithAdmin("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
+	httpg.getWithAdmin("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
+	httpg.getWithAdmin("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
 }

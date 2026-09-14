@@ -41,6 +41,13 @@ tasks:
     desc: Run Go backend (:4318) + Vite dev server (:5173); develop against :5173
     deps: [dev-backend, dev-web]
 
+  dev-admin:
+    desc: Same as dev, but the backend defaults you to the org-wide (admin) dashboard
+    deps:
+      - task: dev-backend
+        vars: { DEV_ADMIN: "true" }
+      - dev-web
+
   dev-backend:
     internal: true
     cmds:
@@ -50,7 +57,8 @@ tasks:
       - test -f web/dist/index.html || printf '<!doctype html><p>dev stub — use the Vite dev server on :5173</p>' > web/dist/index.html
       # No oauth2-proxy in front of the dev server, so auth defaults off here;
       # an explicit COMPANION_AUTH_DISABLED (e.g. from .env) still wins.
-      - COMPANION_AUTH_DISABLED=${COMPANION_AUTH_DISABLED:-true} go run .
+      # COMPANION_DEV_ADMIN=true (via the dev-admin task) shows the org-wide dashboard.
+      - COMPANION_AUTH_DISABLED=${COMPANION_AUTH_DISABLED:-true} COMPANION_DEV_ADMIN=${COMPANION_DEV_ADMIN:-{{.DEV_ADMIN | default "false"}}} go run .
 
   dev-web:
     internal: true
@@ -74,4 +82,4 @@ tasks:
   demo:
     desc: Generate 24h of demo data and send to the server
     cmds:
-      - go run ./cmd/demogen -duration={{.DURATION | default "24h"}} -interval={{.INTERVAL | default "5m"}}
+      - go run ./cmd/demogen -duration={{.DURATION | default "168h"}} -interval={{.INTERVAL | default "5m"}}

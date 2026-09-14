@@ -2,11 +2,146 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* LGT brand palette. The default Tailwind color scales this app was built on
+   (gray neutrals, indigo accent, red/emerald/amber semantics) are remapped here
+   to LGT's tokens, so existing `gray-*`, `indigo-*`, etc. utility classes render
+   brand colors without touching every className. Named custom tokens below
+   expose the full palette (incl. secondaries) for charts and one-off styles. */
+@theme {
+  /* Neutral scale — LGT Neutral steps mapped onto Tailwind's gray ramp by
+     lightness (gray-950 darkest … gray-50 lightest). */
+  --color-gray-950: #15171e; /* LGT Neutral 100 */
+  --color-gray-900: #2c2e35; /* LGT Neutral 90  */
+  --color-gray-800: #44454b; /* LGT Neutral 80  */
+  --color-gray-700: #5b5d62; /* LGT Neutral 70  */
+  --color-gray-600: #65666a; /* LGT Neutral 65  */
+  --color-gray-500: #8a8b8e; /* LGT Neutral 50  */
+  --color-gray-400: #a1a2a5; /* LGT Neutral 40  */
+  --color-gray-300: #b9b9bb; /* LGT Neutral 30  */
+  --color-gray-200: #d0d1d2; /* LGT Neutral 20  */
+  --color-gray-100: #e8e8e8; /* LGT Neutral 10  */
+  --color-gray-50: #fafafa;  /* page background */
+
+  /* Accent scale — LGT Blue as the primary interactive color, Dark Blue for
+     hover/active, with lighter tints for dark-mode text and subtle fills. */
+  --color-indigo-950: #141d42;
+  --color-indigo-900: #1c2a5c; /* LGT Dark Blue */
+  --color-indigo-800: #223472;
+  --color-indigo-700: #1c2a5c; /* hover of the 600 accent */
+  --color-indigo-600: #283c83; /* LGT Blue — primary accent */
+  --color-indigo-500: #3a52a6;
+  --color-indigo-400: #6c82c9; /* dark-mode accent text */
+  --color-indigo-300: #9aabdb;
+  --color-indigo-200: #c3cded;
+  --color-indigo-100: #dde3f4;
+  --color-indigo-50: #eef1fa;
+
+  /* Semantics — Negative / Positive / Warning. */
+  --color-red-950: #3f0e0f;
+  --color-red-900: #6b1719;
+  --color-red-800: #8f1f22;
+  --color-red-700: #b0272b;
+  --color-red-600: #cb2c30; /* LGT Negative */
+  --color-red-500: #d84a4e;
+  --color-red-400: #e57a7d;
+  --color-red-300: #eea3a5;
+  --color-red-200: #f5c8ca;
+  --color-red-100: #fae4e5;
+  --color-red-50: #fdf2f2;
+
+  --color-emerald-950: #032218;
+  --color-emerald-900: #054030;
+  --color-emerald-800: #065c44;
+  --color-emerald-700: #07825e; /* LGT Positive */
+  --color-emerald-600: #07825e; /* LGT Positive */
+  --color-emerald-500: #0a9d72;
+  --color-emerald-400: #2bbb92;
+  --color-emerald-300: #6fd0b3;
+  --color-emerald-200: #a8e4d1;
+  --color-emerald-100: #d3f2e8;
+  --color-emerald-50: #ecfaf5;
+
+  --color-amber-950: #3d3106;
+  --color-amber-900: #7a610f;
+  --color-amber-800: #a08015;
+  --color-amber-700: #c69e1f;
+  --color-amber-600: #d7ad24;
+  --color-amber-500: #e9c02a; /* LGT Warning */
+  --color-amber-400: #eece52;
+  --color-amber-300: #f2da82;
+  --color-amber-200: #f7e8b0;
+  --color-amber-100: #fbf3d6;
+  --color-amber-50: #fdfaee;
+
+  /* Reasoning accent — mapped to LGT Redwine so the one-off `pink` cells match
+     the reasoning series colour used in charts. */
+  --color-pink-500: #84344e; /* LGT Redwine */
+  --color-pink-400: #a85670;
+
+  /* Named tokens for charts / infographics and one-off styles. */
+  --blue: #283c83;
+  --dark-blue: #1c2a5c;
+  --light-blue: #6cace4;
+  --green: #006647;
+  --turquoise: #0aa979;
+  --petrol: #005a70;
+  --redwine: #84344e;
+  --earth: #473728;
+  --warmgrey: #968c83;
+  --orange: #cf7f00;
+
+  --negative: #cb2c30;
+  --positive: #07825e;
+  --warning: #e9c02a;
+  --info: #4b77c4;
+}
+
 /* Paint the root element so Safari's overscroll (rubber-band) area at the top
    and bottom shows the theme background instead of white. */
 html {
   background-color: var(--color-gray-50);
 }
+/* Dark-mode refinements. Tailwind v4 utilities resolve `var(--color-*)` at use
+   time, so redefining these variables under `.dark` retargets every `dark:*`
+   utility without touching a single className. The flat LGT neutral ramp reads
+   muddy and low-contrast on dark surfaces, so dark mode gets its own tuned ramp:
+   a deeper page background for more card lift, restrained borders/dividers, and
+   brighter text and accent for legibility (WCAG AA). Hues stay cool, leaning on
+   LGT's dark blue, so it still reads as the brand.
+
+   In dark mode the ramp's meaning inverts: high `gray` numbers are dark surfaces,
+   low numbers are light text. */
 html.dark {
+  /* Surfaces — page background darkest, cards and controls stepped above it. */
+  --color-gray-950: #0f1117; /* page background */
+  --color-gray-900: #191c24; /* cards, inputs, popovers */
+  --color-gray-800: #2a2e39; /* borders, dividers */
+  --color-gray-700: #3a3f4d; /* hover borders, separators */
+  --color-gray-600: #565c6b; /* faint icons / disabled */
+
+  /* Text — brighter than the flat LGT neutrals so body and muted copy clear AA
+     on the dark surfaces above. */
+  --color-gray-500: #949aa8; /* dim / placeholder text (AA on card) */
+  --color-gray-400: #a6abb8; /* muted / secondary text */
+  --color-gray-300: #c9ccd6; /* body text */
+  --color-gray-200: #dcdee5; /* strong text */
+  --color-gray-100: #eceef2; /* headings / near-white */
+
+  /* Accent — LGT Blue is too dark to carry white text on a dark fill, so the
+     filled step is lifted; the light tints stay legible as accent text/tints. */
+  --color-indigo-600: #4257a8; /* filled primary buttons */
+  --color-indigo-500: #5064b5; /* hover */
+  --color-indigo-400: #8ba0dc; /* accent text */
+  --color-indigo-300: #aab9e6;
+
+  /* Semantics — brightened one step so status colors read on dark. */
+  --color-red-500: #e05457;
+  --color-red-400: #ec8386;
+  --color-emerald-500: #17ad81;
+  --color-emerald-400: #3fc79c;
+  --color-amber-500: #edc94a;
+  --color-amber-400: #f2d876;
+  --color-pink-400: #c47590; /* Redwine, lifted for dark */
+
   background-color: var(--color-gray-950);
 }

@@ -15,19 +15,19 @@ import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
-import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions } from '../components/charts'
+import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtCost, fmtTokens, fmtTime, pctChange } from '../lib/format'
 
 const SEGMENT_COLORS: Record<string, string> = {
-  power: '#818cf8',
-  frequent: '#34d399',
-  regular: '#fbbf24',
-  casual: '#9ca3af',
+  power: CHART.blue,
+  frequent: CHART.turquoise,
+  regular: CHART.orange,
+  casual: CHART.warmgrey,
 }
 
 const NEW_RETURNING_SPECS = {
-  new: { label: 'New', color: '#34d399', fill: true },
-  returning: { label: 'Returning', color: '#818cf8', fill: true },
+  new: { label: 'New', color: CHART.turquoise, fill: true },
+  returning: { label: 'Returning', color: CHART.blue, fill: true },
 }
 
 // SegmentBars shows the engagement pyramid: user count per segment with its
@@ -105,7 +105,7 @@ function CohortRetention({ cells }: { cells: CohortCell[] }) {
         if (a === undefined || n === 0) return null
         const pct = (a / n) * 100
         return {
-          bg: `rgba(52, 211, 153, ${0.12 + (pct / 100) * 0.78})`,
+          bg: `rgba(10, 169, 121, ${0.12 + (pct / 100) * 0.78})`,
           text: pct > 55 ? '#06281d' : undefined,
           title: `${a}/${n} active · week ${w}`,
           content: pct.toFixed(0) + '%',
@@ -119,7 +119,7 @@ function SegmentTag({ seg }: { seg: string }) {
   return (
     <span
       className="rounded px-1.5 py-0.5 text-[11px] font-medium capitalize"
-      style={{ backgroundColor: (SEGMENT_COLORS[seg] ?? '#9ca3af') + '22', color: SEGMENT_COLORS[seg] ?? '#9ca3af' }}
+      style={{ backgroundColor: (SEGMENT_COLORS[seg] ?? CHART.warmgrey) + '22', color: SEGMENT_COLORS[seg] ?? CHART.warmgrey }}
     >
       {seg}
     </span>
@@ -168,8 +168,8 @@ const appColumns: ColumnDef<AppAdoptionRow, any>[] = [
 ]
 
 const TOKEN_AVG_SPECS = {
-  input: { label: 'Avg input / request', color: '#818cf8' },
-  output: { label: 'Avg output / request', color: '#34d399' },
+  input: { label: 'Avg input / request', color: CHART.blue },
+  output: { label: 'Avg output / request', color: CHART.turquoise },
 }
 
 export function Customers() {
@@ -236,7 +236,7 @@ export function Customers() {
           <TimeseriesPanel
             points={sessionSeries.data}
             spanMs={spanMs}
-            specs={{ '': { label: 'Sessions', color: '#22d3ee', fill: true } }}
+            specs={{ '': { label: 'Sessions', color: CHART.petrol, fill: true } }}
             loading={sessionSeries.loading}
           />
         )}

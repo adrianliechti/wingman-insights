@@ -14,6 +14,7 @@ import { fmtBucket } from '../lib/format'
 import type { TimeseriesPoint } from '../types'
 import { useDash } from '../dash'
 import { PanelMessage } from './Panel'
+import { useSyncExternalStore } from 'react'
 
 ChartJS.register(
   CategoryScale,
@@ -26,14 +27,57 @@ ChartJS.register(
   Filler,
 )
 
+// LGT palette for charts and infographics. Shades of blue plus the secondary
+// colours; the first entries are the brand blues, then the secondaries, so
+// auto-assigned series stay on-brand. Kept in sync with the custom tokens in
+// style.css (charts take hex literals, not CSS vars).
+export const CHART = {
+  blue: '#283c83', // LGT Blue
+  lightBlue: '#6cace4', // LGT Light blue
+  petrol: '#005a70', // LGT Petrol
+  turquoise: '#0aa979', // LGT Turquoise
+  green: '#006647', // LGT Green
+  orange: '#cf7f00', // LGT Orange
+  redwine: '#84344e', // LGT Redwine
+  earth: '#473728', // LGT Earth
+  warmgrey: '#968c83', // LGT Warmgrey
+  negative: '#cb2c30', // LGT Negative
+  positive: '#07825e', // LGT Positive
+  warning: '#e9c02a', // LGT Warning
+} as const
+
 export const PALETTE = [
-  '#818cf8', '#34d399', '#fbbf24', '#22d3ee', '#f472b6',
-  '#a78bfa', '#fb923c', '#4ade80', '#60a5fa', '#e879f9',
+  CHART.blue, CHART.turquoise, CHART.orange, CHART.petrol, CHART.redwine,
+  CHART.lightBlue, CHART.green, CHART.earth, CHART.warmgrey, CHART.warning,
 ]
 
+// The primary accent blue is lifted in dark mode (LGT Blue is too dark on the
+// near-black background), matching the topbar accent (--color-indigo-600 in
+// style.css). Charts use hex literals, not CSS vars, so this must be resolved
+// per-theme in JS. CHART_BLUE_DARK must stay in sync with that token.
+export const CHART_BLUE_DARK = '#4257a8'
+
+// subscribeTheme watches the `dark` class on <html> so charts re-render when the
+// theme toggles (the class is flipped imperatively by the header).
+function subscribeTheme(cb: () => void) {
+  const obs = new MutationObserver(cb)
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  return () => obs.disconnect()
+}
+function isDark() {
+  return document.documentElement.classList.contains('dark')
+}
+
+// useChartBlue returns the accent blue for the current theme, aligned with the
+// topbar's active-filter color.
+export function useChartBlue() {
+  const dark = useSyncExternalStore(subscribeTheme, isDark, () => false)
+  return dark ? CHART_BLUE_DARK : CHART.blue
+}
+
 // Neutral colors that stay readable in both light and dark mode.
-const TICK = '#9ca3af'
-const GRID = 'rgba(107, 114, 128, 0.18)'
+const TICK = '#8a8b8e' // LGT Neutral 50
+const GRID = 'rgba(150, 140, 131, 0.2)' // LGT Warmgrey, faint
 
 // Chart.js legends render poorly (hollow rings, no spacing); ChartLegend
 // below replaces them, so the built-in legend is always off.
@@ -45,10 +89,10 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#1f2937',
-        titleColor: '#f3f4f6',
-        bodyColor: '#d1d5db',
-        borderColor: '#374151',
+        backgroundColor: '#15171e', // LGT Neutral 100
+        titleColor: '#e8e8e8', // LGT Neutral 10
+        bodyColor: '#b9b9bb', // LGT Neutral 30
+        borderColor: '#44454b', // LGT Neutral 80
         borderWidth: 1,
         padding: 10,
         cornerRadius: 8,
@@ -56,6 +100,13 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
         boxWidth: 6,
         boxHeight: 6,
         boxPadding: 4,
+        callbacks: {
+          label: (ctx: any) => {
+            const v = Number(ctx.parsed.y ?? ctx.parsed)
+            const text = extra?.yFmt ? extra.yFmt(v) : v.toFixed(1)
+            return ctx.dataset.label ? ` ${ctx.dataset.label}: ${text}` : ` ${text}`
+          },
+        },
       },
     },
     scales: {

@@ -4,6 +4,7 @@ import { useApi } from '../dash'
 import { apiGet } from '../api'
 import type { SpanRow, TraceSummary } from '../types'
 import { PanelMessage } from '../components/Panel'
+import { CHART } from '../components/charts'
 import { fmtCost, fmtDuration, fmtTime, fmtTokens } from '../lib/format'
 import { format } from 'date-fns'
 
@@ -34,15 +35,15 @@ function orderTrace(spans: SpanRow[]): TreeSpan[] {
 
 // A muted dot colored by operation gives the tree visual structure at a glance.
 const OP_COLOR: Record<string, string> = {
-  chat: '#818cf8',
-  generate_content: '#818cf8',
-  text_completion: '#818cf8',
-  invoke_agent: '#34d399',
-  execute_tool: '#fbbf24',
-  embeddings: '#f472b6',
-  retrieval: '#22d3ee',
+  chat: CHART.blue,
+  generate_content: CHART.blue,
+  text_completion: CHART.blue,
+  invoke_agent: CHART.turquoise,
+  execute_tool: CHART.orange,
+  embeddings: CHART.redwine,
+  retrieval: CHART.petrol,
 }
-const opColor = (op?: string) => OP_COLOR[op ?? ''] ?? '#9ca3af'
+const opColor = (op?: string) => OP_COLOR[op ?? ''] ?? CHART.warmgrey
 
 type BadgeVariant = 'strong' | 'soft' | 'error'
 
@@ -230,7 +231,7 @@ function TraceView({ trace }: { trace: TraceSummary }) {
                 }`}
               >
                 <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: isError ? '#ef4444' : opColor(s.operation_name) }} />
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: isError ? CHART.negative : opColor(s.operation_name) }} />
                   <span className="truncate font-mono text-xs text-gray-800 dark:text-gray-200" title={s.name}>
                     {s.name}
                   </span>

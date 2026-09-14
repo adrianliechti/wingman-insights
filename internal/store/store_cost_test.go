@@ -593,3 +593,131 @@ func TestUsageTotalsEmptyWindow(t *testing.T) {
 		t.Error("Priced = false on an empty window, want true")
 	}
 }
+
+// TestUsageByApp verifies the personal "share by application" breakdown groups
+// by app, reports the disjoint token ledger, and — when scoped via Filter.User
+// — excludes other users' spans.
+func TestUsageByApp(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Now().UTC()
+	seed := func(app, user string, in, out, cacheRead, cost float64) {
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, app_id,
+			 provider_name, request_model, user_id, input_tokens, output_tokens,
+			 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+			 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+			VALUES (?, ?, 1.0, gen_random_uuid()::text, gen_random_uuid()::text, 'root', 'ok', ?,
+			        'openai', 'gpt-5.1', ?, ?, ?, ?, 0, 0,
+			        0, 0, 0, 0, ?, 0, true)`,
+			ts, ts, app, user, in, out, cacheRead, cost); err != nil {
+			t.Fatalf("seed span: %v", err)
+		}
+	}
+	// alice uses two apps; bob is a different user who must be excluded.
+	seed("web", "alice", 1000, 500, 200, 1.0)  // web: uncached input 800, cached 200
+	seed("web", "alice", 500, 250, 0, 0.5)     // web again, aggregates
+	seed("cli", "alice", 2000, 100, 0, 2.0)    // cli
+	seed("web", "bob", 9999, 9999, 0, 99.0)    // other user, excluded by scope
+
+	ctx := context.Background()
+	from, to := ts.Add(-time.Hour), ts.Add(time.Hour)
+
+	rows, err := s.QueryUsageByApp(ctx, from, to, Filter{User: []string{"alice"}})
+	if err != nil {
+		t.Fatalf("QueryUsageByApp: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (web, cli; bob excluded)", len(rows))
+	}
+	by := map[string]UsageByAppRow{}
+	for _, r := range rows {
+		by[r.App] = r
+	}
+	web, ok := by["web"]
+	if !ok {
+		t.Fatalf("missing web row; got %+v", rows)
+	}
+	// web: uncached input = (1000-200) + 500 = 1300, output 750, cached 200.
+	if web.Tokens.Input != 1300 || web.Tokens.Output != 750 || web.Tokens.Cached != 200 {
+		t.Errorf("web tokens = %+v, want input 1300 / output 750 / cached 200", web.Tokens)
+	}
+	if web.Cost != 1.5 {
+		t.Errorf("web cost = %v, want 1.5", web.Cost)
+	}
+	cli := by["cli"]
+	if cli.Tokens.Input != 2000 || cli.Tokens.Output != 100 {
+		t.Errorf("cli tokens = %+v, want input 2000 / output 100", cli.Tokens)
+	}
+	// Ordered by cost descending: cli (2.0) before web (1.5).
+	if rows[0].App != "cli" {
+		t.Errorf("first row app = %q, want cli (highest cost first)", rows[0].App)
+	}
+}
+
+// TestUsageTimeseriesFromAlignsToOrigin verifies that daily bucketing aligned to
+// a local-midnight origin collapses a window straddling UTC midnight into one
+// bucket, whereas the default UTC-epoch alignment splits it into two. This is
+// the "today = one bar in the viewer's timezone" fix.
+func TestUsageTimeseriesFromAlignsToOrigin(t *testing.T) {
+	t.Setenv("INSIGHTS_DB_PATH", filepath.Join(t.TempDir(), "insights.db"))
+	t.Setenv("INSIGHTS_DB_MEMORY_LIMIT", "512MB")
+	s, err := New()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Viewer in UTC+2. Their local day 2026-03-10 starts at 2026-03-09 22:00 UTC.
+	// Two spans within that local day but on opposite sides of UTC midnight.
+	localMidnightUTC := time.Date(2026, 3, 9, 22, 0, 0, 0, time.UTC) // 00:00 local
+	seed := func(at time.Time, cost float64) {
+		if _, err := s.db.Exec(`INSERT INTO genai_spans
+			(received_at, time, duration, trace_id, span_id, name, status, app_id,
+			 provider_name, request_model, user_id, input_tokens, output_tokens,
+			 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+			 input_cost, output_cost, cache_read_cost, cache_creation_cost, cost, cache_savings, priced)
+			VALUES (?, ?, 1.0, gen_random_uuid()::text, gen_random_uuid()::text, 'root', 'ok', 'web',
+			        'openai', 'gpt-5.1', 'alice', 100, 10, 0, 0, 0,
+			        0, 0, 0, 0, ?, 0, true)`,
+			at, at, cost); err != nil {
+			t.Fatalf("seed span: %v", err)
+		}
+	}
+	seed(localMidnightUTC.Add(1*time.Hour), 1.0) // 23:00 UTC Mar 9 (01:00 local Mar 10)
+	seed(localMidnightUTC.Add(5*time.Hour), 2.0) // 03:00 UTC Mar 10 (05:00 local Mar 10)
+
+	ctx := context.Background()
+	from, to := localMidnightUTC, localMidnightUTC.Add(24*time.Hour)
+	f := Filter{User: []string{"alice"}}
+
+	// Default (UTC-epoch) alignment splits across UTC midnight: two day buckets.
+	def, err := s.QueryUsageTimeseries(ctx, from, to, "1 day", f)
+	if err != nil {
+		t.Fatalf("QueryUsageTimeseries: %v", err)
+	}
+	if len(def) != 2 {
+		t.Fatalf("default alignment buckets = %d, want 2 (UTC-split)", len(def))
+	}
+
+	// Origin-aligned to local midnight: one bucket holding both spans.
+	aligned, err := s.QueryUsageTimeseriesFrom(ctx, from, to, "1 day", from, f)
+	if err != nil {
+		t.Fatalf("QueryUsageTimeseriesFrom: %v", err)
+	}
+	if len(aligned) != 1 {
+		t.Fatalf("origin-aligned buckets = %d, want 1", len(aligned))
+	}
+	if aligned[0].Cost != 3.0 {
+		t.Errorf("aligned bucket cost = %v, want 3.0 (both spans)", aligned[0].Cost)
+	}
+	if !aligned[0].Bucket.Equal(localMidnightUTC) {
+		t.Errorf("aligned bucket start = %v, want %v (local midnight)", aligned[0].Bucket, localMidnightUTC)
+	}
+}

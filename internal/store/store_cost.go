@@ -248,13 +248,36 @@ type UsageBucketPoint struct {
 // QueryUsageTimeseries returns cost and token consumption per time bucket,
 // stacked by request_model. Cost and cache savings are summed from the per-span
 // materialized columns (the same source as QueryCostTimeseries); tokens come
-// from the five disjoint partitions, folded by usageTokenTotals.
+// from the five disjoint partitions, folded by usageTokenTotals. Buckets are
+// aligned to the UTC epoch (time_bucket's default origin).
 func (s *Store) QueryUsageTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]UsageBucketPoint, error) {
+	return s.queryUsageTimeseries(ctx, from, to, interval, nil, f)
+}
+
+// QueryUsageTimeseriesFrom is QueryUsageTimeseries with buckets aligned to a
+// caller-supplied origin instead of the UTC epoch. Passing the window start as
+// origin makes day buckets land on the viewer's local midnight (the personal
+// dashboard sends from = local midnight expressed as a UTC instant), so a
+// "today" window yields one aligned bar rather than two UTC-split ones.
+func (s *Store) QueryUsageTimeseriesFrom(ctx context.Context, from, to time.Time, interval string, origin time.Time, f Filter) ([]UsageBucketPoint, error) {
+	return s.queryUsageTimeseries(ctx, from, to, interval, &origin, f)
+}
+
+func (s *Store) queryUsageTimeseries(ctx context.Context, from, to time.Time, interval string, origin *time.Time, f Filter) ([]UsageBucketPoint, error) {
 	clause, fargs := f.spansClause()
-	args := append([]any{interval, from, to}, fargs...)
+	// time_bucket(width, time[, origin]): the optional origin anchors bucket
+	// boundaries. Without it, DuckDB aligns to the UTC epoch.
+	bucketExpr := "time_bucket(CAST(? AS INTERVAL), time)"
+	args := []any{interval}
+	if origin != nil {
+		bucketExpr = "time_bucket(CAST(? AS INTERVAL), time, CAST(? AS TIMESTAMP))"
+		args = append(args, origin.UTC())
+	}
+	args = append(args, from, to)
+	args = append(args, fargs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			time_bucket(CAST(? AS INTERVAL), time) as bucket,
+			`+bucketExpr+` as bucket,
 			COALESCE(request_model, '') as model,
 			COALESCE(SUM(cost), 0) as cost,
 			COALESCE(SUM(cache_savings), 0) as cache_savings,
@@ -351,6 +374,54 @@ func (s *Store) QueryUsageTotals(ctx context.Context, from, to time.Time, f Filt
 	}
 	u.Tokens = usageTokenTotals(parts, cacheSavings, priced)
 	return u, nil
+}
+
+// UsageByAppRow is one application's cost and token consumption over the window,
+// for the personal usage "share by application" breakdown. App is the app_id
+// (service.peer.name), empty when the span carried none.
+type UsageByAppRow struct {
+	App    string      `json:"app"`
+	Cost   float64     `json:"cost"`
+	Tokens TokenTotals `json:"tokens"`
+}
+
+// QueryUsageByApp returns cost and token consumption grouped by app_id for the
+// given window and filter, ordered by cost then token volume descending. It is
+// the app dimension of the personal usage view; scope it to one user by setting
+// Filter.User, exactly as QueryUsageTotals is used.
+func (s *Store) QueryUsageByApp(ctx context.Context, from, to time.Time, f Filter) ([]UsageByAppRow, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(app_id, '') as app,
+			COALESCE(SUM(cost), 0) as cost,
+			COALESCE(SUM(cache_savings), 0) as cache_savings,
+			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,`+spansPartCols+`
+		FROM genai_spans
+		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		GROUP BY app
+		ORDER BY cost DESC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []UsageByAppRow
+	for rows.Next() {
+		var row UsageByAppRow
+		var parts tokenParts
+		var cacheSavings float64
+		var priced bool
+		if err := rows.Scan(&row.App, &row.Cost, &cacheSavings, &priced,
+			&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning); err != nil {
+			return nil, err
+		}
+		row.Tokens = usageTokenTotals(parts, cacheSavings, priced)
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 // QueryTokenVolumeTimeseries returns total token volume per bucket, stacked by

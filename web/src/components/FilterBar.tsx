@@ -13,7 +13,7 @@ import type { FilterOptions } from '../types'
 
 const MAX_VISIBLE_OPTIONS = 100
 
-type SelectOption = { value: string; label: string }
+export type SelectOption = { value: string; label: string }
 type SearchableOption = SelectOption & { searchLabel: string }
 
 function useOptionMatches(options: SelectOption[], query: string, selectedValues: string[] = []) {
@@ -53,13 +53,14 @@ function useOptionMatches(options: SelectOption[], query: string, selectedValues
   }
 }
 
-function MultiFilterSelect({
+export function MultiFilterSelect({
   icon: Icon,
   placeholder,
   noun,
   value,
   options,
   onChange,
+  compact = false,
 }: {
   icon: LucideIcon
   placeholder: string
@@ -67,6 +68,7 @@ function MultiFilterSelect({
   value: string[] | undefined
   options: SelectOption[]
   onChange: (v: string[] | undefined) => void
+  compact?: boolean
 }) {
   const values = value ?? []
   const [query, setQuery] = useState('')
@@ -83,13 +85,22 @@ function MultiFilterSelect({
 
   return (
     <Combobox multiple value={values} onChange={setValues}>
-      <div className="relative">
+      <div className={compact ? 'relative' : 'relative min-w-40 flex-1 basis-40'}>
         <div
-          className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-            values.length > 0
-              ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10'
-              : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
-          }`}
+          title={compact ? (selectedLabel || placeholder) : undefined}
+          className={
+            compact
+              ? `flex h-9 w-9 items-center justify-center rounded-lg border transition-colors ${
+                  values.length > 0
+                    ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10'
+                    : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
+                }`
+              : `flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  values.length > 0
+                    ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10'
+                    : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
+                }`
+          }
         >
           <Icon
             className={`h-3.5 w-3.5 shrink-0 ${
@@ -97,21 +108,29 @@ function MultiFilterSelect({
             }`}
           />
           <ComboboxInput
-            className={`w-28 bg-transparent outline-none placeholder:text-gray-500 dark:placeholder:text-gray-400 ${
-              values.length > 0 ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'
-            }`}
+            className={
+              compact
+                ? 'sr-only'
+                : `w-full min-w-0 truncate bg-transparent outline-none placeholder:text-gray-500 dark:placeholder:text-gray-400 ${
+                    values.length > 0 ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'
+                  }`
+            }
             displayValue={() => selectedLabel}
             placeholder={placeholder}
+            autoComplete="off"
             onChange={(e) => setQuery(e.target.value)}
             onFocus={() => setQuery('')}
           />
-          <ComboboxButton className="shrink-0">
-            <ChevronDown className="h-3.5 w-3.5 text-gray-400 dark:text-gray-600" />
-          </ComboboxButton>
+          {!compact && (
+            <ComboboxButton className="shrink-0 cursor-pointer">
+              <ChevronDown className="h-3.5 w-3.5 text-gray-400 dark:text-gray-600" />
+            </ComboboxButton>
+          )}
+          {compact && <ComboboxButton className="absolute inset-0 cursor-pointer" aria-hidden="true" />}
         </div>
 
         <ComboboxOptions
-          anchor="bottom start"
+          anchor={compact ? 'bottom end' : 'bottom start'}
           transition
           className="z-20 mt-1 max-h-72 w-[var(--input-width)] min-w-48 origin-top overflow-auto rounded-lg border border-gray-200 bg-white p-1 text-xs shadow-lg transition duration-100 ease-out [--anchor-gap:4px] empty:invisible focus:outline-none data-[closed]:scale-95 data-[closed]:opacity-0 dark:border-gray-800 dark:bg-gray-900"
         >
@@ -264,7 +283,7 @@ export function FilterBar() {
               models: undefined,
             })
           }
-          className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-900 dark:hover:text-white"
+          className="flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-900 dark:hover:text-white"
         >
           <FilterX className="h-3.5 w-3.5" />
           Clear

@@ -284,3 +284,45 @@ export interface BurstRow {
   active_minutes: number
 }
 
+// Me is the caller's identity and authorization, from GET /api/me. When admin
+// is false the SPA shows only the personal-usage view.
+export interface Me {
+  user: string
+  admin: boolean
+}
+
+// TokenTotals mirrors store.TokenTotals: the disjoint token ledger where
+// input + output + cached is the billed total (reasoning is a subset of output).
+export interface TokenTotals {
+  input: number
+  output: number
+  cached: number
+  reasoning: number
+  cache_savings: number
+  priced: boolean
+}
+
+// UsageBucket is one interval of the personal usage timeseries (per model).
+export interface UsageBucket {
+  bucket: string
+  cost: number
+  model?: string
+  tokens: TokenTotals
+}
+
+// UsageResponse is GET /personal/usage: the caller's own cost and token totals,
+// with per-interval buckets when an interval is requested.
+export interface UsageResponse {
+  cost: number
+  tokens: TokenTotals
+  buckets?: UsageBucket[]
+}
+
+// UsageByAppRow is GET /personal/usage-by-app: the caller's cost and tokens
+// grouped by application.
+export interface UsageByAppRow {
+  app: string
+  cost: number
+  tokens: TokenTotals
+}
+

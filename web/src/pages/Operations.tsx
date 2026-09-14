@@ -4,7 +4,7 @@ import { useApi, useDash } from '../dash'
 import type { HTTPErrorsByCodeRow, HTTPSummaryRow, TimeseriesPoint, ToolStatRow } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { DataTable } from '../components/DataTable'
-import { Bar, TimeseriesPanel, chartOptions } from '../components/charts'
+import { Bar, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtDuration, fmtTokens } from '../lib/format'
 
 // avgPeak collapses a timeseries into the mean and max bucket total over the
@@ -33,14 +33,14 @@ function AvgPeak({ stats, fmt }: { stats: { avg: number; peak: number } | null; 
 }
 
 const DIRECTION_SPECS = {
-  server: { label: 'Server (inbound)', color: '#818cf8', fill: true },
-  client: { label: 'Client (outbound)', color: '#34d399', fill: true },
+  server: { label: 'Server (inbound)', color: CHART.blue, fill: true },
+  client: { label: 'Client (outbound)', color: CHART.turquoise, fill: true },
 }
 
 const PERCENTILE_SPECS = {
-  p50: { label: 'p50', color: '#34d399' },
-  p95: { label: 'p95', color: '#fbbf24' },
-  p99: { label: 'p99', color: '#ef4444' },
+  p50: { label: 'p50', color: CHART.positive },
+  p95: { label: 'p95', color: CHART.warning },
+  p99: { label: 'p99', color: CHART.negative },
 }
 
 const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
@@ -121,7 +121,7 @@ export function Operations() {
         <TimeseriesPanel
           points={errorRate.data}
           spanMs={spanMs}
-          specs={{ '': { label: 'Errors', color: '#ef4444', fill: true } }}
+          specs={{ '': { label: 'Errors', color: CHART.negative, fill: true } }}
           yFmt={(v) => v.toFixed(1) + '%'}
           loading={errorRate.loading}
         />
@@ -139,7 +139,7 @@ export function Operations() {
         <TimeseriesPanel
           points={throughput.data}
           spanMs={spanMs}
-          specs={{ '': { label: 'Tokens/sec', color: '#22d3ee', fill: true } }}
+          specs={{ '': { label: 'Tokens/sec', color: CHART.petrol, fill: true } }}
           yFmt={(v) => fmtTokens(v) + '/s'}
           loading={throughput.loading}
         />
@@ -183,7 +183,7 @@ export function Operations() {
             <Bar
               data={{
                 labels: httpErrorsByCode.data!.map((d) => String(d.status_code)),
-                datasets: [{ data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: '#ef4444', borderRadius: 4 }],
+                datasets: [{ data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: CHART.negative, borderRadius: 4 }],
               }}
               options={chartOptions()}
             />

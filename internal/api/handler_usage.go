@@ -38,12 +38,13 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	f.User = []string{user}
 
 	resp := usageResponse{}
-
 	if r.URL.Query().Has("interval") {
 		// The bucketed view carries per-model cost and tokens; the window totals
 		// are just their sum, so a single scan serves both — no separate totals
-		// query.
-		points, err := h.store.QueryUsageTimeseries(r.Context(), from, to, parseInterval(r), f)
+		// query. Buckets are aligned to the window start (from), which the client
+		// sends as the viewer's local midnight, so daily bars land on local-day
+		// boundaries instead of splitting across UTC midnight.
+		points, err := h.store.QueryUsageTimeseriesFrom(r.Context(), from, to, parseInterval(r), from, f)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -79,4 +80,48 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// usageByApp serves GET /personal/usage-by-app: the caller's cost and token
+// consumption grouped by application, for the personal "share by application"
+// breakdown. Scoped to the authenticated user, exactly like usage.
+func (h *Handler) usageByApp(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	from, to := parseTimeRange(r)
+	f := h.parseFilter(r)
+	f.User = []string{user}
+
+	rows, err := h.store.QueryUsageByApp(r.Context(), from, to, f)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+// usageContextHistogram serves GET /personal/context-histogram: the caller's
+// own LLM calls binned by prompt size, for the personal "context size" chart.
+// Scoped to the authenticated user, exactly like usage and usageByApp.
+func (h *Handler) usageContextHistogram(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	from, to := parseTimeRange(r)
+	f := h.parseFilter(r)
+	f.User = []string{user}
+
+	rows, err := h.store.QueryContextHistogram(r.Context(), from, to, f)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
 }

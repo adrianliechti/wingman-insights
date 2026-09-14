@@ -269,12 +269,23 @@ func sessionFor(u userDef, t time.Time) string {
 	return fmt.Sprintf("session-%s-%d", u.id, t.Unix()/7200)
 }
 
+// serviceFor is the calling application for one of a user's requests. Most users
+// stick to their single primary service, but the pinned "dev" user rotates
+// across all services so the personal dashboard's "share by application"
+// breakdown has several slices to show.
+func serviceFor(u userDef) string {
+	if u.id == "dev" {
+		return services[rand.IntN(len(services))]
+	}
+	return u.service
+}
+
 func buildBatch(t time.Time, active []userDef) *colmetrics.ExportMetricsServiceRequest {
 	tsNano := uint64(t.UnixNano())
 	bySvc := map[string][]*metrics.Metric{}
 
 	for _, u := range active {
-		svc := u.service
+		svc := serviceFor(u)
 		m := modelFor(u)
 		op := opFor(svc, m)
 		factor := spikeFactor(t, svc, u.id)
@@ -403,7 +414,7 @@ func randID(n int) []byte {
 func buildTraces(t time.Time, active []userDef) *coltrace.ExportTraceServiceRequest {
 	var rms []*tracepb.ResourceSpans
 	for _, u := range active {
-		spans := buildUserTrace(t, u, u.service)
+		spans := buildUserTrace(t, u, serviceFor(u))
 		if len(spans) == 0 {
 			continue
 		}

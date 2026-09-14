@@ -3,18 +3,49 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useLocation,
   useSearch,
 } from '@tanstack/react-router'
-import { DashProvider, validateSearch } from './dash'
+import { DashProvider, MeProvider, useMe, validateSearch } from './dash'
 import type { DashSearch } from './dash'
 import { Header } from './components/Header'
 import { FilterBar } from './components/FilterBar'
 import { Overview } from './pages/Overview'
+import { Personal } from './pages/Personal'
 import { Traces } from './pages/Traces'
 import { Anomalies } from './pages/Anomalies'
 import { Customers } from './pages/Customers'
 import { Operations } from './pages/Operations'
 import { Finops } from './pages/Finops'
+
+// Shell decides what the authenticated caller may see. Admins get the full
+// org-wide dashboard (nav + the routed page); everyone else sees only their
+// personal usage, with no nav or filter bar, whatever route they land on. The
+// filter bar is also hidden on the personal view for admins, since the personal
+// endpoints are scoped to the caller and ignore those filters.
+function Shell() {
+  const { me, loading } = useMe()
+  const { pathname } = useLocation()
+  if (loading) {
+    return <div className="py-20 text-center text-sm text-gray-400 dark:text-gray-600">Loading…</div>
+  }
+  if (!me?.admin) {
+    return (
+      <>
+        <Header personalOnly />
+        <Personal />
+      </>
+    )
+  }
+  const isPersonal = pathname === '/' || pathname.endsWith('/personal')
+  return (
+    <>
+      <Header personalRange={isPersonal} />
+      {!isPersonal && <FilterBar />}
+      <Outlet />
+    </>
+  )
+}
 
 function Layout() {
   const search = useSearch({ strict: false }) as DashSearch
@@ -22,9 +53,9 @@ function Layout() {
     <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         <DashProvider search={search}>
-          <Header />
-          <FilterBar />
-          <Outlet />
+          <MeProvider>
+            <Shell />
+          </MeProvider>
         </DashProvider>
       </div>
     </div>
@@ -37,7 +68,8 @@ const rootRoute = createRootRoute({
 })
 
 const pages = [
-  { path: '/', component: Overview },
+  { path: '/', component: Personal },
+  { path: '/overview', component: Overview },
   { path: '/anomalies', component: Anomalies },
   { path: '/customers', component: Customers },
   { path: '/finops', component: Finops },

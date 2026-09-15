@@ -310,7 +310,7 @@ export interface UsageBucket {
   tokens: TokenTotals
 }
 
-// UsageResponse is GET /personal/usage: the caller's own cost and token totals,
+// UsageResponse is GET /api/personal/usage: the caller's own cost and token totals,
 // with per-interval buckets when an interval is requested.
 export interface UsageResponse {
   cost: number
@@ -318,7 +318,7 @@ export interface UsageResponse {
   buckets?: UsageBucket[]
 }
 
-// UsageByAppRow is GET /personal/usage-by-app: the caller's cost and tokens
+// UsageByAppRow is GET /api/personal/usage-by-app: the caller's cost and tokens
 // grouped by application.
 export interface UsageByAppRow {
   app: string

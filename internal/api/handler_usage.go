@@ -82,7 +82,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// usageByApp serves GET /personal/usage-by-app: the caller's cost and token
+// usageByApp serves GET /api/personal/usage-by-app: the caller's cost and token
 // consumption grouped by application, for the personal "share by application"
 // breakdown. Scoped to the authenticated user, exactly like usage.
 func (h *Handler) usageByApp(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +104,7 @@ func (h *Handler) usageByApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
-// usageContextHistogram serves GET /personal/context-histogram: the caller's
+// usageContextHistogram serves GET /api/personal/context-histogram: the caller's
 // own LLM calls binned by prompt size, for the personal "context size" chart.
 // Scoped to the authenticated user, exactly like usage and usageByApp.
 func (h *Handler) usageContextHistogram(w http.ResponseWriter, r *http.Request) {

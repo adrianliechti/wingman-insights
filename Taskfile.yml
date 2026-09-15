@@ -56,9 +56,9 @@ tasks:
       - mkdir -p web/dist
       - test -f web/dist/index.html || printf '<!doctype html><p>dev stub — use the Vite dev server on :5173</p>' > web/dist/index.html
       # No oauth2-proxy in front of the dev server, so auth defaults off here;
-      # an explicit COMPANION_AUTH_DISABLED (e.g. from .env) still wins.
-      # COMPANION_DEV_ADMIN=true (via the dev-admin task) shows the org-wide dashboard.
-      - COMPANION_AUTH_DISABLED=${COMPANION_AUTH_DISABLED:-true} COMPANION_DEV_ADMIN=${COMPANION_DEV_ADMIN:-{{.DEV_ADMIN | default "false"}}} go run .
+      # an explicit INSIGHTS_AUTH_DISABLED (e.g. from .env) still wins.
+      # INSIGHTS_DEV_ADMIN=true (via the dev-admin task) shows the org-wide dashboard.
+      - INSIGHTS_AUTH_DISABLED=${INSIGHTS_AUTH_DISABLED:-true} INSIGHTS_DEV_ADMIN=${INSIGHTS_DEV_ADMIN:-{{.DEV_ADMIN | default "false"}}} go run .
 
   dev-web:
     internal: true

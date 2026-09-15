@@ -147,7 +147,7 @@ function CostChart({
 // AppShareChart shows the caller's request cost split by application as a
 // doughnut with a matching legend.
 function AppShareChart() {
-  const { data, loading } = useApi<UsageByAppRow[]>('/personal/usage-by-app')
+  const { data, loading } = useApi<UsageByAppRow[]>('/api/personal/usage-by-app')
   const blue = useChartBlue()
   if (loading) return <PanelMessage>Loading…</PanelMessage>
   const rows = (data ?? []).filter((r) => r.cost > 0 || tokenVolume(r.tokens) > 0)
@@ -285,12 +285,12 @@ export function Personal() {
   const hourly = spanMs <= 26 * 3600e3
   const bucketCount = Math.max(1, Math.ceil(spanMs / (hourly ? 3600e3 : 24 * 3600e3)))
   const alignedFrom = latestBucketStart(to, bucketCount, hourly)
-  const usage = useApi<UsageResponse>('/personal/usage', {
+  const usage = useApi<UsageResponse>('/api/personal/usage', {
     from: alignedFrom,
     to,
     interval: hourly ? '1 hour' : '1 day',
   })
-  const contextHist = useApi<ContextBucketRow[]>('/personal/context-histogram')
+  const contextHist = useApi<ContextBucketRow[]>('/api/personal/context-histogram')
 
   const data = usage.data
   const buckets = data?.buckets ?? []

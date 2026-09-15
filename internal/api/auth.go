@@ -35,11 +35,11 @@ func adminFromContext(ctx context.Context) bool {
 // adminGroup is the JWT groups-claim value that enables the org-wide dashboard
 // in the SPA and authorizes its endpoints after oauth2-proxy authenticates.
 func adminGroup() string {
-	return os.Getenv("COMPANION_ADMIN_GROUP")
+	return os.Getenv("INSIGHTS_ADMIN_GROUP")
 }
 
 func newAuthFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
-	if os.Getenv("COMPANION_AUTH_DISABLED") == "true" {
+	if os.Getenv("INSIGHTS_AUTH_DISABLED") == "true" {
 		return nil
 	}
 
@@ -47,7 +47,7 @@ func newAuthFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
 	audience := os.Getenv("COMPANION_API_AUDIENCE")
 
 	if issuer == "" || audience == "" {
-		log.Fatal("oidc: COMPANION_API_ISSUER and COMPANION_API_AUDIENCE are required; set COMPANION_AUTH_DISABLED=true to disable auth")
+		log.Fatal("oidc: COMPANION_API_ISSUER and COMPANION_API_AUDIENCE are required; set INSIGHTS_AUTH_DISABLED=true to disable auth")
 	}
 
 	provider, err := oidc.NewProvider(ctx, issuer)
@@ -59,7 +59,7 @@ func newAuthFromEnv(ctx context.Context) *oidc.IDTokenVerifier {
 	// No admin group means the SPA shows the personal view to everyone and no
 	// caller may use the org-wide endpoints.
 	if adminGroup() == "" {
-		log.Print("auth: COMPANION_ADMIN_GROUP is unset; the SPA will show the personal view to all users and org-wide endpoints are disabled.")
+		log.Print("auth: INSIGHTS_ADMIN_GROUP is unset; the SPA will show the personal view to all users and org-wide endpoints are disabled.")
 	}
 
 	return provider.Verifier(&oidc.Config{ClientID: audience})
@@ -112,7 +112,7 @@ func (h *Handler) withForwardedIdentity(next http.HandlerFunc) http.HandlerFunc 
 			// Local development has no oauth2-proxy. Keep its behavior explicit
 			// and consistent with the direct-token middleware.
 			ctx := context.WithValue(r.Context(), userContextKey, "dev")
-			ctx = context.WithValue(ctx, adminContextKey, os.Getenv("COMPANION_DEV_ADMIN") == "true")
+			ctx = context.WithValue(ctx, adminContextKey, os.Getenv("INSIGHTS_DEV_ADMIN") == "true")
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -177,11 +177,11 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			oid = claims.OID
 			admin = isAdmin(claims.Groups)
 		} else {
-			// Auth disabled (COMPANION_AUTH_DISABLED=true): dev mode. Default the
+			// Auth disabled (INSIGHTS_AUTH_DISABLED=true): dev mode. Default the
 			// developer to the personal-usage view, matching the product default;
-			// set COMPANION_DEV_ADMIN=true to see the org-wide dashboard locally.
+			// set INSIGHTS_DEV_ADMIN=true to see the org-wide dashboard locally.
 			oid = "dev"
-			admin = os.Getenv("COMPANION_DEV_ADMIN") == "true"
+			admin = os.Getenv("INSIGHTS_DEV_ADMIN") == "true"
 		}
 
 		ctx := context.WithValue(r.Context(), userContextKey, oid)

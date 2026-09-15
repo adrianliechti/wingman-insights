@@ -311,7 +311,7 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 // oauth2-proxy has already verified the forwarded token. This middleware must
 // only decode its claims for the proxied routes, rather than verifying it again.
 func TestWithForwardedIdentity(t *testing.T) {
-	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
 	proxyKey := newTestKey(t)
 	// Use a different verifier key to prove no local signature check occurs.
 	h := makeHandler(newTestKey(t).verifier)
@@ -320,7 +320,7 @@ func TestWithForwardedIdentity(t *testing.T) {
 	var gotOID string
 	var gotAdmin bool
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/personal/usage", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
 	req.Header.Set("X-Forwarded-Access-Token", raw)
 	h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
 		gotOID = userFromContext(r.Context())
@@ -342,7 +342,7 @@ func TestWithForwardedIdentity(t *testing.T) {
 func TestWithForwardedIdentityRejectsMalformedToken(t *testing.T) {
 	h := makeHandler(newTestKey(t).verifier)
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/personal/usage", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
 	req.Header.Set("X-Forwarded-Access-Token", "not-a-jwt")
 	h.withForwardedIdentity(recordingHandler(new(string)))(rr, req)
 
@@ -352,7 +352,7 @@ func TestWithForwardedIdentityRejectsMalformedToken(t *testing.T) {
 }
 
 func TestWithForwardedAdmin(t *testing.T) {
-	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
 	proxyKey := newTestKey(t)
 	// A different verifier proves the forwarded token is decoded, not verified.
 	h := makeHandler(newTestKey(t).verifier)
@@ -380,7 +380,7 @@ func TestWithForwardedAdmin(t *testing.T) {
 }
 
 func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
-	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
 	proxyKey := newTestKey(t)
 	h := makeHandler(newTestKey(t).verifier)
 	mux := http.NewServeMux()
@@ -502,7 +502,7 @@ func TestIsAdmin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("COMPANION_ADMIN_GROUP", tc.env)
+			t.Setenv("INSIGHTS_ADMIN_GROUP", tc.env)
 			if got := isAdmin(tc.groups); got != tc.want {
 				t.Errorf("isAdmin(%v) with env %q = %v, want %v", tc.groups, tc.env, got, tc.want)
 			}
@@ -513,7 +513,7 @@ func TestIsAdmin(t *testing.T) {
 // TestWithAuthAdminPropagated verifies the admin flag derived from the groups
 // claim reaches the handler context.
 func TestWithAuthAdminPropagated(t *testing.T) {
-	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
 	k := newTestKey(t)
 	h := makeHandler(k.verifier)
 
@@ -549,7 +549,7 @@ func TestWithAuthAdminPropagated(t *testing.T) {
 // TestWithAdminGate verifies withAdmin returns 403 for a non-admin token, 200
 // for an admin token, and lets everyone through when auth is disabled.
 func TestWithAdminGate(t *testing.T) {
-	t.Setenv("COMPANION_ADMIN_GROUP", "admins")
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
 	k := newTestKey(t)
 	h := makeHandler(k.verifier)
 	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
@@ -586,7 +586,7 @@ func TestWithAdminGate(t *testing.T) {
 	})
 
 	t.Run("auth disabled defaults to non-admin (personal only)", func(t *testing.T) {
-		t.Setenv("COMPANION_DEV_ADMIN", "")
+		t.Setenv("INSIGHTS_DEV_ADMIN", "")
 		noAuth := makeHandler(nil)
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -596,8 +596,8 @@ func TestWithAdminGate(t *testing.T) {
 		}
 	})
 
-	t.Run("auth disabled with COMPANION_DEV_ADMIN passes as admin", func(t *testing.T) {
-		t.Setenv("COMPANION_DEV_ADMIN", "true")
+	t.Run("auth disabled with INSIGHTS_DEV_ADMIN passes as admin", func(t *testing.T) {
+		t.Setenv("INSIGHTS_DEV_ADMIN", "true")
 		noAuth := makeHandler(nil)
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)

@@ -57,7 +57,7 @@ func (h *Handler) debugToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.verifier == nil {
-		resp.VerifyError = "auth disabled (COMPANION_AUTH_DISABLED=true); token not verified"
+		resp.VerifyError = "auth disabled (INSIGHTS_AUTH_DISABLED=true); token not verified"
 	} else if _, err := h.verifier.Verify(r.Context(), raw); err != nil {
 		resp.VerifyError = err.Error()
 	} else {

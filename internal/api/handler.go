@@ -38,13 +38,13 @@ func (g routeGroup) getWithForwardedAdmin(path string, fn http.HandlerFunc) {
 }
 
 func (h *Handler) RegisterPersonal(mux *http.ServeMux) {
-	// /personal is behind oauth2-proxy. The proxy has already verified the
+	// /api/personal is behind oauth2-proxy. The proxy has already verified the
 	// request, so decode its forwarded token solely to find the caller's OID.
-	personal := routeGroup{mux, "/personal", h}
+	personal := routeGroup{mux, apiBase + "/personal", h}
 	personal.getWithForwardedIdentity("/usage", h.usage)
 	personal.getWithForwardedIdentity("/usage-by-app", h.usageByApp)
 	personal.getWithForwardedIdentity("/context-histogram", h.usageContextHistogram)
-	mux.HandleFunc("/personal/", http.NotFound)
+	mux.HandleFunc(apiBase+"/personal/", http.NotFound)
 
 	// /companion is intentionally outside oauth2-proxy. It remains a direct
 	// bearer-token API and therefore verifies its token locally.
@@ -120,4 +120,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	httpg.getWithForwardedAdmin("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
 	httpg.getWithForwardedAdmin("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
 	httpg.getWithForwardedAdmin("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
+
+	// debugToken deliberately enforces no auth so it can inspect a rejected
+	// token (e.g. an audience mismatch); it never trusts the token it reports.
+	mux.HandleFunc("GET "+apiBase+"/debug/token", h.debugToken)
 }

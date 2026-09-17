@@ -4,7 +4,7 @@ import type { UsageByAppRow, UsageResponse, ContextBucketRow } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { Bar, Line, ChartLegend, Doughnut, PALETTE, chartOptions, useChartBlue, CHART } from '../components/charts'
-import { fmtTokens } from '../lib/format'
+import { fmtTokens, fmtModelName } from '../lib/format'
 import { format } from 'date-fns'
 import { BarChart3, LineChart } from 'lucide-react'
 
@@ -96,12 +96,14 @@ function ShareBars({
   fmt,
   colorFor,
   rateFor,
+  labelFor,
   limit = 5,
 }: {
   rows: { label: string; value: number }[]
   fmt: (v: number) => string
   colorFor: (label: string) => string
   rateFor?: (label: string) => ModelRate | undefined
+  labelFor?: (label: string) => string
   limit?: number
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -119,7 +121,7 @@ function ShareBars({
           <div key={r.label}>
             <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
               <span className="flex min-w-0 items-baseline gap-1.5">
-                <span className="truncate text-gray-700 dark:text-gray-300">{r.label}</span>
+                <span className="truncate text-gray-700 dark:text-gray-300">{labelFor ? labelFor(r.label) : r.label}</span>
                 {rateFor && <PriceBadge rate={rateFor(r.label)} />}
               </span>
               <span className="shrink-0 tabular-nums text-gray-500">
@@ -453,11 +455,11 @@ export function Personal() {
       </div>
 
       <Panel title="Usage by Model" sub="Share of token volume">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} />}
       </Panel>
 
       <Panel title="Cost by Model" sub="Share of estimated spend">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} />}
       </Panel>
 
       <Panel title="By Application" sub="Share of token volume">

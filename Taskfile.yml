@@ -8,6 +8,7 @@ vars:
 tasks:
   publish:
     desc: Build and push multi-arch Docker image
+    deps: [pricing-update]
     cmds:
       - docker buildx build . --push --platform linux/amd64,linux/arm64 --tag {{.REPOSITORY}}
 

@@ -5,8 +5,9 @@ import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { Bar, Line, ChartLegend, Doughnut, PALETTE, chartOptions, useChartBlue, CHART } from '../components/charts'
 import { fmtTokens, fmtModelName } from '../lib/format'
+import { priceTier, tierRate, type ModelRate } from '../lib/costs'
 import { format } from 'date-fns'
-import { BarChart3, LineChart } from 'lucide-react'
+import { BarChart3, LineChart, Lightbulb, Coins, MessageSquareDashed } from 'lucide-react'
 
 // ChartType toggles the estimated-cost chart between grouped bars and a trend line.
 type ChartType = 'bar' | 'line'
@@ -34,29 +35,6 @@ function tokenVolume(t: { input: number; output: number; cached: number }): numb
 // visually distinct.
 const MODEL_PALETTE = PALETTE.filter((c) => c !== CHART.blue)
 
-// PriceTier classifies a model by its blended $/1M-token rate. The thresholds
-// split the common catalog spread: cheap workhorses (< $2/1M), mid-tier (< $10),
-// and premium frontier models. Unpriced models (rate 0) fall through to null.
-interface PriceTier {
-  dollars: number
-  label: string
-}
-
-// ModelRate is a model's derived $/1M-token rates: the blended rate that drives
-// the tier badge, plus the directional input/output rates shown on hover.
-interface ModelRate {
-  blended: number
-  input: number
-  output: number
-}
-
-function priceTier(ratePerM: number): PriceTier | null {
-  if (ratePerM <= 0) return null
-  if (ratePerM < 2) return { dollars: 1, label: 'Budget' }
-  if (ratePerM < 10) return { dollars: 2, label: 'Standard' }
-  return { dollars: 3, label: 'Premium' }
-}
-
 // fmtRate renders a $/1M rate with cent precision below $100, whole dollars above.
 function fmtRate(rate: number): string {
   return '$' + (rate >= 100 ? rate.toFixed(0) : rate.toFixed(2))
@@ -65,7 +43,7 @@ function fmtRate(rate: number): string {
 // PriceBadge renders the tier as filled/dimmed dollar signs with a hover
 // popover breaking the blended rate into its input and output components.
 function PriceBadge({ rate }: { rate?: ModelRate }) {
-  const tier = rate ? priceTier(rate.blended) : null
+  const tier = rate ? priceTier(tierRate(rate)) : null
   if (!rate || !tier) return null
   return (
     <span className="group relative inline-flex shrink-0 cursor-default items-center font-medium tabular-nums">
@@ -91,6 +69,102 @@ function PriceBadge({ rate }: { rate?: ModelRate }) {
   )
 }
 
+// Hint is one actionable suggestion for the caller, derived from their own
+// usage. `id` keys the list; `Icon` and `tone` colour the card by theme.
+interface Hint {
+  id: string
+  Icon: typeof Lightbulb
+  title: string
+  body: string
+}
+
+// Minimum activity floors so trivial usage doesn't trigger a hint: a share
+// threshold on its own fires at 100% off a single small call. MIN_PREMIUM_SPEND
+// is the least premium cost (USD) worth flagging; MIN_LONG_CONTEXT_CALLS the
+// least number of large-prompt calls that counts as a pattern.
+const MIN_PREMIUM_SPEND = 20
+const MIN_LONG_CONTEXT_CALLS = 20
+
+// deriveHints turns the caller's model mix and prompt-size distribution into
+// coaching tips. It only surfaces a hint when its threshold is clearly crossed,
+// so a light user isn't nagged; each hint states the observed share so the
+// suggestion is grounded in their actual numbers.
+function deriveHints(
+  modelCost: { label: string; value: number }[],
+  rateFor: (label: string) => ModelRate | undefined,
+  contextRows: ContextBucketRow[] | null,
+): Hint[] {
+  const hints: Hint[] = []
+
+  // Premium-model spend: what share of cost went to models whose blended rate
+  // lands in the top tier. A majority of spend on premium frontier models is
+  // the signal that a cheaper model might cover some of the work.
+  const totalCost = modelCost.reduce((a, r) => a + r.value, 0)
+  if (totalCost > 0) {
+    const premiumCost = modelCost.reduce((a, r) => {
+      const rate = rateFor(r.label)
+      const tier = rate ? priceTier(tierRate(rate)) : null
+      return a + (tier?.dollars === 3 ? r.value : 0)
+    }, 0)
+    const premiumShare = premiumCost / totalCost
+    // Require a floor of actual premium spend so a single small premium call
+    // (100% share of a few cents) doesn't trip the hint — only real, sustained
+    // premium usage is worth suggesting a switch for.
+    if (premiumShare >= 0.6 && premiumCost >= MIN_PREMIUM_SPEND) {
+      hints.push({
+        id: 'premium-models',
+        Icon: Coins,
+        title: 'Try a cheaper model for routine work',
+        body: `${(premiumShare * 100).toFixed(0)}% of your spend is on premium models. For everyday drafting, edits and simple questions, a budget or standard model often gives comparable results at a fraction of the cost.`,
+      })
+    }
+  }
+
+  // Long contexts: share of calls that landed in the long-context bins, which
+  // bill at premium rates. A meaningful tail suggests chats are growing large
+  // and a fresh conversation would trim the prompt back down.
+  const rows = contextRows ?? []
+  const totalCalls = rows.reduce((a, r) => a + r.requests, 0)
+  if (totalCalls > 0) {
+    const longCalls = rows
+      .filter((r) => r.bucket === '200k–272k' || r.bucket === '> 272k')
+      .reduce((a, r) => a + r.requests, 0)
+    const longShare = longCalls / totalCalls
+    // A single large-context call shouldn't nag; require a minimum count of
+    // them alongside the share so the pattern is a habit, not a one-off.
+    if (longShare >= 0.15 && longCalls >= MIN_LONG_CONTEXT_CALLS) {
+      hints.push({
+        id: 'long-context',
+        Icon: MessageSquareDashed,
+        title: 'Start a new chat to shrink long prompts',
+        body: `${(longShare * 100).toFixed(0)}% of your calls carry very large prompts that bill at long-context rates. Starting a fresh conversation once a chat gets long keeps prompts — and cost — smaller.`,
+      })
+    }
+  }
+
+  return hints
+}
+
+// HintCards renders the derived suggestions as a compact list.
+function HintCards({ hints }: { hints: Hint[] }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {hints.map(({ id, Icon, title, body }) => (
+        <div
+          key={id}
+          className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/30"
+        >
+          <Icon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" strokeWidth={2} />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-gray-600 dark:text-gray-400">{body}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ShareBars({
   rows,
   fmt,
@@ -98,6 +172,8 @@ function ShareBars({
   rateFor,
   labelFor,
   limit = 5,
+  expanded: expandedProp,
+  onToggle,
 }: {
   rows: { label: string; value: number }[]
   fmt: (v: number) => string
@@ -105,8 +181,14 @@ function ShareBars({
   rateFor?: (label: string) => ModelRate | undefined
   labelFor?: (label: string) => string
   limit?: number
+  expanded?: boolean
+  onToggle?: () => void
 }) {
-  const [expanded, setExpanded] = useState(false)
+  // Expansion is controlled when the caller passes `expanded`/`onToggle` (so
+  // sibling breakdowns expand together), else self-managed.
+  const [expandedState, setExpandedState] = useState(false)
+  const expanded = expandedProp ?? expandedState
+  const toggle = onToggle ?? (() => setExpandedState((v) => !v))
   const total = rows.reduce((acc, r) => acc + r.value, 0)
   const sorted = [...rows].filter((r) => r.value > 0).sort((a, b) => b.value - a.value)
   if (sorted.length === 0) return <PanelMessage>No data</PanelMessage>
@@ -136,7 +218,7 @@ function ShareBars({
       })}
       {sorted.length > limit && (
         <button
-          onClick={() => setExpanded((v) => !v)}
+          onClick={toggle}
           className="cursor-pointer self-start text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
         >
           {expanded ? 'Show less' : `Show ${hidden} more`}
@@ -342,6 +424,7 @@ function fillCostSeries(
 export function Personal() {
   const { to, spanMs } = useDash()
   const [costChartType, setCostChartType] = useState<ChartType>('bar')
+  const [modelExpanded, setModelExpanded] = useState(false)
 
   // The cost chart uses one full set of clock-hour or calendar-day buckets,
   // including the current partial bucket. Selecting 24h/7d therefore produces
@@ -408,6 +491,8 @@ export function Personal() {
     .forEach(([label], i) => modelColor.set(label, MODEL_PALETTE[i % MODEL_PALETTE.length]))
   const colorForModel = (label: string) => modelColor.get(label) ?? MODEL_PALETTE[0]
 
+  const hints = deriveHints(modelCost, rateForModel, contextHist.data)
+
   const total = t ? tokenVolume(t) : 0
 
   const tokenStats = [
@@ -418,6 +503,12 @@ export function Personal() {
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      {hints.length > 0 && (
+        <div className="lg:col-span-2">
+          <HintCards hints={hints} />
+        </div>
+      )}
+
       <section className="rounded-lg border border-gray-200 p-5 lg:col-span-2 dark:border-gray-800">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
@@ -455,11 +546,11 @@ export function Personal() {
       </div>
 
       <Panel title="Usage by Model" sub="Share of token volume">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />}
       </Panel>
 
       <Panel title="Cost by Model" sub="Share of estimated spend">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />}
       </Panel>
 
       <Panel title="By Application" sub="Share of token volume">

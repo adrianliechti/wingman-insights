@@ -49,14 +49,15 @@ type userDef struct {
 var (
 	services  = []string{"chat-api", "agent-service", "embedding-worker"}
 	modelDefs = []modelDef{
-		{"openai", "gpt-4o", 800, 400, false},                      // 0 premium
+		{"openai", "gpt-4o", 800, 400, false},                      // 0 standard
 		{"openai", "gpt-4o-mini", 500, 250, false},                 // 1 cheap
 		{"anthropic", "claude-sonnet-4-20250514", 1200, 600, true}, // 2 premium
 		{"anthropic", "claude-haiku-4-5", 400, 200, false},         // 3 cheap
 		{"gcp.gemini", "gemini-2.0-flash", 600, 300, true},         // 4 cheap
-		{"openai", "gpt-5.5", 30000, 1200, true},                   // 5 premium, long-context tiered
+		{"openai", "gpt-5.5", 30000, 1200, true},                   // 5 standard, long-context tiered
+		{"anthropic", "claude-opus-5", 30000, 1500, true},          // 6 premium, long-context tiered
 	}
-	premiumModels = []int{0, 2, 5}
+	premiumModels = []int{2, 6}
 	cheapModels   = []int{1, 3, 4}
 	firstNames    = []string{
 		"alice", "bob", "carol", "dave", "eve", "frank", "grace", "heidi",
@@ -252,9 +253,13 @@ func opFor(svc string, m modelDef) string {
 }
 
 // modelFor biases model choice by engagement: power users lean premium, casual
-// users lean cheap — so model-preference-by-segment shows a real split.
+// users lean cheap — so model-preference-by-segment shows a real split. The
+// pinned "dev" user leans hard on the premium long-context model so the local
+// personal dashboard reliably shows the premium-spend and long-context hints.
 func modelFor(u userDef) modelDef {
 	switch {
+	case u.id == "dev" && rand.Float64() < 0.5:
+		return modelDefs[6] // claude-opus-5
 	case u.intensity > 0.55 && rand.Float64() < 0.7:
 		return modelDefs[premiumModels[rand.IntN(len(premiumModels))]]
 	case u.intensity < 0.2 && rand.Float64() < 0.7:
@@ -464,11 +469,12 @@ func buildUserTrace(t time.Time, u userDef, svc string) []*tracepb.Span {
 		outTok := int64(jitter(m.avgOut, 0.5) * factor)
 		cacheCreation, cacheRead := cacheTokens(m, "chat", m.avgIn*factor)
 		inTok := int64(jitter(m.avgIn, 0.5)*factor) + int64(cacheCreation) + int64(cacheRead)
-		// gpt-5.5 sessions occasionally dump huge contexts (doc sets, long agent
-		// histories) so the context-size histogram has a real tail and some calls
-		// cross the 272k threshold where long-context pricing doubles the rate.
-		if m.model == "gpt-5.5" && rand.Float64() < 0.3 {
-			inTok = int64(jitter(260_000, 0.8))
+		// The premium long-context model regularly dumps huge contexts (doc
+		// sets, long agent histories) so the context-size histogram has a real
+		// tail and a meaningful share of calls cross the 272k threshold where
+		// long-context pricing doubles the rate.
+		if m.model == "claude-opus-5" && rand.Float64() < 0.5 {
+			inTok = int64(jitter(320_000, 0.15))
 		}
 		var reasoning int64
 		if m.reasons && rand.Float64() < 0.6 {

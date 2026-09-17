@@ -34,15 +34,74 @@ function tokenVolume(t: { input: number; output: number; cached: number }): numb
 // visually distinct.
 const MODEL_PALETTE = PALETTE.filter((c) => c !== CHART.blue)
 
+// PriceTier classifies a model by its blended $/1M-token rate. The thresholds
+// split the common catalog spread: cheap workhorses (< $2/1M), mid-tier (< $10),
+// and premium frontier models. Unpriced models (rate 0) fall through to null.
+interface PriceTier {
+  dollars: number
+  label: string
+}
+
+// ModelRate is a model's derived $/1M-token rates: the blended rate that drives
+// the tier badge, plus the directional input/output rates shown on hover.
+interface ModelRate {
+  blended: number
+  input: number
+  output: number
+}
+
+function priceTier(ratePerM: number): PriceTier | null {
+  if (ratePerM <= 0) return null
+  if (ratePerM < 2) return { dollars: 1, label: 'Budget' }
+  if (ratePerM < 10) return { dollars: 2, label: 'Standard' }
+  return { dollars: 3, label: 'Premium' }
+}
+
+// fmtRate renders a $/1M rate with cent precision below $100, whole dollars above.
+function fmtRate(rate: number): string {
+  return '$' + (rate >= 100 ? rate.toFixed(0) : rate.toFixed(2))
+}
+
+// PriceBadge renders the tier as filled/dimmed dollar signs with a hover
+// popover breaking the blended rate into its input and output components.
+function PriceBadge({ rate }: { rate?: ModelRate }) {
+  const tier = rate ? priceTier(rate.blended) : null
+  if (!rate || !tier) return null
+  return (
+    <span className="group relative inline-flex shrink-0 cursor-default items-center font-medium tabular-nums">
+      {[1, 2, 3].map((i) => (
+        <span
+          key={i}
+          className={i <= tier.dollars ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-300 dark:text-gray-700'}
+        >
+          $
+        </span>
+      ))}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden w-max -translate-x-1/2 rounded-md bg-gray-900 px-2.5 py-2 text-left text-[11px] font-normal text-white shadow-lg group-hover:block dark:bg-gray-700">
+        <span className="flex items-center justify-between gap-4">
+          <span className="text-gray-300 dark:text-gray-400">Input</span>
+          <span>{rate.input > 0 ? `${fmtRate(rate.input)}/1M` : '—'}</span>
+        </span>
+        <span className="flex items-center justify-between gap-4">
+          <span className="text-gray-300 dark:text-gray-400">Output</span>
+          <span>{rate.output > 0 ? `${fmtRate(rate.output)}/1M` : '—'}</span>
+        </span>
+      </span>
+    </span>
+  )
+}
+
 function ShareBars({
   rows,
   fmt,
   colorFor,
+  rateFor,
   limit = 5,
 }: {
   rows: { label: string; value: number }[]
   fmt: (v: number) => string
   colorFor: (label: string) => string
+  rateFor?: (label: string) => ModelRate | undefined
   limit?: number
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -59,7 +118,10 @@ function ShareBars({
         return (
           <div key={r.label}>
             <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
-              <span className="truncate text-gray-700 dark:text-gray-300">{r.label}</span>
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="truncate text-gray-700 dark:text-gray-300">{r.label}</span>
+                {rateFor && <PriceBadge rate={rateFor(r.label)} />}
+              </span>
               <span className="shrink-0 tabular-nums text-gray-500">
                 {fmt(r.value)} · {pct.toFixed(2)}%
               </span>
@@ -305,16 +367,35 @@ export function Personal() {
   const costSeries = fillCostSeries(costTotals, alignedFrom, to, hourly)
 
   // Per-model usage (token volume) and cost share, folded from the same buckets.
-  const byModel = new Map<string, { tokens: number; cost: number }>()
+  const byModel = new Map<string, { tokens: number; cost: number; inputCost: number; outputCost: number; inputTokens: number; outputTokens: number }>()
   for (const b of buckets) {
     const key = b.model || 'unknown'
-    const cur = byModel.get(key) ?? { tokens: 0, cost: 0 }
+    const cur = byModel.get(key) ?? { tokens: 0, cost: 0, inputCost: 0, outputCost: 0, inputTokens: 0, outputTokens: 0 }
     cur.tokens += tokenVolume(b.tokens)
     cur.cost += b.cost
+    cur.inputCost += b.input_cost
+    cur.outputCost += b.output_cost
+    cur.inputTokens += b.tokens.input + b.tokens.cached
+    cur.outputTokens += b.tokens.output
     byModel.set(key, cur)
   }
   const modelTokens = [...byModel.entries()].map(([label, v]) => ({ label, value: v.tokens }))
   const modelCost = [...byModel.entries()].map(([label, v]) => ({ label, value: v.cost }))
+
+  // Per-model blended and directional $/1M-token rates, derived from the same
+  // folded buckets so each card can flag how expensive a model is — and why
+  // (input- vs output-heavy) — without a separate pricing call. Input tokens
+  // fold in cache (prompt-side), matching how input cost includes cache spend.
+  const perMillion = (cost: number, tokens: number) => (tokens > 0 ? (cost / tokens) * 1_000_000 : 0)
+  const modelRate = new Map<string, ModelRate>()
+  for (const [label, v] of byModel) {
+    modelRate.set(label, {
+      blended: perMillion(v.cost, v.tokens),
+      input: perMillion(v.inputCost, v.inputTokens),
+      output: perMillion(v.outputCost, v.outputTokens),
+    })
+  }
+  const rateForModel = (label: string) => modelRate.get(label)
 
   // Assign each model a stable color by its overall token volume, so a given
   // model shows the same color in both the "Usage by Model" and "Cost by Model"
@@ -372,11 +453,11 @@ export function Personal() {
       </div>
 
       <Panel title="Usage by Model" sub="Share of token volume">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} />}
       </Panel>
 
       <Panel title="Cost by Model" sub="Share of estimated spend">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} />}
+        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} />}
       </Panel>
 
       <Panel title="By Application" sub="Share of token volume">

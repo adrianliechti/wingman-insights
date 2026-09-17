@@ -20,10 +20,12 @@ type usageResponse struct {
 // consumption for a model over one interval. It intentionally omits the
 // underlying span count.
 type usageBucket struct {
-	Bucket time.Time         `json:"bucket"`
-	Cost   float64           `json:"cost"`
-	Model  string            `json:"model,omitempty"`
-	Tokens store.TokenTotals `json:"tokens"`
+	Bucket     time.Time         `json:"bucket"`
+	Cost       float64           `json:"cost"`
+	InputCost  float64           `json:"input_cost"`
+	OutputCost float64           `json:"output_cost"`
+	Model      string            `json:"model,omitempty"`
+	Tokens     store.TokenTotals `json:"tokens"`
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
@@ -55,10 +57,12 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 		resp.Tokens.Priced = true
 		for i, p := range points {
 			buckets[i] = usageBucket{
-				Bucket: p.Bucket,
-				Cost:   p.Cost,
-				Model:  p.Model,
-				Tokens: p.Tokens,
+				Bucket:     p.Bucket,
+				Cost:       p.Cost,
+				InputCost:  p.InputCost,
+				OutputCost: p.OutputCost,
+				Model:      p.Model,
+				Tokens:     p.Tokens,
 			}
 			resp.Cost += p.Cost
 			resp.Tokens.Input += p.Tokens.Input

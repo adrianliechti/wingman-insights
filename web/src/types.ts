@@ -306,6 +306,8 @@ export interface TokenTotals {
 export interface UsageBucket {
   bucket: string
   cost: number
+  input_cost: number
+  output_cost: number
   model?: string
   tokens: TokenTotals
 }

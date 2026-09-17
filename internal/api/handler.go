@@ -121,8 +121,4 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	httpg.getWithForwardedAdmin("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
 	httpg.getWithForwardedAdmin("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
 	httpg.getWithForwardedAdmin("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
-
-	// debugToken deliberately enforces no auth so it can inspect a rejected
-	// token (e.g. an audience mismatch); it never trusts the token it reports.
-	mux.HandleFunc("GET "+apiBase+"/debug/token", h.debugToken)
 }

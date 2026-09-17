@@ -242,7 +242,12 @@ type UsageBucketPoint struct {
 	Bucket time.Time
 	Model  string
 	Cost   float64
-	Tokens TokenTotals
+	// InputCost/OutputCost split Cost by billed direction (input covers the
+	// uncached prompt plus cache read/creation; output covers response plus
+	// reasoning), from the per-span materialized columns.
+	InputCost  float64
+	OutputCost float64
+	Tokens     TokenTotals
 }
 
 // QueryUsageTimeseries returns cost and token consumption per time bucket,
@@ -280,6 +285,8 @@ func (s *Store) queryUsageTimeseries(ctx context.Context, from, to time.Time, in
 			`+bucketExpr+` as bucket,
 			COALESCE(request_model, '') as model,
 			COALESCE(SUM(cost), 0) as cost,
+			COALESCE(SUM(input_cost + cache_read_cost + cache_creation_cost), 0) as input_cost,
+			COALESCE(SUM(output_cost), 0) as output_cost,
 			COALESCE(SUM(cache_savings), 0) as cache_savings,
 			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,`+spansPartCols+`
 		FROM genai_spans
@@ -298,7 +305,7 @@ func (s *Store) queryUsageTimeseries(ctx context.Context, from, to time.Time, in
 		var parts tokenParts
 		var cacheSavings float64
 		var priced bool
-		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &cacheSavings, &priced,
+		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &p.InputCost, &p.OutputCost, &cacheSavings, &priced,
 			&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning); err != nil {
 			return nil, err
 		}

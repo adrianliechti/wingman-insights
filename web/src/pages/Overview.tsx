@@ -130,9 +130,13 @@ export function Overview() {
         <div className="flex flex-col gap-6 rounded-lg border border-gray-200 px-6 py-5 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Estimated Cost</p>
-            <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
-              {fmtCost(spend)}
-            </p>
+            {costs.loading ? (
+              <div className="mt-2 h-11 w-40 animate-pulse rounded-md bg-gray-200 dark:bg-gray-800" />
+            ) : (
+              <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
+                {fmtCost(spend)}
+              </p>
+            )}
             <p className="mt-1 text-sm text-gray-500">
               {saved > 0 ? `${fmtCost(saved)} saved by cache · models.dev pricing` : 'models.dev pricing'}
             </p>

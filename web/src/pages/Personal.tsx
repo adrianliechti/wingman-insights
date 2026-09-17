@@ -512,9 +512,13 @@ export function Personal() {
       <section className="rounded-lg border border-gray-200 p-5 lg:col-span-2 dark:border-gray-800">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <p className="text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
-              {fmtUsd(data?.cost ?? 0)}
-            </p>
+            {usage.loading ? (
+              <div className="mt-2 h-11 w-40 animate-pulse rounded-md bg-gray-200 dark:bg-gray-800" />
+            ) : (
+              <p className="text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
+                {fmtUsd(data?.cost ?? 0)}
+              </p>
+            )}
             <p className="mt-1 text-sm text-gray-500">Estimated cost over time</p>
           </div>
           <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">

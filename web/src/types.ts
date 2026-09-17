@@ -285,9 +285,12 @@ export interface BurstRow {
 }
 
 // Me is the caller's identity and authorization, from GET /api/me. When admin
-// is false the SPA shows only the personal-usage view.
+// is false the SPA shows only the personal-usage view. user is the identity
+// forwarded by oauth2-proxy (typically the caller's email); name is the
+// resolved directory display name.
 export interface Me {
   user: string
+  name: string
   admin: boolean
 }
 

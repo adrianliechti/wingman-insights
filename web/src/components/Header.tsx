@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from '@tanstack/react-router'
-import { Boxes, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Menu, Moon, Receipt, RefreshCw, Sun, X } from 'lucide-react'
-import { useDash, useApi, useFilterNav } from '../dash'
+import { Boxes, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Menu, Monitor, Moon, Receipt, RefreshCw, Sun, User, X } from 'lucide-react'
+import { useDash, useApi, useFilterNav, useMe } from '../dash'
 import type { DashSearch, RangeKey } from '../dash'
 import type { UsageByAppRow } from '../types'
 import { MultiFilterSelect } from './FilterBar'
@@ -45,6 +45,23 @@ const SEG_ON = 'cursor-pointer rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs fo
 const SEG_OFF =
   'cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white sm:px-3'
 
+// Theme mode is the user's explicit choice; 'system' follows the OS preference
+// and is the default when nothing is stored. The persisted value drives the
+// pre-paint script in index.html.
+type ThemeMode = 'light' | 'dark' | 'system'
+
+function readThemeMode(): ThemeMode {
+  const v = localStorage.getItem('theme')
+  return v === 'light' || v === 'dark' ? v : 'system'
+}
+
+// applyThemeMode flips the `dark` class on <html> — the source of truth charts
+// observe — resolving 'system' against the OS preference.
+function applyThemeMode(mode: ThemeMode) {
+  const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.classList.toggle('dark', dark)
+}
+
 const NAV = [
   { to: '/', label: 'Personal' },
   { to: '/overview', label: 'Overview' },
@@ -70,6 +87,7 @@ export function Header({
   const dash = useDash()
   const navigate = useNavigate()
   const setFilter = useFilterNav()
+  const { me } = useMe()
   const isPersonalView = personalOnly || personalRange
   const { pathname } = useLocation()
   const currentPage = NAV.find((item) => (item.to === '/' ? pathname === '/' : pathname.startsWith(item.to)))
@@ -83,11 +101,13 @@ export function Header({
   // preset may render as selected while one is active.
   const customActive = !!dash.search.from
   const range = customActive ? undefined : (dash.search.range ?? '7d')
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useRef<HTMLDivElement>(null)
   const [navOpen, setNavOpen] = useState(false)
   const navRef = useRef<HTMLDivElement>(null)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const profileRef = useRef<HTMLDivElement>(null)
   const [viewMonth, setViewMonth] = useState(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -167,6 +187,30 @@ export function Header({
     }
   }, [navOpen])
 
+  useEffect(() => {
+    if (!profileOpen) return
+    function onDown(e: MouseEvent) {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setProfileOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [profileOpen])
+
+  useEffect(() => {
+    if (themeMode !== 'system') return
+    const mq = matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => applyThemeMode('system')
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [themeMode])
+
   function setSearch(patch: Partial<DashSearch>) {
     navigate({
       to: '.',
@@ -174,11 +218,11 @@ export function Header({
     })
   }
 
-  function toggleTheme() {
-    const next = !dark
-    setDark(next)
-    document.documentElement.classList.toggle('dark', next)
-    localStorage.setItem('theme', next ? 'dark' : 'light')
+  function chooseTheme(mode: ThemeMode) {
+    setThemeMode(mode)
+    if (mode === 'system') localStorage.removeItem('theme')
+    else localStorage.setItem('theme', mode)
+    applyThemeMode(mode)
   }
 
   const btn =
@@ -376,9 +420,49 @@ export function Header({
           <button onClick={() => dash.refresh()} className={btn} title="Refresh">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
-          <button onClick={toggleTheme} className={btn} title="Toggle theme">
-            {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          </button>
+          <div className="relative" ref={profileRef}>
+            <button onClick={() => setProfileOpen((o) => !o)} className={btn} title="Account">
+              <User className="h-3.5 w-3.5" />
+            </button>
+            {profileOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-800 dark:bg-gray-900">
+                <div className="px-3 py-2">
+                  <div className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                    {me?.name || me?.user || 'Unknown user'}
+                  </div>
+                  {me?.user && me.user !== me.name && (
+                    <div className="truncate text-xs text-gray-500 dark:text-gray-400">{me.user.toLowerCase()}</div>
+                  )}
+                </div>
+                <div className="my-1 h-px w-full bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
+                <div className="flex items-center justify-between px-3 py-1.5">
+                  <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">Theme</span>
+                  <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5 dark:border-gray-800 dark:bg-gray-800/50">
+                    {(
+                      [
+                        { mode: 'light', label: 'Light', icon: Sun },
+                        { mode: 'system', label: 'System', icon: Monitor },
+                        { mode: 'dark', label: 'Dark', icon: Moon },
+                      ] as { mode: ThemeMode; label: string; icon: typeof Sun }[]
+                    ).map(({ mode, label, icon: Icon }) => (
+                      <button
+                        key={mode}
+                        onClick={() => chooseTheme(mode)}
+                        title={label}
+                        className={`flex cursor-pointer items-center justify-center rounded-md p-1.5 transition-colors ${
+                          themeMode === mode
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+                        }`}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>

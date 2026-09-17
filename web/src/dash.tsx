@@ -139,7 +139,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
     let alive = true
     apiGet<Me>('/api/me', {})
       .then((me) => alive && setState({ me, loading: false }))
-      .catch(() => alive && setState({ me: { user: '', admin: false }, loading: false }))
+      .catch(() => alive && setState({ me: { user: '', name: '', admin: false }, loading: false }))
     return () => {
       alive = false
     }

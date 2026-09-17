@@ -178,6 +178,13 @@ func TestDirectoryMapping(t *testing.T) {
 	if stats[0].Name != "Alice" || stats[0].Requests != 2 || stats[0].Tokens != 60 {
 		t.Errorf("Alice stats = %+v, want name=Alice requests=2 tokens=60", stats[0])
 	}
+	count, err := s.QueryUserStatsCount(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatalf("user stats count: %v", err)
+	}
+	if count != int64(len(stats)) {
+		t.Errorf("user stats count = %d, want %d rows", count, len(stats))
+	}
 }
 
 // TestCostBreakdownEmailFallbackForDeletedUser guards the case that motivated

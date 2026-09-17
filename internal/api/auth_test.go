@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,20 +309,18 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 	}
 }
 
-// oauth2-proxy has already verified the forwarded token. This middleware must
-// only decode its claims for the proxied routes, rather than verifying it again.
+// oauth2-proxy has already authenticated the request. Proxied routes read its
+// forwarded identity headers and do not locally verify a token.
 func TestWithForwardedIdentity(t *testing.T) {
 	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
-	proxyKey := newTestKey(t)
-	// Use a different verifier key to prove no local signature check occurs.
 	h := makeHandler(newTestKey(t).verifier)
-	raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", []string{"admins"})
 
 	var gotOID string
 	var gotAdmin bool
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
-	req.Header.Set("X-Forwarded-Access-Token", raw)
+	req.Header.Set("X-Forwarded-User", "forwarded-user")
+	req.Header.Set("X-Forwarded-Groups", " users, admins ")
 	h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
 		gotOID = userFromContext(r.Context())
 		gotAdmin = adminFromContext(r.Context())
@@ -331,19 +330,19 @@ func TestWithForwardedIdentity(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
-	if gotOID != "forwarded-oid" {
-		t.Errorf("oid = %q, want %q", gotOID, "forwarded-oid")
+	if gotOID != "forwarded-user" {
+		t.Errorf("oid = %q, want %q", gotOID, "forwarded-user")
 	}
 	if !gotAdmin {
 		t.Error("admin = false, want true")
 	}
 }
 
-func TestWithForwardedIdentityRejectsMalformedToken(t *testing.T) {
+func TestWithForwardedIdentityRequiresUserHeader(t *testing.T) {
 	h := makeHandler(newTestKey(t).verifier)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
-	req.Header.Set("X-Forwarded-Access-Token", "not-a-jwt")
+	req.Header.Set("X-Forwarded-Groups", "admins")
 	h.withForwardedIdentity(recordingHandler(new(string)))(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -353,8 +352,6 @@ func TestWithForwardedIdentityRejectsMalformedToken(t *testing.T) {
 
 func TestWithForwardedAdmin(t *testing.T) {
 	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
-	proxyKey := newTestKey(t)
-	// A different verifier proves the forwarded token is decoded, not verified.
 	h := makeHandler(newTestKey(t).verifier)
 	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
 
@@ -367,10 +364,10 @@ func TestWithForwardedAdmin(t *testing.T) {
 		{name: "other group is forbidden", groups: []string{"users"}, want: http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", tc.groups)
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/api/filters", nil)
-			req.Header.Set("X-Forwarded-Access-Token", raw)
+			req.Header.Set("X-Forwarded-User", "forwarded-user")
+			req.Header.Set("X-Forwarded-Groups", strings.Join(tc.groups, ","))
 			h.withForwardedAdmin(ok)(rr, req)
 			if rr.Code != tc.want {
 				t.Fatalf("want %d, got %d", tc.want, rr.Code)
@@ -381,7 +378,6 @@ func TestWithForwardedAdmin(t *testing.T) {
 
 func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
 	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
-	proxyKey := newTestKey(t)
 	h := makeHandler(newTestKey(t).verifier)
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -395,10 +391,10 @@ func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
 		{name: "non-admin group", groups: []string{"users"}, want: http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := proxyKey.signTokenGroups(t, "proxy-audience", "forwarded-oid", tc.groups)
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-			req.Header.Set("X-Forwarded-Access-Token", raw)
+			req.Header.Set("X-Forwarded-User", "forwarded-user")
+			req.Header.Set("X-Forwarded-Groups", strings.Join(tc.groups, ","))
 			mux.ServeHTTP(rr, req)
 			if rr.Code != tc.want {
 				t.Fatalf("want %d, got %d", tc.want, rr.Code)

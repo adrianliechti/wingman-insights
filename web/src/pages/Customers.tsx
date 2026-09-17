@@ -1,7 +1,6 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import type {
-  ActiveUsersRow,
   AppAdoptionRow,
   CohortCell,
   ModelPreferenceRow,
@@ -176,8 +175,7 @@ export function Customers() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
   const setFilter = useFilterNav()
-  const active = useApi<ActiveUsersRow>('/api/genai/active-users')
-  const activePrev = useApi<ActiveUsersRow>('/api/genai/active-users', { to: prev.to })
+  const userCount = useApi<{ count: number }>('/api/customers/user-stats-count')
   const interactions = useApi<{ count: number }>('/api/product/interactions')
   const interactionsPrev = useApi<{ count: number }>('/api/product/interactions', prev)
   const sessions = useApi<SessionStats>('/api/product/session-stats')
@@ -193,9 +191,9 @@ export function Customers() {
   const appAdoption = useApi<AppAdoptionRow[]>('/api/customers/app-adoption')
   const userStats = useApi<UserStatRow[]>('/api/customers/user-stats')
 
-  const a = active.data
-  const stickiness = a && a.mau > 0 ? Math.round((a.dau / a.mau) * 100) : 0
   const sessionsEmpty = !sessionSeries.loading && (sessionSeries.data ?? []).length === 0
+  const avgInteractionsPerUser =
+    userCount.data && userCount.data.count > 0 ? (interactions.data?.count ?? 0) / userCount.data.count : 0
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -203,10 +201,9 @@ export function Customers() {
         <StatStrip
           stats={[
             {
-              label: 'Active Users',
-              value: String(a?.dau ?? '—'),
-              sub: `${a?.wau ?? '—'} weekly · ${a?.mau ?? '—'} monthly`,
-              delta: { pct: pctChange(activePrev.data?.dau ?? 0, a?.dau ?? 0), positiveIsGood: true },
+              label: 'Users',
+              value: String(userCount.data?.count ?? '—'),
+              sub: 'With an LLM interaction in range',
             },
             {
               label: 'Interactions',
@@ -220,7 +217,7 @@ export function Customers() {
               sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(2)} per user`,
               delta: { pct: pctChange(sessionsPrev.data?.sessions ?? 0, sessions.data?.sessions ?? 0), positiveIsGood: true },
             },
-            { label: 'Stickiness', value: `${stickiness}%`, sub: 'daily / monthly active' },
+            { label: 'Avg interactions / user', value: avgInteractionsPerUser.toFixed(2), sub: 'In range' },
           ]}
         />
       </div>

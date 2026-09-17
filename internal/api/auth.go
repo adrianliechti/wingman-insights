@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -75,37 +73,30 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
 }
 
-// forwardedIdentity reads the identity that oauth2-proxy has already
-// authenticated and forwarded. It deliberately does not verify the JWT: the
-// proxy is the verification boundary for routes that use this middleware.
-// Consequently, it must only be used on routes that cannot be reached without
-// passing through that trusted proxy.
-func forwardedIdentity(r *http.Request) (oid string, groups []string, err error) {
-	raw := strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 || parts[1] == "" {
-		return "", nil, errInvalidForwardedToken
+// forwardedIdentity reads the identity headers set by oauth2-proxy after it
+// authenticates the request. X-Forwarded-Groups is a comma-separated list.
+// The proxy is the verification boundary for routes that use this middleware,
+// so they must not be reachable without passing through that trusted proxy.
+func forwardedIdentity(r *http.Request) (user string, groups []string, err error) {
+	user = strings.TrimSpace(r.Header.Get("X-Forwarded-User"))
+	if user == "" {
+		return "", nil, errMissingForwardedUser
 	}
 
-	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1])
-	if decodeErr != nil {
-		return "", nil, errInvalidForwardedToken
+	for _, value := range r.Header.Values("X-Forwarded-Groups") {
+		for _, group := range strings.Split(value, ",") {
+			if group = strings.TrimSpace(group); group != "" {
+				groups = append(groups, group)
+			}
+		}
 	}
-
-	var claims struct {
-		OID    string   `json:"oid"`
-		Groups []string `json:"groups"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.OID == "" {
-		return "", nil, errInvalidForwardedToken
-	}
-	return claims.OID, claims.Groups, nil
+	return user, groups, nil
 }
 
-var errInvalidForwardedToken = errors.New("missing or malformed X-Forwarded-Access-Token")
+var errMissingForwardedUser = errors.New("missing X-Forwarded-User")
 
 // withForwardedIdentity trusts oauth2-proxy to authenticate the request, then
-// decodes its forwarded access token only to scope a response to that user.
+// reads its forwarded identity headers to scope a response to that user.
 func (h *Handler) withForwardedIdentity(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.verifier == nil {
@@ -129,9 +120,9 @@ func (h *Handler) withForwardedIdentity(next http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
-// withForwardedAdmin uses the group claims supplied by oauth2-proxy to gate
+// withForwardedAdmin uses the group headers supplied by oauth2-proxy to gate
 // an org-wide endpoint. Like withForwardedIdentity, it relies on the proxy as
-// the JWT verification boundary.
+// the authentication boundary.
 func (h *Handler) withForwardedAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
 		if !adminFromContext(r.Context()) {

@@ -38,8 +38,8 @@ func (g routeGroup) getWithForwardedAdmin(path string, fn http.HandlerFunc) {
 }
 
 func (h *Handler) RegisterPersonal(mux *http.ServeMux) {
-	// /api/personal is behind oauth2-proxy. The proxy has already verified the
-	// request, so decode its forwarded token solely to find the caller's OID.
+	// /api/personal is behind oauth2-proxy. The proxy has already authenticated
+	// the request, so use its forwarded identity headers to find the caller.
 	personal := routeGroup{mux, apiBase + "/personal", h}
 	personal.getWithForwardedIdentity("/usage", h.usage)
 	personal.getWithForwardedIdentity("/usage-by-app", h.usageByApp)
@@ -100,6 +100,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	customers := group("/customers")
 	customers.getWithForwardedAdmin("/user-stats", h.userStats)
+	customers.getWithForwardedAdmin("/user-stats-count", h.userStatsCount)
 	customers.getWithForwardedAdmin("/segments", jsonRoute(h, h.store.QueryUserSegments))
 	customers.getWithForwardedAdmin("/cohort-retention", h.cohortRetention)
 	customers.getWithForwardedAdmin("/app-adoption", jsonRoute(h, h.store.QueryAppAdoption))

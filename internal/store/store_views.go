@@ -313,6 +313,24 @@ type UserStatRow struct {
 	Segment    string  `json:"segment"`
 }
 
+// QueryUserStatsCount returns the number of distinct users represented by the
+// user-stats table for the selected range and filters. It deliberately uses
+// the same token-bearing span predicate and identity resolution as
+// QueryUserStats, so the headline count and table cannot drift apart.
+func (s *Store) QueryUserStatsCount(ctx context.Context, from, to time.Time, f Filter) (int64, error) {
+	clause, fargs := f.spansClause()
+	args := append([]any{from, to}, fargs...)
+	r := dirResolve("genai_spans", "user_id", "user_email")
+	var count int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT `+r.ID+`)
+		FROM genai_spans`+r.Join+`
+		WHERE (input_tokens > 0 OR output_tokens > 0)
+		  AND user_id IS NOT NULL AND user_id != ''
+		  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause, args...).Scan(&count)
+	return count, err
+}
+
 // QueryUserStats aggregates per-user requests, tokens, cost, active days and
 // most-used model from spans (the only source carrying materialized cost), and
 // tags each user with an engagement segment. limit <= 0 returns every user.

@@ -106,7 +106,7 @@ export function Header({
   // to 1 the moment a filter is applied. Skipped entirely outside the
   // personal view, which is the only place /api/personal/usage-by-app applies.
   const appRows = useApi<UsageByAppRow[]>(isPersonalView ? '/api/personal/usage-by-app' : null, { app: undefined })
-  const appOptions = (appRows.data ?? []).map((r) => ({ value: r.app, label: r.app || 'unattributed' }))
+  const appOptions = (appRows.data ?? []).map((r) => ({ value: r.app, label: r.name || r.app || 'unattributed' }))
   // An explicit from/to in the URL (custom window) overrides any preset, so no
   // preset may render as selected while one is active.
   const customActive = !!dash.search.from

@@ -324,9 +324,11 @@ export interface UsageResponse {
 }
 
 // UsageByAppRow is GET /api/personal/usage-by-app: the caller's cost and tokens
-// grouped by application.
+// grouped by application. app is the app_id (service.peer.name); name is the
+// resolved directory display name, empty when the id is unknown to the directory.
 export interface UsageByAppRow {
   app: string
+  name: string
   cost: number
   tokens: TokenTotals
 }

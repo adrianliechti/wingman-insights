@@ -9,7 +9,7 @@ export function fmtTokens(n: number): string {
 
 export function fmtCost(n: number): string {
   if (n < 0) return '-' + fmtCost(-n)
-  return '$' + n.toFixed(2)
+  return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 // pctChange is the percent change from prev to cur, or null when there's no

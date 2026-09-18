@@ -385,9 +385,11 @@ func (s *Store) QueryUsageTotals(ctx context.Context, from, to time.Time, f Filt
 
 // UsageByAppRow is one application's cost and token consumption over the window,
 // for the personal usage "share by application" breakdown. App is the app_id
-// (service.peer.name), empty when the span carried none.
+// (service.peer.name), empty when the span carried none; Name is the resolved
+// directory display name, empty when the id is unknown to the directory.
 type UsageByAppRow struct {
 	App    string      `json:"app"`
+	Name   string      `json:"name"`
 	Cost   float64     `json:"cost"`
 	Tokens TokenTotals `json:"tokens"`
 }
@@ -395,18 +397,30 @@ type UsageByAppRow struct {
 // QueryUsageByApp returns cost and token consumption grouped by app_id for the
 // given window and filter, ordered by cost then token volume descending. It is
 // the app dimension of the personal usage view; scope it to one user by setting
-// Filter.User, exactly as QueryUsageTotals is used.
+// Filter.User, exactly as QueryUsageTotals is used. App ids are resolved to
+// their directory display name (and folded onto one canonical id) via
+// dirResolveApp, matching the org-wide app breakdowns.
 func (s *Store) QueryUsageByApp(ctx context.Context, from, to time.Time, f Filter) ([]UsageByAppRow, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
+	a := dirResolveApp("genai_spans", "app_id")
 	rows, err := s.db.QueryContext(ctx, `
+		WITH resolved AS (
+			SELECT
+				`+a.ID+` as app,
+				`+a.Name+` as name,
+				cost, cache_savings, priced,
+				input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens
+			FROM genai_spans`+a.Join+`
+			WHERE (input_tokens > 0 OR output_tokens > 0) AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause+`
+		)
 		SELECT
-			COALESCE(app_id, '') as app,
+			app,
+			MAX(name) as name,
 			COALESCE(SUM(cost), 0) as cost,
 			COALESCE(SUM(cache_savings), 0) as cache_savings,
 			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,`+spansPartCols+`
-		FROM genai_spans
-		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
+		FROM resolved
 		GROUP BY app
 		ORDER BY cost DESC
 	`, args...)
@@ -421,7 +435,7 @@ func (s *Store) QueryUsageByApp(ctx context.Context, from, to time.Time, f Filte
 		var parts tokenParts
 		var cacheSavings float64
 		var priced bool
-		if err := rows.Scan(&row.App, &row.Cost, &cacheSavings, &priced,
+		if err := rows.Scan(&row.App, &row.Name, &row.Cost, &cacheSavings, &priced,
 			&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning); err != nil {
 			return nil, err
 		}

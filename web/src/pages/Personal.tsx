@@ -298,7 +298,7 @@ function AppShareChart() {
   if (loading) return <PanelMessage>Loading…</PanelMessage>
   const rows = (data ?? []).filter((r) => r.cost > 0 || tokenVolume(r.tokens) > 0)
   if (rows.length === 0) return <PanelMessage>No data</PanelMessage>
-  const label = (r: UsageByAppRow) => r.app || 'unattributed'
+  const label = (r: UsageByAppRow) => r.name || r.app || 'unattributed'
   // Theme-aware palette: the leading blue tracks the topbar/chart accent
   // (#283c83 light, #4257a8 dark) instead of the static brand navy.
   const palette = [blue, ...PALETTE.slice(1)]

@@ -106,14 +106,14 @@ export function DataTable<T>({
           <button
             type="button"
             onClick={() => setLimit((l) => (l ?? 0) + showMoreStep)}
-            className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+            className="cursor-pointer font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
           >
             Show more
           </button>
           <button
             type="button"
             onClick={() => setLimit(undefined)}
-            className="font-medium text-gray-500 hover:text-gray-900 dark:hover:text-white"
+            className="cursor-pointer font-medium text-gray-500 hover:text-gray-900 dark:hover:text-white"
           >
             Show all
           </button>

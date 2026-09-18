@@ -177,3 +177,13 @@ func (s *Store) resolveName(rawID, rawEmail string) (name, kind string) {
 	}
 	return name, kind
 }
+
+// ResolveName resolves a raw principal id/email to a display name, for callers
+// outside the store (e.g. the /me endpoint) that only need the name.
+func (s *Store) ResolveName(rawID, rawEmail string) string {
+	if s == nil {
+		return ""
+	}
+	name, _ := s.resolveName(rawID, rawEmail)
+	return name
+}

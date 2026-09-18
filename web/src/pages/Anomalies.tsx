@@ -10,7 +10,7 @@ import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
 import { Heatmap } from '../components/Heatmap'
-import { ChartLegend, Line, chartOptions, groupSeries } from '../components/charts'
+import { ChartLegend, Line, chartOptions, groupSeries, CHART } from '../components/charts'
 import { fmtCost, fmtTime, fmtTokens } from '../lib/format'
 
 const fmtMetric = (metric: string, v: number) => (metric === 'cost' ? fmtCost(v) : fmtTokens(v))
@@ -58,8 +58,8 @@ function SpikeLine({ points, yFmt, color, label }: { points: ScorePoint[] | null
       pointRadius: 6,
       pointHoverRadius: 8,
       pointStyle: 'rectRot',
-      borderColor: '#ef4444',
-      backgroundColor: '#ef4444',
+      borderColor: CHART.negative,
+      backgroundColor: CHART.negative,
       borderWidth: 2,
     })
   }
@@ -96,10 +96,10 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
             <div
               className="h-full rounded-full"
-              style={{ width: `${(r.score / max) * 100}%`, backgroundColor: r.score >= 5 ? '#ef4444' : '#fbbf24' }}
+              style={{ width: `${(r.score / max) * 100}%`, backgroundColor: r.score >= 5 ? CHART.negative : CHART.warning }}
             />
           </div>
-          <span className="w-10 shrink-0 text-right text-xs tabular-nums text-gray-500">{r.score.toFixed(1)}σ</span>
+          <span className="w-10 shrink-0 text-right text-xs tabular-nums text-gray-500">{r.score.toFixed(2)}σ</span>
         </div>
       ))}
     </div>
@@ -176,9 +176,9 @@ export function Anomalies() {
       header: 'Deviation',
       meta: { align: 'right' },
       accessorFn: (r) => (r.expected > 0 ? r.value / r.expected : 0),
-      cell: (c) => <span className="font-medium text-gray-900 dark:text-white">×{(c.getValue() as number).toFixed(1)}</span>,
+      cell: (c) => <span className="font-medium text-gray-900 dark:text-white">×{(c.getValue() as number).toFixed(2)}</span>,
     },
-    { accessorKey: 'score', header: 'Z-Score', meta: { align: 'right' }, cell: (c) => (c.getValue() as number).toFixed(1) },
+    { accessorKey: 'score', header: 'Z-Score', meta: { align: 'right' }, cell: (c) => (c.getValue() as number).toFixed(2) },
     { id: 'severity', header: 'Severity', accessorFn: (r) => r.score, cell: (c) => <Severity score={c.getValue()} /> },
   ]
 
@@ -205,7 +205,7 @@ export function Anomalies() {
         <StatStrip
           stats={[
             { label: 'Open Anomalies', value: String(rows.length), sub: '≥ 3σ above baseline' },
-            { label: 'Worst Z-Score', value: worst ? worst.toFixed(1) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
+            { label: 'Worst Z-Score', value: worst ? worst.toFixed(2) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
             { label: 'Users Flagged', value: String(usersFlagged), sub: 'distinct end users' },
             { label: 'Applications Flagged', value: String(appsFlagged), sub: 'distinct applications' },
           ]}
@@ -215,7 +215,7 @@ export function Anomalies() {
       <TokenChart className="lg:col-span-2" />
 
       <Panel title="Spend Spikes" sub="Cost per interval; markers flag spend ≥ 3σ above the rolling baseline" className="lg:col-span-2">
-        <SpikeLine points={costSpikes.data} yFmt={fmtCost} color="#fbbf24" label="Cost" />
+        <SpikeLine points={costSpikes.data} yFmt={fmtCost} color={CHART.warning} label="Cost" />
       </Panel>
 
       <Panel
@@ -285,10 +285,10 @@ export function Anomalies() {
               if (s === undefined) return null
               const alpha = Math.min(s / 8, 1)
               return {
-                bg: `rgba(239, 68, 68, ${0.15 + alpha * 0.7})`,
+                bg: `rgba(203, 44, 48, ${0.15 + alpha * 0.7})`,
                 text: alpha > 0.5 ? '#fff' : undefined,
-                title: `${heatLabel.get(e) || e} · ${fmtTime(b)} · ${s.toFixed(1)}σ`,
-                content: s.toFixed(1),
+                title: `${heatLabel.get(e) || e} · ${fmtTime(b)} · ${s.toFixed(2)}σ`,
+                content: s.toFixed(2),
               }
             }}
           />

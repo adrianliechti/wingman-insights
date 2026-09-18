@@ -1,14 +1,14 @@
 import { useApi, useDash } from '../dash'
 import type { AnomalyPoint, TimeseriesPoint } from '../types'
-import { ChartLegend, Line, PartialNote, chartOptions, groupSeries } from './charts'
+import { ChartLegend, Line, PartialNote, chartOptions, groupSeries, CHART } from './charts'
 import { Panel, PanelMessage } from './Panel'
 import { fmtTokens } from '../lib/format'
 
 // The token.usage metric only carries input/output per the OTel semconv;
 // cache breakdown lives on spans (see the cost views and Cache Hit Rate panel).
 const TOKEN_SPECS = {
-  input: { label: 'Input', color: '#818cf8', fill: true },
-  output: { label: 'Output', color: '#34d399', fill: true },
+  input: { label: 'Input', color: CHART.blue, fill: true },
+  output: { label: 'Output', color: CHART.turquoise, fill: true },
 }
 
 // TokenChart plots token usage per type and overlays red markers on buckets
@@ -42,8 +42,8 @@ export function TokenChart({ className }: { className?: string }) {
         pointRadius: 6,
         pointHoverRadius: 8,
         pointStyle: 'rectRot',
-        borderColor: '#ef4444',
-        backgroundColor: '#ef4444',
+        borderColor: CHART.negative,
+        backgroundColor: CHART.negative,
         borderWidth: 2,
       })
     }

@@ -29,6 +29,19 @@ func (h *Handler) userStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+// userStatsCount is the selected-range count behind the Users table. Keeping
+// it separate from the rolling DAU/WAU/MAU endpoint makes the customer-page
+// headline describe exactly the population being listed.
+func (h *Handler) userStatsCount(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	count, err := h.store.QueryUserStatsCount(r.Context(), from, to, h.parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]int64{"count": count})
+}
+
 // cohortRetention returns the weekly signup-cohort retention matrix (fixed
 // 12-week lookback, independent of the dashboard range).
 func (h *Handler) cohortRetention(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,43 @@ func (k *testKey) signTokenAudArray(t *testing.T, audiences []string, oid string
 // The store is nil — withAuth never touches it.
 func makeHandler(v *oidc.IDTokenVerifier) *Handler {
 	return &Handler{verifier: v}
+}
+
+// signTokenGroups signs a JWT carrying an oid and a groups array, for
+// exercising admin-group authorization.
+func (k *testKey) signTokenGroups(t *testing.T, aud, oid string, groups []string) string {
+	t.Helper()
+	now := time.Now()
+	groupsJSON := "["
+	for i, g := range groups {
+		if i > 0 {
+			groupsJSON += ","
+		}
+		groupsJSON += fmt.Sprintf("%q", g)
+	}
+	groupsJSON += "]"
+	payload := fmt.Sprintf(
+		`{"iss":%q,"aud":%q,"oid":%q,"groups":%s,"iat":%d,"exp":%d}`,
+		testIssuer, aud, oid, groupsJSON,
+		now.Unix(),
+		now.Add(time.Hour).Unix(),
+	)
+	key := jose.SigningKey{Algorithm: jose.RS256, Key: k.priv}
+	opts := &jose.SignerOptions{}
+	opts.WithHeader(jose.HeaderKey("kid"), "test-key")
+	signer, err := jose.NewSigner(key, opts)
+	if err != nil {
+		t.Fatalf("jose.NewSigner: %v", err)
+	}
+	sig, err := signer.Sign([]byte(payload))
+	if err != nil {
+		t.Fatalf("signer.Sign: %v", err)
+	}
+	raw, err := sig.CompactSerialize()
+	if err != nil {
+		t.Fatalf("CompactSerialize: %v", err)
+	}
+	return raw
 }
 
 // recordingHandler is an http.HandlerFunc that records the OID from context.
@@ -271,6 +309,100 @@ func TestWithAuthOIDPropagated(t *testing.T) {
 	}
 }
 
+// oauth2-proxy has already authenticated the request. Proxied routes read its
+// forwarded identity headers and do not locally verify a token.
+func TestWithForwardedIdentity(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	h := makeHandler(newTestKey(t).verifier)
+
+	var gotOID string
+	var gotAdmin bool
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
+	req.Header.Set("X-Forwarded-User", "forwarded-user")
+	req.Header.Set("X-Forwarded-Groups", " users, admins ")
+	h.withForwardedIdentity(func(w http.ResponseWriter, r *http.Request) {
+		gotOID = userFromContext(r.Context())
+		gotAdmin = adminFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if gotOID != "forwarded-user" {
+		t.Errorf("oid = %q, want %q", gotOID, "forwarded-user")
+	}
+	if !gotAdmin {
+		t.Error("admin = false, want true")
+	}
+}
+
+func TestWithForwardedIdentityRequiresUserHeader(t *testing.T) {
+	h := makeHandler(newTestKey(t).verifier)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/personal/usage", nil)
+	req.Header.Set("X-Forwarded-Groups", "admins")
+	h.withForwardedIdentity(recordingHandler(new(string)))(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", rr.Code)
+	}
+}
+
+func TestWithForwardedAdmin(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	h := makeHandler(newTestKey(t).verifier)
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		want   int
+	}{
+		{name: "configured group passes", groups: []string{"admins"}, want: http.StatusOK},
+		{name: "other group is forbidden", groups: []string{"users"}, want: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/filters", nil)
+			req.Header.Set("X-Forwarded-User", "forwarded-user")
+			req.Header.Set("X-Forwarded-Groups", strings.Join(tc.groups, ","))
+			h.withForwardedAdmin(ok)(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, rr.Code)
+			}
+		})
+	}
+}
+
+func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	h := makeHandler(newTestKey(t).verifier)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		want   int
+	}{
+		{name: "admin group", groups: []string{"admins"}, want: http.StatusOK},
+		{name: "non-admin group", groups: []string{"users"}, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			req.Header.Set("X-Forwarded-User", "forwarded-user")
+			req.Header.Set("X-Forwarded-Groups", strings.Join(tc.groups, ","))
+			mux.ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, rr.Code)
+			}
+		})
+	}
+}
+
 // --- bearerToken tests ---
 
 func TestBearerToken(t *testing.T) {
@@ -347,4 +479,127 @@ func TestUserFromContextMissing(t *testing.T) {
 	if got := userFromContext(context.Background()); got != "" {
 		t.Errorf("userFromContext on empty ctx = %q, want empty", got)
 	}
+}
+
+// --- admin group / withAdmin tests ---
+
+func TestIsAdmin(t *testing.T) {
+	cases := []struct {
+		name   string
+		env    string
+		groups []string
+		want   bool
+	}{
+		{"no group configured: nobody admin", "", nil, false},
+		{"no group configured, has groups: still not admin", "", []string{"x"}, false},
+		{"configured, member", "admins", []string{"other", "admins"}, true},
+		{"configured, not member", "admins", []string{"users"}, false},
+		{"configured, no groups", "admins", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("INSIGHTS_ADMIN_GROUP", tc.env)
+			if got := isAdmin(tc.groups); got != tc.want {
+				t.Errorf("isAdmin(%v) with env %q = %v, want %v", tc.groups, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithAuthAdminPropagated verifies the admin flag derived from the groups
+// claim reaches the handler context.
+func TestWithAuthAdminPropagated(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	k := newTestKey(t)
+	h := makeHandler(k.verifier)
+
+	cases := []struct {
+		name   string
+		groups []string
+		want   bool
+	}{
+		{"member is admin", []string{"admins"}, true},
+		{"non-member is not admin", []string{"users"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := k.signTokenGroups(t, "my-app", "oid-1", tc.groups)
+			var gotAdmin bool
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+raw)
+			h.withAuth(func(w http.ResponseWriter, r *http.Request) {
+				gotAdmin = adminFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d", rr.Code)
+			}
+			if gotAdmin != tc.want {
+				t.Errorf("admin = %v, want %v", gotAdmin, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithAdminGate verifies withAdmin returns 403 for a non-admin token, 200
+// for an admin token, and lets everyone through when auth is disabled.
+func TestWithAdminGate(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	k := newTestKey(t)
+	h := makeHandler(k.verifier)
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+
+	t.Run("admin passes", func(t *testing.T) {
+		raw := k.signTokenGroups(t, "my-app", "oid-1", []string{"admins"})
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		h.withAdmin(ok)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d", rr.Code)
+		}
+	})
+
+	t.Run("non-admin forbidden", func(t *testing.T) {
+		raw := k.signTokenGroups(t, "my-app", "oid-1", []string{"users"})
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		h.withAdmin(ok)(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("want 403, got %d", rr.Code)
+		}
+	})
+
+	t.Run("missing token unauthorized", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h.withAdmin(ok)(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("want 401, got %d", rr.Code)
+		}
+	})
+
+	t.Run("auth disabled defaults to non-admin (personal only)", func(t *testing.T) {
+		t.Setenv("INSIGHTS_DEV_ADMIN", "")
+		noAuth := makeHandler(nil)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		noAuth.withAdmin(ok)(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("want 403, got %d", rr.Code)
+		}
+	})
+
+	t.Run("auth disabled with INSIGHTS_DEV_ADMIN passes as admin", func(t *testing.T) {
+		t.Setenv("INSIGHTS_DEV_ADMIN", "true")
+		noAuth := makeHandler(nil)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		noAuth.withAdmin(ok)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d", rr.Code)
+		}
+	})
 }

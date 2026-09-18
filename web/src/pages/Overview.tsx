@@ -14,10 +14,9 @@ import type {
   TokenSummaryRow,
 } from '../types'
 import { Panel, PanelMessage } from '../components/Panel'
-import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
-import { ChartLegend, Doughnut, PALETTE, TimeseriesPanel } from '../components/charts'
+import { ChartLegend, Doughnut, PALETTE, TimeseriesPanel, CHART } from '../components/charts'
 import { fmtCost, fmtDuration, fmtTokens } from '../lib/format'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -77,11 +76,11 @@ const errorColumns: ColumnDef<GenAIErrorRow, any>[] = [
 // input, cache read/write (subsets of input), output and reasoning (subset of
 // output). "Cache write" tracks the forthcoming read/write cache naming.
 const COMPOSITION_SPECS = {
-  input: { label: 'Input', color: '#818cf8', fill: true },
-  cache_read: { label: 'Cache read', color: '#22d3ee', fill: true },
-  cache_creation: { label: 'Cache write', color: '#fbbf24', fill: true },
-  output: { label: 'Output', color: '#34d399', fill: true },
-  reasoning: { label: 'Reasoning', color: '#f472b6', fill: true },
+  input: { label: 'Input', color: CHART.blue, fill: true },
+  cache_read: { label: 'Cache read', color: CHART.petrol, fill: true },
+  cache_creation: { label: 'Cache write', color: CHART.orange, fill: true },
+  output: { label: 'Output', color: CHART.turquoise, fill: true },
+  reasoning: { label: 'Reasoning', color: CHART.redwine, fill: true },
 }
 
 export function Overview() {
@@ -124,26 +123,54 @@ export function Overview() {
   const spend = (costs.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const saved = (costs.data ?? []).reduce((acc, r) => acc + r.cache_savings, 0)
   const flagged = anomalies.data ?? []
+  const headlineLoading = costs.loading || summary.loading || active.loading
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <div className="lg:col-span-2">
-        <StatStrip
-          stats={[
-            {
-              label: 'Tokens',
-              value: fmtTokens(total),
-              sub: `${fmtTokens(input)} in · ${fmtTokens(output)} out`,
-            },
-            { label: 'Est. Cost', value: fmtCost(spend), sub: saved > 0 ? `${fmtCost(saved)} saved by cache` : 'models.dev pricing' },
-            { label: 'Requests', value: fmtTokens(requests) },
-            {
-              label: 'Active Users',
-              value: String(active.data?.dau ?? '—'),
-              sub: `${active.data?.wau ?? '—'} weekly · ${active.data?.mau ?? '—'} monthly`,
-            },
-          ]}
-        />
+        <div className="flex flex-col gap-6 rounded-lg border border-gray-200 px-6 py-5 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Estimated Cost</p>
+            {headlineLoading ? (
+              <div className="mt-2 h-11 w-40 rounded-md shimmer" />
+            ) : (
+              <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
+                {fmtCost(spend)}
+              </p>
+            )}
+            <p className="mt-1 text-sm text-gray-500">
+              {saved > 0 ? `${fmtCost(saved)} saved by cache · models.dev pricing` : 'models.dev pricing'}
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-x-8 gap-y-3 sm:text-right">
+            {[
+              { label: 'Tokens', value: fmtTokens(total), sub: `${fmtTokens(input)} in · ${fmtTokens(output)} out` },
+              { label: 'Requests', value: fmtTokens(requests) },
+              {
+                label: 'Active Users',
+                value: String(active.data?.dau ?? '—'),
+                sub: `${active.data?.wau ?? '—'} wk · ${active.data?.mau ?? '—'} mo`,
+              },
+            ].map((s) => (
+              <div key={s.label}>
+                <p className="text-xs font-medium uppercase tracking-wider text-gray-500">{s.label}</p>
+                {headlineLoading ? (
+                  <>
+                    <div className="mt-1 h-7 w-20 rounded shimmer sm:ml-auto" />
+                    {s.sub && <div className="mt-1.5 h-3.5 w-24 rounded shimmer sm:ml-auto" />}
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">
+                      {s.value}
+                    </p>
+                    {s.sub && <p className="mt-0.5 text-xs text-gray-500">{s.sub}</p>}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {flagged.length > 0 && (
@@ -158,7 +185,7 @@ export function Overview() {
           </span>
           <span className="text-xs text-amber-700 dark:text-amber-400">
             top: <span>{flagged[0].name || flagged[0].group_key || '—'}</span> at{' '}
-            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(1)}× expected
+            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(2)}× expected
           </span>
           <span className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400">View →</span>
         </Link>
@@ -207,8 +234,8 @@ export function Overview() {
         <TimeseriesPanel
           points={cache}
           spanMs={spanMs}
-          yFmt={(v) => v.toFixed(0) + '%'}
-          specs={{ '': { label: 'Cache read share', color: '#22d3ee', fill: true } }}
+          yFmt={(v) => v.toFixed(2) + '%'}
+          specs={{ '': { label: 'Cache read share', color: CHART.petrol, fill: true } }}
           loading={partitions.loading}
         />
       </Panel>
@@ -217,8 +244,8 @@ export function Overview() {
         <TimeseriesPanel
           points={reasoning}
           spanMs={spanMs}
-          yFmt={(v) => v.toFixed(0) + '%'}
-          specs={{ '': { label: 'Reasoning share', color: '#f472b6', fill: true } }}
+          yFmt={(v) => v.toFixed(2) + '%'}
+          specs={{ '': { label: 'Reasoning share', color: CHART.redwine, fill: true } }}
           loading={partitions.loading}
         />
       </Panel>

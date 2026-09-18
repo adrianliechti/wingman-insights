@@ -1,7 +1,6 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import type {
-  ActiveUsersRow,
   AppAdoptionRow,
   CohortCell,
   ModelPreferenceRow,
@@ -15,19 +14,19 @@ import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
-import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions } from '../components/charts'
+import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtCost, fmtTokens, fmtTime, pctChange } from '../lib/format'
 
 const SEGMENT_COLORS: Record<string, string> = {
-  power: '#818cf8',
-  frequent: '#34d399',
-  regular: '#fbbf24',
-  casual: '#9ca3af',
+  power: CHART.blue,
+  frequent: CHART.turquoise,
+  regular: CHART.orange,
+  casual: CHART.warmgrey,
 }
 
 const NEW_RETURNING_SPECS = {
-  new: { label: 'New', color: '#34d399', fill: true },
-  returning: { label: 'Returning', color: '#818cf8', fill: true },
+  new: { label: 'New', color: CHART.turquoise, fill: true },
+  returning: { label: 'Returning', color: CHART.blue, fill: true },
 }
 
 // SegmentBars shows the engagement pyramid: user count per segment with its
@@ -105,10 +104,10 @@ function CohortRetention({ cells }: { cells: CohortCell[] }) {
         if (a === undefined || n === 0) return null
         const pct = (a / n) * 100
         return {
-          bg: `rgba(52, 211, 153, ${0.12 + (pct / 100) * 0.78})`,
+          bg: `rgba(10, 169, 121, ${0.12 + (pct / 100) * 0.78})`,
           text: pct > 55 ? '#06281d' : undefined,
           title: `${a}/${n} active · week ${w}`,
-          content: pct.toFixed(0) + '%',
+          content: pct.toFixed(2) + '%',
         }
       }}
     />
@@ -119,7 +118,7 @@ function SegmentTag({ seg }: { seg: string }) {
   return (
     <span
       className="rounded px-1.5 py-0.5 text-[11px] font-medium capitalize"
-      style={{ backgroundColor: (SEGMENT_COLORS[seg] ?? '#9ca3af') + '22', color: SEGMENT_COLORS[seg] ?? '#9ca3af' }}
+      style={{ backgroundColor: (SEGMENT_COLORS[seg] ?? CHART.warmgrey) + '22', color: SEGMENT_COLORS[seg] ?? CHART.warmgrey }}
     >
       {seg}
     </span>
@@ -168,16 +167,15 @@ const appColumns: ColumnDef<AppAdoptionRow, any>[] = [
 ]
 
 const TOKEN_AVG_SPECS = {
-  input: { label: 'Avg input / request', color: '#818cf8' },
-  output: { label: 'Avg output / request', color: '#34d399' },
+  input: { label: 'Avg input / request', color: CHART.blue },
+  output: { label: 'Avg output / request', color: CHART.turquoise },
 }
 
 export function Customers() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
   const setFilter = useFilterNav()
-  const active = useApi<ActiveUsersRow>('/api/genai/active-users')
-  const activePrev = useApi<ActiveUsersRow>('/api/genai/active-users', { to: prev.to })
+  const userCount = useApi<{ count: number }>('/api/customers/user-stats-count')
   const interactions = useApi<{ count: number }>('/api/product/interactions')
   const interactionsPrev = useApi<{ count: number }>('/api/product/interactions', prev)
   const sessions = useApi<SessionStats>('/api/product/session-stats')
@@ -193,9 +191,9 @@ export function Customers() {
   const appAdoption = useApi<AppAdoptionRow[]>('/api/customers/app-adoption')
   const userStats = useApi<UserStatRow[]>('/api/customers/user-stats')
 
-  const a = active.data
-  const stickiness = a && a.mau > 0 ? Math.round((a.dau / a.mau) * 100) : 0
   const sessionsEmpty = !sessionSeries.loading && (sessionSeries.data ?? []).length === 0
+  const avgInteractionsPerUser =
+    userCount.data && userCount.data.count > 0 ? (interactions.data?.count ?? 0) / userCount.data.count : 0
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -203,10 +201,9 @@ export function Customers() {
         <StatStrip
           stats={[
             {
-              label: 'Active Users',
-              value: String(a?.dau ?? '—'),
-              sub: `${a?.wau ?? '—'} weekly · ${a?.mau ?? '—'} monthly`,
-              delta: { pct: pctChange(activePrev.data?.dau ?? 0, a?.dau ?? 0), positiveIsGood: true },
+              label: 'Users',
+              value: String(userCount.data?.count ?? '—'),
+              sub: 'With an LLM interaction in range',
             },
             {
               label: 'Interactions',
@@ -217,10 +214,10 @@ export function Customers() {
             {
               label: 'Sessions',
               value: fmtTokens(sessions.data?.sessions ?? 0),
-              sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(1)} per user`,
+              sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(2)} per user`,
               delta: { pct: pctChange(sessionsPrev.data?.sessions ?? 0, sessions.data?.sessions ?? 0), positiveIsGood: true },
             },
-            { label: 'Stickiness', value: `${stickiness}%`, sub: 'daily / monthly active' },
+            { label: 'Avg interactions / user', value: avgInteractionsPerUser.toFixed(2), sub: 'In range' },
           ]}
         />
       </div>
@@ -236,7 +233,7 @@ export function Customers() {
           <TimeseriesPanel
             points={sessionSeries.data}
             spanMs={spanMs}
-            specs={{ '': { label: 'Sessions', color: '#22d3ee', fill: true } }}
+            specs={{ '': { label: 'Sessions', color: CHART.petrol, fill: true } }}
             loading={sessionSeries.loading}
           />
         )}

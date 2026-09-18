@@ -3,8 +3,9 @@ import type { ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { apiGet } from './api'
 import type { Params } from './api'
+import type { Me } from './types'
 
-export type RangeKey = 'today' | '24h' | '3d' | '7d' | '30d'
+export type RangeKey = '24h' | '3d' | '7d' | '14d' | '30d'
 
 // DashSearch lives in the URL so views (range, filters) are shareable.
 export interface DashSearch {
@@ -19,7 +20,7 @@ export interface DashSearch {
   models?: string[]
 }
 
-const RANGE_KEYS: RangeKey[] = ['today', '24h', '3d', '7d', '30d']
+const RANGE_KEYS: RangeKey[] = ['24h', '3d', '7d', '14d', '30d']
 
 export function validateSearch(search: Record<string, unknown>): DashSearch {
   const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
@@ -48,6 +49,7 @@ const RANGE_MS: Record<string, number> = {
   '24h': 24 * 3600e3,
   '3d': 3 * 24 * 3600e3,
   '7d': 7 * 24 * 3600e3,
+  '14d': 14 * 24 * 3600e3,
   '30d': 30 * 24 * 3600e3,
 }
 
@@ -60,7 +62,7 @@ function parseDate(s?: string): Date | null {
 
 export function resolveRange(search: DashSearch) {
   const now = new Date()
-  const range = search.range ?? '24h'
+  const range = search.range ?? '7d'
   let to = now
   let from: Date
   const customFrom = parseDate(search.from)
@@ -71,9 +73,6 @@ export function resolveRange(search: DashSearch) {
     from = customFrom
     to = customTo ?? now
     if (from > to) [from, to] = [to, from]
-  } else if (range === 'today') {
-    from = new Date(now)
-    from.setHours(0, 0, 0, 0)
   } else {
     from = new Date(now.getTime() - (RANGE_MS[range] ?? RANGE_MS['24h']))
   }
@@ -94,21 +93,12 @@ export interface DashState {
   search: DashSearch
   refreshKey: number
   refresh: () => void
-  autoRefresh: boolean
-  setAutoRefresh: (v: boolean) => void
 }
 
 const DashContext = createContext<DashState | null>(null)
 
 export function DashProvider({ search, children }: { search: DashSearch; children: ReactNode }) {
   const [refreshKey, setRefreshKey] = useState(0)
-  const [autoRefresh, setAutoRefresh] = useState(false)
-
-  useEffect(() => {
-    if (!autoRefresh) return
-    const id = setInterval(() => setRefreshKey((k) => k + 1), 15000)
-    return () => clearInterval(id)
-  }, [autoRefresh])
 
   const range = useMemo(
     () => resolveRange(search),
@@ -121,8 +111,6 @@ export function DashProvider({ search, children }: { search: DashSearch; childre
     search,
     refreshKey,
     refresh: () => setRefreshKey((k) => k + 1),
-    autoRefresh,
-    setAutoRefresh,
   }
   return <DashContext.Provider value={value}>{children}</DashContext.Provider>
 }
@@ -131,6 +119,36 @@ export function useDash(): DashState {
   const ctx = useContext(DashContext)
   if (!ctx) throw new Error('useDash outside DashProvider')
   return ctx
+}
+
+// MeState carries the caller's identity/authorization plus a loading flag so
+// the shell can hold rendering until it knows whether to show the org-wide
+// dashboard or the personal-usage-only view.
+export interface MeState {
+  me: Me | null
+  loading: boolean
+}
+
+const MeContext = createContext<MeState>({ me: null, loading: true })
+
+// MeProvider fetches GET /api/me once at mount. On failure it falls back to a
+// non-admin identity so a broken /me never exposes the org-wide dashboard.
+export function MeProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<MeState>({ me: null, loading: true })
+  useEffect(() => {
+    let alive = true
+    apiGet<Me>('/api/me', {})
+      .then((me) => alive && setState({ me, loading: false }))
+      .catch(() => alive && setState({ me: { user: '', name: '', admin: false }, loading: false }))
+    return () => {
+      alive = false
+    }
+  }, [])
+  return <MeContext.Provider value={state}>{children}</MeContext.Provider>
+}
+
+export function useMe(): MeState {
+  return useContext(MeContext)
 }
 
 // useFilterNav returns a setter that patches the global filters in the URL
@@ -153,7 +171,7 @@ export function usePrevRange(): { from: string; to: string } {
 
 // useApi fetches an endpoint with the global time range and filters applied;
 // `extra` adds or overrides query params per call.
-export function useApi<T>(path: string, extra?: Params) {
+export function useApi<T>(path: string | null, extra?: Params) {
   const { from, to, interval, search, refreshKey } = useDash()
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
@@ -174,6 +192,12 @@ export function useApi<T>(path: string, extra?: Params) {
   const key = path + JSON.stringify(params) + refreshKey
 
   useEffect(() => {
+    if (!path) {
+      setData(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
     // Abort the in-flight request when the key changes (filter/range change) or
     // the component unmounts, so superseded fetches don't run to completion or
     // land their results out of order.

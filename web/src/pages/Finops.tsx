@@ -8,7 +8,7 @@ import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
 import { Panel, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
-import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, TimeseriesPanel } from '../components/charts'
+import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, TimeseriesPanel, CHART } from '../components/charts'
 import { costsByApp, costsByDepartment, costsByModel, costsByUser } from '../lib/costs'
 import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
@@ -164,7 +164,7 @@ function ContextHistogram({ rows, loading }: { rows: ContextBucketRow[] | null; 
               callbacks: {
                 label: (ctx: any) => {
                   const r = bins[ctx.dataIndex]
-                  const share = ((r.requests / total) * 100).toFixed(1)
+                  const share = ((r.requests / total) * 100).toFixed(2)
                   return ` ${r.requests.toLocaleString()} calls (${share}%) · ${fmtCost(r.cost)}`
                 },
               },
@@ -205,7 +205,7 @@ function SpendDoughnut({ rows, labelOf }: { rows: CostRow[]; labelOf: (r: CostRo
 
 // Slate gray for the consolidated "Others" bucket — kept off the PALETTE so the
 // long tail reads as residual, not as another named consumer.
-const OTHER_COLOR = '#94a3b8'
+const OTHER_COLOR = CHART.warmgrey
 
 interface AllocSlice {
   label: string
@@ -403,7 +403,7 @@ export function Finops() {
           {
             label: 'Spend (range)',
             value: fmtCost(total),
-            sub: unpricedPct >= 0.5 ? `⚠ ${unpricedPct.toFixed(0)}% of tokens unpriced` : 'models.dev pricing',
+            sub: unpricedPct >= 0.5 ? `⚠ ${unpricedPct.toFixed(2)}% of tokens unpriced` : 'models.dev pricing',
             delta: { pct: pctChange(totalPrev, total), positiveIsGood: false },
           },
           { label: 'Cache Savings', value: fmtCost(savings), sub: 'vs full input rate' },

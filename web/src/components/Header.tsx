@@ -1,14 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Moon, RefreshCw, Sun } from 'lucide-react'
-import { useDash } from '../dash'
+import { Link, useLocation, useNavigate } from '@tanstack/react-router'
+import { Boxes, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Menu, Monitor, Moon, Receipt, RefreshCw, Sun, User, X } from 'lucide-react'
+import { useDash, useApi, useFilterNav, useMe } from '../dash'
 import type { DashSearch, RangeKey } from '../dash'
+import type { UsageByAppRow } from '../types'
+import { MultiFilterSelect } from './FilterBar'
 
 const PRESETS: { label: string; value: RangeKey }[] = [
-  { label: 'Today', value: 'today' },
   { label: '24h', value: '24h' },
   { label: '3d', value: '3d' },
   { label: '7d', value: '7d' },
+  { label: '30d', value: '30d' },
+]
+
+// The personal dashboard uses its own preset set, tuned for individual usage.
+const PERSONAL_PRESETS: { label: string; value: RangeKey }[] = [
+  { label: '24h', value: '24h' },
+  { label: '7d', value: '7d' },
+  { label: '14d', value: '14d' },
   { label: '30d', value: '30d' },
 ]
 
@@ -32,12 +41,40 @@ function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
-const SEG_ON = 'rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm'
+const SEG_ON = 'cursor-pointer rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm sm:px-3'
 const SEG_OFF =
-  'rounded-md px-3 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+  'cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white sm:px-3'
+
+// initials derives an avatar label from a display name: first + last word
+// initials (e.g. "Ada Lovelace" → "AL"), or the first two letters of a single
+// name. Empty when no usable name is available.
+function initials(name?: string): string {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+// Theme mode is the user's explicit choice; 'system' follows the OS preference
+// and is the default when nothing is stored. The persisted value drives the
+// pre-paint script in index.html.
+type ThemeMode = 'light' | 'dark' | 'system'
+
+function readThemeMode(): ThemeMode {
+  const v = localStorage.getItem('theme')
+  return v === 'light' || v === 'dark' ? v : 'system'
+}
+
+// applyThemeMode flips the `dark` class on <html> — the source of truth charts
+// observe — resolving 'system' against the OS preference.
+function applyThemeMode(mode: ThemeMode) {
+  const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.classList.toggle('dark', dark)
+}
 
 const NAV = [
-  { to: '/', label: 'Overview' },
+  { to: '/', label: 'Personal' },
+  { to: '/overview', label: 'Overview' },
   { to: '/anomalies', label: 'Anomalies' },
   { to: '/customers', label: 'Customers' },
   { to: '/finops', label: 'FinOps' },
@@ -45,16 +82,42 @@ const NAV = [
   { to: '/traces', label: 'Traces' },
 ]
 
-export function Header() {
+// personalOnly renders the header for the personal-usage view: the page nav is
+// hidden (a non-admin has nowhere else to go), but the time-range controls stay
+// so users can rescope their own numbers. personalRange selects the personal
+// preset set without hiding the nav, so an admin viewing /personal gets the
+// same range options while keeping their navigation.
+export function Header({
+  personalOnly = false,
+  personalRange = false,
+}: {
+  personalOnly?: boolean
+  personalRange?: boolean
+}) {
   const dash = useDash()
   const navigate = useNavigate()
+  const setFilter = useFilterNav()
+  const { me } = useMe()
+  const isPersonalView = personalOnly || personalRange
+  const { pathname } = useLocation()
+  const currentPage = NAV.find((item) => (item.to === '/' ? pathname === '/' : pathname.startsWith(item.to)))
+  // The app filter only makes sense once the caller has used more than one
+  // application; fetched with app unset so the option list doesn't collapse
+  // to 1 the moment a filter is applied. Skipped entirely outside the
+  // personal view, which is the only place /api/personal/usage-by-app applies.
+  const appRows = useApi<UsageByAppRow[]>(isPersonalView ? '/api/personal/usage-by-app' : null, { app: undefined })
+  const appOptions = (appRows.data ?? []).map((r) => ({ value: r.app, label: r.app || 'unattributed' }))
   // An explicit from/to in the URL (custom window) overrides any preset, so no
   // preset may render as selected while one is active.
   const customActive = !!dash.search.from
-  const range = customActive ? undefined : (dash.search.range ?? '24h')
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
+  const range = customActive ? undefined : (dash.search.range ?? '7d')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useRef<HTMLDivElement>(null)
+  const [navOpen, setNavOpen] = useState(false)
+  const navRef = useRef<HTMLDivElement>(null)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const profileRef = useRef<HTMLDivElement>(null)
   const [viewMonth, setViewMonth] = useState(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -118,6 +181,46 @@ export function Header() {
     }
   }, [pickerOpen])
 
+  useEffect(() => {
+    if (!navOpen) return
+    function onDown(e: MouseEvent) {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setNavOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setNavOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [navOpen])
+
+  useEffect(() => {
+    if (!profileOpen) return
+    function onDown(e: MouseEvent) {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setProfileOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [profileOpen])
+
+  useEffect(() => {
+    if (themeMode !== 'system') return
+    const mq = matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => applyThemeMode('system')
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [themeMode])
+
   function setSearch(patch: Partial<DashSearch>) {
     navigate({
       to: '.',
@@ -125,46 +228,124 @@ export function Header() {
     })
   }
 
-  function toggleTheme() {
-    const next = !dark
-    setDark(next)
-    document.documentElement.classList.toggle('dark', next)
-    localStorage.setItem('theme', next ? 'dark' : 'light')
+  function chooseTheme(mode: ThemeMode) {
+    setThemeMode(mode)
+    if (mode === 'system') localStorage.removeItem('theme')
+    else localStorage.setItem('theme', mode)
+    applyThemeMode(mode)
   }
 
   const btn =
-    'rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors bg-white border-gray-200 text-gray-500 hover:text-gray-900 hover:border-gray-300 dark:bg-gray-900 dark:border-gray-800 dark:text-gray-400 dark:hover:text-white dark:hover:border-gray-700'
+    'inline-flex h-9 cursor-pointer items-center rounded-lg border px-2 text-xs font-medium transition-colors bg-white border-gray-200 text-gray-500 hover:text-gray-900 hover:border-gray-300 dark:bg-gray-900 dark:border-gray-800 dark:text-gray-400 dark:hover:text-white dark:hover:border-gray-700 sm:px-3'
+
+  const navLinks = (opts?: { stacked?: boolean; onNavigate?: () => void }) =>
+    NAV.map((item) => (
+      <div key={item.to} className={opts?.stacked ? 'flex flex-col' : 'flex items-center'}>
+        <Link
+          to={item.to}
+          search={(prev: DashSearch) => prev}
+          onClick={opts?.onNavigate}
+          className={
+            opts?.stacked
+              ? 'rounded-md px-3 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+              : 'whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+          }
+          activeProps={{
+            className: opts?.stacked
+              ? 'rounded-md px-3 py-1.5 text-xs font-medium bg-indigo-600 !text-white shadow-sm hover:!text-white'
+              : 'whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium bg-indigo-600 !text-white shadow-sm hover:!text-white',
+          }}
+          activeOptions={{ exact: item.to === '/' }}
+        >
+          {item.label}
+        </Link>
+        {/* Set personal usage apart from the org-wide dashboard pages. */}
+        {item.to === '/' &&
+          (opts?.stacked ? (
+            <span className="my-1 h-px w-full bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
+          ) : (
+            <span className="mx-1 h-4 w-px bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
+          ))}
+      </div>
+    ))
 
   return (
-    <header className="border-b border-gray-200 pb-5 dark:border-gray-800">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2.5">
-            <img src={`${import.meta.env.BASE_URL}logo_light.svg`} alt="" className="h-7 w-7 dark:hidden" />
-            <img src={`${import.meta.env.BASE_URL}logo_dark.svg`} alt="" className="hidden h-7 w-7 dark:block" />
-            <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">Insights</h1>
-          </div>
-          <nav className="flex rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
-            {NAV.map((item) => (
-              <Link
-                key={item.to}
-                to={item.to}
-                search={(prev: DashSearch) => prev}
-                className="rounded-md px-3 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-                activeProps={{
-                  className: 'rounded-md px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white shadow-sm hover:text-white',
-                }}
-                activeOptions={{ exact: item.to === '/' }}
+    <header className="pb-5">
+      <div className="flex flex-row flex-nowrap items-center justify-between gap-2 sm:gap-4">
+        <div className="flex min-w-0 items-center gap-3 lg:gap-6">
+          {!personalOnly && (
+            <div className="lg:hidden" ref={navRef}>
+              <button onClick={() => setNavOpen((o) => !o)} className={btn} title="Menu">
+                <Menu className="h-3.5 w-3.5" />
+              </button>
+              <div
+                className={`fixed inset-0 z-40 bg-black/40 transition-opacity ${
+                  navOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+                }`}
+                onClick={() => setNavOpen(false)}
+                aria-hidden="true"
+              />
+              <div
+                className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col gap-0.5 bg-white p-3 shadow-xl transition-transform dark:bg-gray-900 ${
+                  navOpen ? 'translate-x-0' : '-translate-x-full'
+                }`}
               >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
+                <div className="flex items-center justify-between px-1 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Receipt className="h-6 w-6 text-indigo-600" />
+                    <span className="text-sm font-semibold text-gray-900 dark:text-white">AI Insights</span>
+                  </div>
+                  <button
+                    onClick={() => setNavOpen(false)}
+                    className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                    title="Close menu"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                {navLinks({ stacked: true, onNavigate: () => setNavOpen(false) })}
+              </div>
+            </div>
+          )}
+          <div className="flex min-w-0 shrink items-center gap-2.5">
+            <Receipt className="h-7 w-7 shrink-0 text-indigo-600" />
+            <h1
+              className={`hidden shrink-0 whitespace-nowrap text-lg font-semibold tracking-tight text-gray-900 lg:block dark:text-white ${
+                personalOnly || !currentPage ? 'sm:block' : ''
+              }`}
+            >
+              AI Insights
+            </h1>
+            {!personalOnly && currentPage && (
+              <>
+                <span className="hidden h-5 w-px shrink-0 bg-gray-200 sm:block lg:hidden dark:bg-gray-700" aria-hidden="true" />
+                <span className="hidden min-w-0 truncate text-lg font-medium text-gray-400 sm:block lg:hidden dark:text-gray-500">
+                  {currentPage.label}
+                </span>
+              </>
+            )}
+          </div>
+          {!personalOnly && (
+            <nav className="hidden h-9 min-w-0 items-center overflow-x-auto rounded-lg border border-gray-200 bg-white p-0.5 lg:flex dark:border-gray-800 dark:bg-gray-900">
+              {navLinks()}
+            </nav>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
-            {PRESETS.map((p) => (
+        <div className="flex shrink-0 flex-nowrap items-center gap-1 sm:gap-2">
+          {isPersonalView && appOptions.length > 1 && (
+            <MultiFilterSelect
+              icon={Boxes}
+              placeholder="All applications"
+              noun="apps"
+              value={dash.search.app}
+              options={appOptions}
+              onChange={(v) => setFilter({ app: v })}
+              compact
+            />
+          )}
+          <div className="flex h-9 items-center rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-800 dark:bg-gray-900">
+            {(personalOnly || personalRange ? PERSONAL_PRESETS : PRESETS).map((p) => (
               <button
                 key={p.value}
                 onClick={() => setSearch({ range: p.value, from: undefined, to: undefined })}
@@ -173,7 +354,10 @@ export function Header() {
                 {p.label}
               </button>
             ))}
-            <div className="relative" ref={pickerRef}>
+            {/* Custom range picker is hidden on the personal view, which uses
+                fixed presets only. */}
+            {!(personalOnly || personalRange) && (
+              <div className="relative" ref={pickerRef}>
               <button onClick={togglePicker} className={customActive ? SEG_ON : SEG_OFF} title="Custom range">
                 <CalendarDays className="-mt-0.5 inline-block h-3.5 w-3.5" />
                 {customActive && <span className="ml-1.5">{customLabel}</span>}
@@ -212,7 +396,7 @@ export function Header() {
                       const isStart = !!selStart && sameDay(d, selStart)
                       const isEnd = !!selEnd && sameDay(d, selEnd)
                       const inRange = !!selStart && !!selEnd && d > selStart && d < selEnd
-                      let cls = 'h-8 text-xs transition-colors '
+                      let cls = 'h-8 cursor-pointer text-xs transition-colors '
                       if (isStart || isEnd) {
                         const single = isStart && (isEnd ? sameDay(selStart!, selEnd!) : true)
                         cls +=
@@ -241,29 +425,58 @@ export function Header() {
                 </div>
               )}
             </div>
+            )}
           </div>
           <button onClick={() => dash.refresh()} className={btn} title="Refresh">
-            <RefreshCw className="mr-1 -mt-0.5 inline-block h-3.5 w-3.5" />
-            Refresh
+            <RefreshCw className="h-3.5 w-3.5" />
           </button>
-          <button
-            onClick={() => dash.setAutoRefresh(!dash.autoRefresh)}
-            className={
-              dash.autoRefresh
-                ? 'rounded-lg border border-emerald-500/30 bg-emerald-600/10 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400'
-                : btn
-            }
-          >
-            <span
-              className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${
-                dash.autoRefresh ? 'animate-pulse bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'
-              }`}
-            />
-            Auto
-          </button>
-          <button onClick={toggleTheme} className={btn} title="Toggle theme">
-            {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          </button>
+          <div className="relative" ref={profileRef}>
+            <button onClick={() => setProfileOpen((o) => !o)} className={btn} title="Account">
+              {initials(me?.name) ? (
+                <span className="text-xs font-semibold leading-none">{initials(me?.name)}</span>
+              ) : (
+                <User className="h-3.5 w-3.5" />
+              )}
+            </button>
+            {profileOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-800 dark:bg-gray-900">
+                <div className="px-3 py-2">
+                  <div className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                    {me?.name || me?.user || 'Unknown user'}
+                  </div>
+                  {me?.user && me.user !== me.name && (
+                    <div className="truncate text-xs text-gray-500 dark:text-gray-400">{me.user.toLowerCase()}</div>
+                  )}
+                </div>
+                <div className="my-1 h-px w-full bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
+                <div className="flex items-center justify-between px-3 py-1.5">
+                  <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">Theme</span>
+                  <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5 dark:border-gray-800 dark:bg-gray-800/50">
+                    {(
+                      [
+                        { mode: 'light', label: 'Light', icon: Sun },
+                        { mode: 'system', label: 'System', icon: Monitor },
+                        { mode: 'dark', label: 'Dark', icon: Moon },
+                      ] as { mode: ThemeMode; label: string; icon: typeof Sun }[]
+                    ).map(({ mode, label, icon: Icon }) => (
+                      <button
+                        key={mode}
+                        onClick={() => chooseTheme(mode)}
+                        title={label}
+                        className={`flex cursor-pointer items-center justify-center rounded-md p-1.5 transition-colors ${
+                          themeMode === mode
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+                        }`}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>

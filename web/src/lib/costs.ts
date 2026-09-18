@@ -75,3 +75,39 @@ export const costsByModel = (rows: CostRow[]) =>
     provider_name: r.provider_name,
     request_model: r.request_model,
   }))
+
+// PriceTier classifies a model into a spend bracket for the tier badge.
+// `dollars` (1–3) drives the filled dollar-sign count; `label` is the name.
+export interface PriceTier {
+  dollars: number
+  label: string
+}
+
+// ModelRate is a model's derived $/1M-token rates: the blended rate shown to
+// the user, plus the directional input/output rates the tier is decided from.
+export interface ModelRate {
+  blended: number
+  input: number
+  output: number
+}
+
+// tierRate is the rate the tier badge classifies on. It uses the model's output
+// $/1M rate: unlike input, output isn't discounted by caching, so it's stable
+// across workloads and is the defining signal of how expensive a model is. Only
+// when output is missing does it fall back to input, then the observed blend.
+export function tierRate(rate: ModelRate): number {
+  if (rate.output > 0) return rate.output
+  if (rate.input > 0) return rate.input
+  return rate.blended
+}
+
+// priceTier maps an output $/1M rate to a tier. The edges sit between the
+// common model bands so frontier models (output ≥ $20/1M) read Premium, mid
+// models (≥ $7) Standard, and cheap workhorses Budget. Rate 0 → null (unpriced).
+export function priceTier(ratePerM: number): PriceTier | null {
+  if (ratePerM <= 0) return null
+  if (ratePerM < 7) return { dollars: 1, label: 'Budget' }
+  if (ratePerM < 20) return { dollars: 2, label: 'Standard' }
+  return { dollars: 3, label: 'Premium' }
+}
+

@@ -101,7 +101,7 @@ func main() {
 	h := api.NewHandler(s)
 
 	h.Register(app)
-	h.RegisterCompanion(app)
+	h.RegisterPersonal(app)
 
 	app.Handle("/", newSPAHandler(basePath))
 

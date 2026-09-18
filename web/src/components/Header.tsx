@@ -45,6 +45,16 @@ const SEG_ON = 'cursor-pointer rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs fo
 const SEG_OFF =
   'cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-500 transition-all hover:text-gray-900 dark:text-gray-400 dark:hover:text-white sm:px-3'
 
+// initials derives an avatar label from a display name: first + last word
+// initials (e.g. "Ada Lovelace" → "AL"), or the first two letters of a single
+// name. Empty when no usable name is available.
+function initials(name?: string): string {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
 // Theme mode is the user's explicit choice; 'system' follows the OS preference
 // and is the default when nothing is stored. The persisted value drives the
 // pre-paint script in index.html.
@@ -422,7 +432,11 @@ export function Header({
           </button>
           <div className="relative" ref={profileRef}>
             <button onClick={() => setProfileOpen((o) => !o)} className={btn} title="Account">
-              <User className="h-3.5 w-3.5" />
+              {initials(me?.name) ? (
+                <span className="text-xs font-semibold leading-none">{initials(me?.name)}</span>
+              ) : (
+                <User className="h-3.5 w-3.5" />
+              )}
             </button>
             {profileOpen && (
               <div className="absolute right-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-800 dark:bg-gray-900">

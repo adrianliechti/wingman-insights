@@ -123,6 +123,7 @@ export function Overview() {
   const spend = (costs.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const saved = (costs.data ?? []).reduce((acc, r) => acc + r.cache_savings, 0)
   const flagged = anomalies.data ?? []
+  const headlineLoading = costs.loading || summary.loading || active.loading
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -130,8 +131,8 @@ export function Overview() {
         <div className="flex flex-col gap-6 rounded-lg border border-gray-200 px-6 py-5 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Estimated Cost</p>
-            {costs.loading ? (
-              <div className="mt-2 h-11 w-40 animate-pulse rounded-md bg-gray-200 dark:bg-gray-800" />
+            {headlineLoading ? (
+              <div className="mt-2 h-11 w-40 rounded-md shimmer" />
             ) : (
               <p className="mt-1 text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
                 {fmtCost(spend)}
@@ -153,10 +154,19 @@ export function Overview() {
             ].map((s) => (
               <div key={s.label}>
                 <p className="text-xs font-medium uppercase tracking-wider text-gray-500">{s.label}</p>
-                <p className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">
-                  {s.value}
-                </p>
-                {s.sub && <p className="mt-0.5 text-xs text-gray-500">{s.sub}</p>}
+                {headlineLoading ? (
+                  <>
+                    <div className="mt-1 h-7 w-20 rounded shimmer sm:ml-auto" />
+                    {s.sub && <div className="mt-1.5 h-3.5 w-24 rounded shimmer sm:ml-auto" />}
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">
+                      {s.value}
+                    </p>
+                    {s.sub && <p className="mt-0.5 text-xs text-gray-500">{s.sub}</p>}
+                  </>
+                )}
               </div>
             ))}
           </div>

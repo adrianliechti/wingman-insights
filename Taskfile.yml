@@ -52,6 +52,17 @@ tasks:
   dev-backend:
     internal: true
     cmds:
+      # Fail loudly on a port clash. Otherwise the backend exits while Vite
+      # keeps serving :5173 and proxying /api to whatever owns the port, so the
+      # SPA's /api/me fails and silently falls back to the personal-only view.
+      - |
+        PORT="${INSIGHTS_ADDR##*:}"; PORT="${PORT:-4318}"
+        if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+          echo "dev-backend: port $PORT is already in use (common culprit: the wingman-lgtm OTLP container)." >&2
+          echo "  Free it:  docker stop wingman-lgtm" >&2
+          echo "  Or move:  INSIGHTS_ADDR=:4319 INSIGHTS_PROXY=http://localhost:4319 task dev-admin" >&2
+          exit 1
+        fi
       # go:embed web/dist must exist to compile; in dev the real UI is
       # served by Vite, which proxies /api and /v1 to this backend.
       - mkdir -p web/dist
@@ -59,7 +70,17 @@ tasks:
       # No oauth2-proxy in front of the dev server, so auth defaults off here;
       # an explicit INSIGHTS_AUTH_DISABLED (e.g. from .env) still wins.
       # INSIGHTS_DEV_ADMIN=true (via the dev-admin task) shows the org-wide dashboard.
-      - INSIGHTS_AUTH_DISABLED=${INSIGHTS_AUTH_DISABLED:-true} INSIGHTS_DEV_ADMIN=${INSIGHTS_DEV_ADMIN:-{{.DEV_ADMIN | default "false"}}} go run .
+      # Auto-load the demo directory (written by `task demo`) when present, so the
+      # department/location views work locally without extra env; an explicit
+      # INSIGHTS_DIRECTORY_FILE still wins, and production (no such file) is
+      # unaffected.
+      - |
+        DIR="${INSIGHTS_DIRECTORY_FILE:-}"
+        if [ -z "$DIR" ] && [ -f insights-directory.ndjson ]; then DIR="insights-directory.ndjson"; fi
+        INSIGHTS_DIRECTORY_FILE="$DIR" \
+        INSIGHTS_AUTH_DISABLED=${INSIGHTS_AUTH_DISABLED:-true} \
+        INSIGHTS_DEV_ADMIN=${INSIGHTS_DEV_ADMIN:-{{.DEV_ADMIN | default "false"}}} \
+        go run .
 
   dev-web:
     internal: true
@@ -77,10 +98,13 @@ tasks:
   clean:
     desc: Remove build artifacts
     cmds:
-      - rm -f insights insights.db insights.db.wal
+      - rm -f insights insights.db insights.db.wal insights-directory.ndjson
       - rm -rf web/dist
 
   demo:
     desc: Generate 24h of demo data and send to the server
     cmds:
-      - go run ./cmd/demogen -duration={{.DURATION | default "168h"}} -interval={{.INTERVAL | default "5m"}}
+      # Also writes insights-directory.ndjson (synthetic departments/locations).
+      # Start the server with INSIGHTS_DIRECTORY_FILE=insights-directory.ndjson
+      # to light up the department/location views (e.g. "Risk by department").
+      - go run ./cmd/demogen -duration={{.DURATION | default "168h"}} -interval={{.INTERVAL | default "5m"}} -directory={{.DIRECTORY | default "insights-directory.ndjson"}}

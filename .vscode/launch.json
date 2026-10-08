@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch MCP server",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/mcp",
+            "cwd": "${workspaceFolder}/mcp",
+            "env": {
+                "INSIGHTS_URL": "http://localhost:4318",
+                "INSIGHTS_TOKEN": "-",
+                "MCP_PORT": "8080"
+            }
+        }
+    ]
+}

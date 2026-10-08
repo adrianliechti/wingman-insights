@@ -17,6 +17,7 @@ import { Anomalies } from './pages/Anomalies'
 import { Customers } from './pages/Customers'
 import { Operations } from './pages/Operations'
 import { Finops } from './pages/Finops'
+import { Classification } from './pages/Classification'
 
 // Shell decides what the authenticated caller may see. Admins get the full
 // org-wide dashboard (nav + the routed page); everyone else sees only their
@@ -74,6 +75,7 @@ const pages = [
   { path: '/customers', component: Customers },
   { path: '/finops', component: Finops },
   { path: '/operations', component: Operations },
+  { path: '/classification', component: Classification },
   { path: '/traces', component: Traces },
 ]
 

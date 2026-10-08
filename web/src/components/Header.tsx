@@ -79,6 +79,7 @@ const NAV = [
   { to: '/customers', label: 'Customers' },
   { to: '/finops', label: 'FinOps' },
   { to: '/operations', label: 'Operations' },
+  { to: '/classification', label: 'Classification' },
   { to: '/traces', label: 'Traces' },
 ]
 

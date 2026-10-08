@@ -168,6 +168,33 @@ func (f Filter) httpClause() (string, []any) {
 	return b.String(), args
 }
 
+// classificationClause returns SQL conditions for the classification CTE (see
+// store_classification.go), whose principal columns are the *derived* user_id /
+// user_email: classification data points carry no user.id / user.email of their
+// own, so the CTE borrows the identity of the conversation they belong to. App
+// is matched on the row's own app_id. Provider and model are deliberately not
+// applied: on these rows gen_ai.request.model names the *classifier* model, not
+// the model the user chatted with, so filtering by it would answer a different
+// question than the rest of the dashboard (http_metrics drops the same filters
+// for the same reason, see httpClause).
+func (f Filter) classificationClause() (string, []any) {
+	var b strings.Builder
+	var args []any
+	add := func(c string, a []any) {
+		if c == "" {
+			return
+		}
+		b.WriteString(c)
+		args = append(args, a...)
+	}
+
+	add(userClause("user_id", "user_email", f.User))
+	add(attrClause("user_id", "user_email", "department", f.Department, f.DeptPrefix))
+	add(attrClause("user_id", "user_email", "location", f.Location, false))
+	add(appClause(f.App))
+	return b.String(), args
+}
+
 // modelClause builds an " AND request_model IN (?, ...)" condition for the given
 // models, or returns ("", nil) when none are set.
 func modelClause(models []string) (string, []any) {

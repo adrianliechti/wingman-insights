@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"insights/pkg/directory"
 
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -24,6 +29,7 @@ var (
 	dur      = flag.Duration("duration", 70*24*time.Hour, "how far back to generate data")
 	step     = flag.Duration("interval", time.Hour, "time between data points")
 	numUsers = flag.Int("users", 120, "number of distinct end users")
+	dirFile  = flag.String("directory", "insights-directory.ndjson", "write a directory NDJSON (departments/locations) here; empty to skip. Load it with INSIGHTS_DIRECTORY_FILE")
 )
 
 type modelDef struct {
@@ -44,6 +50,9 @@ type userDef struct {
 	joinAt    time.Time
 	churnAt   time.Time // zero => never churns
 	intensity float64   // 0..1
+
+	department string // directory department (drives the department comparison)
+	location   string // directory office location
 }
 
 var (
@@ -66,6 +75,26 @@ var (
 	}
 	httpRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/completions", "/api/agents/invoke"}
 	errorCodes = []int{400, 401, 403, 404, 429, 500, 502, 503}
+
+	// departmentDefs is the synthetic org. bias is the department's lean toward
+	// one classification topic, so the department-comparison chart shows a real
+	// split (e.g. Relationship Management drives client-advice/PII risks, Legal
+	// drives legal advice) rather than uniform noise. weight sets how much of the
+	// population lands in the department. location pins each to one office.
+	departmentDefs = []struct {
+		name     string
+		location string
+		weight   float64
+		bias     string // category the department leans toward (see categoryDefs)
+	}{
+		{"Engineering", "Zurich", 0.26, "software_development"},
+		{"Relationship Management", "Vaduz", 0.20, "client_communication"},
+		{"Research", "Zurich", 0.16, "market_research"},
+		{"Operations", "Singapore", 0.14, "document_summarization"},
+		{"Legal & Compliance", "Vaduz", 0.10, "hr_or_internal_policy"},
+		{"Human Resources", "Vienna", 0.08, "hr_or_internal_policy"},
+		{"Finance", "Vaduz", 0.06, "market_research"},
+	}
 
 	users []userDef
 )
@@ -113,6 +142,13 @@ func main() {
 	start := now.Add(-*dur)
 	demoStart, demoEnd = start, now
 	users = genUsers(start, now, *numUsers)
+
+	if *dirFile != "" {
+		if err := writeDirectory(*dirFile, users); err != nil {
+			log.Fatalf("write directory %s: %v", *dirFile, err)
+		}
+		log.Printf("wrote directory for %d users to %s (load with INSIGHTS_DIRECTORY_FILE=%s)", len(users), *dirFile, *dirFile)
+	}
 
 	var total, traces int
 	for t := start; t.Before(now); t = t.Add(*step) {
@@ -182,30 +218,98 @@ func genUsers(start, end time.Time, n int) []userDef {
 		if i < len(firstNames) {
 			name = firstNames[i]
 		}
+		dept := pickDepartment()
 		out = append(out, userDef{
-			id:        fmt.Sprintf("user-%03d", i+1),
-			email:     name + "@example.com",
-			service:   services[rand.IntN(len(services))],
-			joinAt:    joinAt,
-			churnAt:   churnAt,
-			intensity: intensity,
+			id:         fmt.Sprintf("user-%03d", i+1),
+			email:      name + "@example.com",
+			service:    services[rand.IntN(len(services))],
+			joinAt:     joinAt,
+			churnAt:    churnAt,
+			intensity:  intensity,
+			department: dept.name,
+			location:   dept.location,
 		})
 	}
 
 	// Pin two always-on power users for the spike / burst windows.
-	out[0] = userDef{id: "user-001", email: "alice@example.com", service: "chat-api", joinAt: start, intensity: 0.92}
-	out[1] = userDef{id: "user-002", email: "bob@example.com", service: "agent-service", joinAt: start, intensity: 0.85}
+	out[0] = userDef{id: "user-001", email: "alice@example.com", service: "chat-api", joinAt: start, intensity: 0.92,
+		department: "Relationship Management", location: "Vaduz"}
+	out[1] = userDef{id: "user-002", email: "bob@example.com", service: "agent-service", joinAt: start, intensity: 0.85,
+		department: "Engineering", location: "Zurich"}
 
 	// Pin an always-on "dev" user so the local dev identity (the placeholder set
 	// when auth is disabled) has data to view.
 	out = append(out, userDef{
-		id:        "dev",
-		email:     "dev@example.com",
-		service:   services[0],
-		joinAt:    start,
-		intensity: 0.8,
+		id:         "dev",
+		email:      "dev@example.com",
+		service:    services[0],
+		joinAt:     start,
+		intensity:  0.8,
+		department: "Engineering",
+		location:   "Zurich",
 	})
 	return out
+}
+
+// pickDepartment draws a department from the weighted org.
+func pickDepartment() struct {
+	name     string
+	location string
+	weight   float64
+	bias     string
+} {
+	r := rand.Float64()
+	var acc float64
+	for _, d := range departmentDefs {
+		acc += d.weight
+		if r < acc {
+			return d
+		}
+	}
+	return departmentDefs[len(departmentDefs)-1]
+}
+
+// departmentBias returns the topic a department leans toward, or "" when the
+// department is unknown (so classification falls back to the global mix).
+func departmentBias(name string) string {
+	for _, d := range departmentDefs {
+		if d.name == name {
+			return d.bias
+		}
+	}
+	return ""
+}
+
+// writeDirectory emits an NDJSON directory snapshot (one directory.Record per
+// alias) for the synthetic users, so the backend's file directory can resolve
+// their department/location. Each user contributes two aliases — the raw OTel
+// user.id and the email — because telemetry may carry either, and both must map
+// to the same canonical identity (keyed on the user id).
+func writeDirectory(path string, users []userDef) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for _, u := range users {
+		name := strings.TrimSuffix(u.email, "@example.com")
+		for _, alias := range []string{u.id, u.email} {
+			rec := directory.Record{
+				Alias:      strings.ToLower(alias),
+				ID:         u.id,
+				Name:       strings.ToUpper(name[:1]) + name[1:],
+				Kind:       directory.KindUser,
+				Department: u.department,
+				Location:   u.location,
+				Username:   name,
+			}
+			if err := enc.Encode(rec); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func activeUsers(t time.Time) []userDef {
@@ -329,6 +433,9 @@ func buildBatch(t time.Time, active []userDef) *colmetrics.ExportMetricsServiceR
 			ttfc := jitter(0.35, 0.6)
 			bySvc[svc] = append(bySvc[svc], histo("gen_ai.client.operation.time_to_first_chunk",
 				tsNano, count, ttfc*float64(count), ttfc*0.3, ttfc*2.5, baseAttrs...))
+			// wingman-chat classifies every chat prompt (topic + risks); embeddings
+			// are not classified.
+			bySvc[svc] = append(bySvc[svc], classificationMetrics(tsNano, sessionID, svc, departmentBias(u.department), count)...)
 		}
 	}
 
@@ -405,6 +512,135 @@ func httpMetrics(tsNano uint64) []*metrics.Metric {
 }
 
 var demoTools = []string{"web_search", "retrieve_documents", "execute_code", "summarize"}
+
+// classificationMetricName is the metric wingman-chat emits once per evaluated
+// dimension of a prompt: the winning category plus every configured risk.
+const classificationMetricName = "wingman.classification.score"
+
+// classifierModel is the small model wingman-chat uses for classification —
+// deliberately not the chat model, which is why the Classification view ignores
+// the provider/model filters.
+const classifierModel = "claude-haiku-4-5"
+
+// categoryDefs is the topic taxonomy; exactly one category wins per prompt, so
+// the weights double as the topic mix of the demo platform.
+var categoryDefs = []struct {
+	id     string
+	weight float64
+}{
+	{"software_development", 0.26},
+	{"document_summarization", 0.18},
+	{"general_knowledge", 0.16},
+	{"client_communication", 0.14},
+	{"market_research", 0.12},
+	{"hr_or_internal_policy", 0.08},
+	{"other_or_unclear", 0.06},
+}
+
+// riskDefs are the independent yes/no risk checks run on every prompt. base is
+// the per-prompt trigger probability; driven raises it for the topics that
+// actually provoke that risk, which is the structure the topic × risk matrix is
+// meant to reveal.
+var riskDefs = []struct {
+	id        string
+	threshold float64
+	base      float64
+	driven    map[string]float64
+}{
+	{"client-specific_investment_recommendation_or_portfolio_decision", 0.70, 0.010,
+		map[string]float64{"client_communication": 0.24, "market_research": 0.12}},
+	{"credit_or_creditworthiness_decision", 0.60, 0.005,
+		map[string]float64{"client_communication": 0.09}},
+	{"human_resources_decision", 0.65, 0.004,
+		map[string]float64{"hr_or_internal_policy": 0.30}},
+	{"business-critical_financial_calculation", 0.60, 0.020,
+		map[string]float64{"market_research": 0.18, "document_summarization": 0.06}},
+	{"personal_data_disclosure", 0.60, 0.030,
+		map[string]float64{"hr_or_internal_policy": 0.22, "client_communication": 0.16}},
+	{"legal_advice", 0.65, 0.010,
+		map[string]float64{"document_summarization": 0.07, "client_communication": 0.05}},
+}
+
+// pickCategory draws a winning topic from the weighted taxonomy. When bias names
+// a category, that category's weight is boosted so a department leans toward its
+// characteristic work (see departmentDefs) without ever being the only topic.
+func pickCategory(bias string) string {
+	const boost = 0.45 // extra probability mass handed to the biased category
+	total := 1.0
+	if bias != "" {
+		total += boost
+	}
+	r := rand.Float64() * total
+	var acc float64
+	for _, c := range categoryDefs {
+		w := c.weight
+		if c.id == bias {
+			w += boost
+		}
+		acc += w
+		if r < acc {
+			return c.id
+		}
+	}
+	return categoryDefs[len(categoryDefs)-1].id
+}
+
+// classificationMetrics emits the classification data points for one user's
+// prompts in one interval: the winning category (matched on every prompt) and,
+// per risk, a matched and an unmatched data point. Like the real exporter it
+// carries no user.id/user.email — only gen_ai.conversation.id — so the dashboard
+// has to attribute risks through the conversation, and unmatched risks report a
+// score of 0. bias is the user's department lean (may be "").
+func classificationMetrics(tsNano uint64, sessionID, svc, bias string, prompts uint64) []*metrics.Metric {
+	if prompts == 0 {
+		return nil
+	}
+	category := pickCategory(bias)
+	base := []*common.KeyValue{
+		kv("gen_ai.operation.name", "evaluate"),
+		kv("gen_ai.request.model", classifierModel),
+		kv("gen_ai.conversation.id", sessionID),
+		kv("service.peer.name", svc),
+	}
+	dim := func(kind, id string, matched bool, threshold float64) []*common.KeyValue {
+		return withAttr(base,
+			kv("wingman.classification.kind", kind),
+			kv("wingman.classification.id", id),
+			kv("wingman.classification.matched", fmt.Sprintf("%t", matched)),
+			kv("wingman.classification.threshold", strconv.FormatFloat(threshold, 'f', -1, 64)))
+	}
+
+	var catSum float64
+	for i := uint64(0); i < prompts; i++ {
+		catSum += jitter(0.85, 0.12)
+	}
+	out := []*metrics.Metric{histo(classificationMetricName, tsNano, prompts, catSum,
+		0.6, 1.0, dim("category", category, true, 0.6)...)}
+
+	for _, r := range riskDefs {
+		p := r.base
+		if v, ok := r.driven[category]; ok {
+			p = v
+		}
+		var fired uint64
+		var firedSum float64
+		for i := uint64(0); i < prompts; i++ {
+			if rand.Float64() < p {
+				fired++
+				firedSum += r.threshold + rand.Float64()*(1-r.threshold)
+			}
+		}
+		if fired > 0 {
+			out = append(out, histo(classificationMetricName, tsNano, fired, firedSum,
+				r.threshold, 1.0, dim("risk", r.id, true, r.threshold)...))
+		}
+		if fired < prompts {
+			out = append(out, histo(classificationMetricName, tsNano, prompts-fired, 0,
+				0, 0, dim("risk", r.id, false, r.threshold)...))
+		}
+	}
+	return out
+}
 
 func randID(n int) []byte {
 	b := make([]byte, n)

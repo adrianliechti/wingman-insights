@@ -121,4 +121,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	httpg.getWithForwardedAdmin("/timeseries", jsonRouteIv(h, h.store.QueryHTTPTimeseries))
 	httpg.getWithForwardedAdmin("/requests-timeseries", jsonRouteIv(h, h.store.QueryHTTPRequestsTimeseries))
 	httpg.getWithForwardedAdmin("/errors-by-code", jsonRoute(h, h.store.QueryHTTPErrorsByCode))
+
+	classification := group("/classification")
+	classification.getWithForwardedAdmin("/stats", jsonRoute(h, h.store.QueryClassificationStats))
+	classification.getWithForwardedAdmin("/summary", jsonRoute(h, h.store.QueryClassificationSummary))
+	classification.getWithForwardedAdmin("/risk-timeseries", jsonRouteIv(h, h.store.QueryClassificationRiskTimeseries))
+	classification.getWithForwardedAdmin("/matrix", jsonRoute(h, h.store.QueryClassificationMatrix))
+	classification.getWithForwardedAdmin("/departments", jsonRoute(h, h.store.QueryClassificationByDepartment))
 }

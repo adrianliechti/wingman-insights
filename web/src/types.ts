@@ -284,6 +284,61 @@ export interface BurstRow {
   active_minutes: number
 }
 
+// ClassificationStats mirrors store.ClassificationStats: the headline numbers of
+// the classification view. prompts counts classified prompts via the winning
+// category (exactly one category matches per prompt); triggers is how often any
+// risk fired. Since risks are independent checks, several can fire on one
+// prompt, so triggers_per_hundred can exceed 100.
+export interface ClassificationStats {
+  prompts: number
+  conversations: number
+  users: number
+  risk_evaluations: number
+  triggers: number
+  triggers_per_hundred: number
+}
+
+// ClassificationRow mirrors store.ClassificationRow: one classified dimension (a
+// category or risk). evaluations counts evaluations of that dimension; matched is
+// how many reached the threshold — a risk's triggers, or a category's prompts.
+// avg_score is the mean score of the matched evaluations only (an unmatched risk
+// reports 0). last_matched is absent when the dimension never matched.
+export interface ClassificationRow {
+  kind: 'category' | 'risk'
+  id: string
+  evaluations: number
+  matched: number
+  match_rate: number
+  avg_score: number
+  threshold: number
+  last_matched?: string
+}
+
+// ClassificationMatrixCell mirrors store.ClassificationMatrixCell: how often a
+// risk fired in conversations whose dominant topic is `category`. prompts counts
+// the prompts those conversations held — the denominator for the cell's rate, so
+// it is conversation-scoped and can differ from the topic's own prompt count.
+export interface ClassificationMatrixCell {
+  category: string
+  risk: string
+  triggers: number
+  prompts: number
+}
+
+// ClassificationDepartmentRow mirrors store.ClassificationDepartmentRow: one
+// department's classified activity. triggers_per_hundred normalizes triggers by
+// prompt volume so departments of different sizes are comparable. department is
+// empty for principals with no resolved department (the UI labels it
+// "Unassigned").
+export interface ClassificationDepartmentRow {
+  department: string
+  users: number
+  prompts: number
+  triggers: number
+  triggers_per_hundred: number
+  top_risk: string
+}
+
 // Me is the caller's identity and authorization, from GET /api/me. When admin
 // is false the SPA shows only the personal-usage view. user is the identity
 // forwarded by oauth2-proxy (typically the caller's email); name is the

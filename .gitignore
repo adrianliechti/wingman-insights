@@ -1,3 +1,4 @@
 .DS_Store
 /insights.db
 /insights.db.wal
+/insights-directory.ndjson

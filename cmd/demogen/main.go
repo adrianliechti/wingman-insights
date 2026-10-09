@@ -25,11 +25,13 @@ import (
 )
 
 var (
-	endpoint = flag.String("endpoint", "http://localhost:4318/v1/metrics", "OTLP metrics endpoint")
-	dur      = flag.Duration("duration", 70*24*time.Hour, "how far back to generate data")
-	step     = flag.Duration("interval", time.Hour, "time between data points")
-	numUsers = flag.Int("users", 120, "number of distinct end users")
-	dirFile  = flag.String("directory", "insights-directory.ndjson", "write a directory NDJSON (departments/locations) here; empty to skip. Load it with INSIGHTS_DIRECTORY_FILE")
+	endpoint  = flag.String("endpoint", "http://localhost:4318/v1/metrics", "OTLP metrics endpoint")
+	dur       = flag.Duration("duration", 70*24*time.Hour, "how far back to generate data")
+	step      = flag.Duration("interval", time.Hour, "time between data points")
+	numUsers  = flag.Int("users", 120, "number of distinct end users")
+	numDepts  = flag.Int("departments", len(baseDepartments), "number of distinct departments to spread users across; large values exercise the dashboard's top-N department charts")
+	dirFile   = flag.String("directory", "insights-directory.ndjson", "write a directory NDJSON (departments/locations) here; empty to skip. Load it with INSIGHTS_DIRECTORY_FILE")
+	withRisks = flag.Bool("risks", true, "emit risk classifications; -risks=false mirrors a deployment that classifies topics only")
 )
 
 type modelDef struct {
@@ -81,12 +83,10 @@ var (
 	// split (e.g. Relationship Management drives client-advice/PII risks, Legal
 	// drives legal advice) rather than uniform noise. weight sets how much of the
 	// population lands in the department. location pins each to one office.
-	departmentDefs = []struct {
-		name     string
-		location string
-		weight   float64
-		bias     string // category the department leans toward (see categoryDefs)
-	}{
+	//
+	// These are the archetypes; -departments=N expands them into a larger org
+	// (see genDepartments), because a real tenant can have hundreds.
+	baseDepartments = []departmentDef{
 		{"Engineering", "Zurich", 0.26, "software_development"},
 		{"Relationship Management", "Vaduz", 0.20, "client_communication"},
 		{"Research", "Zurich", 0.16, "market_research"},
@@ -96,8 +96,54 @@ var (
 		{"Finance", "Vaduz", 0.06, "market_research"},
 	}
 
+	// departmentDefs is the org actually generated; see genDepartments.
+	departmentDefs []departmentDef
+	// departmentBiasByName indexes departmentDefs for lookup, since the bias is
+	// resolved per user per interval and the org can be large.
+	departmentBiasByName map[string]string
+
 	users []userDef
 )
+
+// departmentDef is one synthetic department.
+type departmentDef struct {
+	name     string
+	location string
+	weight   float64
+	bias     string // category the department leans toward (see categoryDefs)
+}
+
+var departmentSites = []string{
+	"Zurich", "Vaduz", "Vienna", "Singapore", "London", "Hong Kong",
+	"Dubai", "Geneva", "Salzburg", "Frankfurt", "New York", "Tokyo",
+}
+
+// genDepartments expands the archetypes to n departments. Beyond the archetypes
+// it synthesizes named sub-units, which exist so the dashboard can be exercised
+// against the department counts a real tenant has (hundreds) rather than the
+// handful the archetypes provide. Per-department volume is left to vary through
+// user intensity instead of the weights, so the long tail of small teams the
+// top-N charts must cope with emerges naturally.
+func genDepartments(n int) []departmentDef {
+	if n < 1 {
+		n = 1
+	}
+	if n <= len(baseDepartments) {
+		return baseDepartments[:n]
+	}
+	out := make([]departmentDef, 0, n)
+	out = append(out, baseDepartments...)
+	for i := len(out); i < n; i++ {
+		b := baseDepartments[i%len(baseDepartments)]
+		out = append(out, departmentDef{
+			name:     fmt.Sprintf("%s %s %03d", b.name, []string{"Unit", "Desk", "Team", "Group"}[i%4], i-len(baseDepartments)+1),
+			location: departmentSites[i%len(departmentSites)],
+			weight:   1.0 / float64(n),
+			bias:     b.bias,
+		})
+	}
+	return out
+}
 
 // spike windows make consumption anomalies detectable in demo data: one user
 // going wild, and one service-wide surge. user-001/user-002 are pinned active
@@ -141,6 +187,11 @@ func main() {
 	now := time.Now().UTC()
 	start := now.Add(-*dur)
 	demoStart, demoEnd = start, now
+	departmentDefs = genDepartments(*numDepts)
+	departmentBiasByName = make(map[string]string, len(departmentDefs))
+	for _, d := range departmentDefs {
+		departmentBiasByName[d.name] = d.bias
+	}
 	users = genUsers(start, now, *numUsers)
 
 	if *dirFile != "" {
@@ -218,7 +269,7 @@ func genUsers(start, end time.Time, n int) []userDef {
 		if i < len(firstNames) {
 			name = firstNames[i]
 		}
-		dept := pickDepartment()
+		dept := pickDepartment(i)
 		out = append(out, userDef{
 			id:         fmt.Sprintf("user-%03d", i+1),
 			email:      name + "@example.com",
@@ -251,13 +302,14 @@ func genUsers(start, end time.Time, n int) []userDef {
 	return out
 }
 
-// pickDepartment draws a department from the weighted org.
-func pickDepartment() struct {
-	name     string
-	location string
-	weight   float64
-	bias     string
-} {
+// pickDepartment assigns a department to user index i. With only the archetypes
+// it draws from the weighted org; in an expanded org (-departments) it round-
+// robins so every department is actually represented, leaving per-department
+// volume to emerge from the users' differing intensity.
+func pickDepartment(i int) departmentDef {
+	if len(departmentDefs) > len(baseDepartments) {
+		return departmentDefs[i%len(departmentDefs)]
+	}
 	r := rand.Float64()
 	var acc float64
 	for _, d := range departmentDefs {
@@ -272,12 +324,7 @@ func pickDepartment() struct {
 // departmentBias returns the topic a department leans toward, or "" when the
 // department is unknown (so classification falls back to the global mix).
 func departmentBias(name string) string {
-	for _, d := range departmentDefs {
-		if d.name == name {
-			return d.bias
-		}
-	}
-	return ""
+	return departmentBiasByName[name]
 }
 
 // writeDirectory emits an NDJSON directory snapshot (one directory.Record per
@@ -618,6 +665,9 @@ func classificationMetrics(tsNano uint64, sessionID, svc, bias string, prompts u
 		0.6, 1.0, dim("category", category, true, 0.6)...)}
 
 	for _, r := range riskDefs {
+		if !*withRisks {
+			break // -risks=false mirrors a deployment that classifies topics only
+		}
 		p := r.base
 		if v, ok := r.driven[category]; ok {
 			p = v

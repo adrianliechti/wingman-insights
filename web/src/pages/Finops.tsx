@@ -5,10 +5,10 @@ import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, ContextBucketRow, CostRow, TimeseriesPoint } from '../types'
 import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
-import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, TimeseriesPanel, CHART } from '../components/charts'
+import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, SegToggle, TimeseriesPanel, CHART } from '../components/charts'
 import { costsByApp, costsByDepartment, costsByModel, costsByUser } from '../lib/costs'
 import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
@@ -103,40 +103,11 @@ const departmentColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
-// SegToggle is a compact segmented control for switching a chart dimension.
-function SegToggle<T extends string>({
-  value,
-  options,
-  onChange,
-}: {
-  value: T
-  options: readonly T[]
-  onChange: (v: T) => void
-}) {
-  return (
-    <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">
-      {options.map((g) => (
-        <button
-          key={g}
-          onClick={() => onChange(g)}
-          className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
-            value === g
-              ? 'bg-indigo-600 text-white'
-              : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          {g}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 // ContextHistogram shows how many LLM calls fall in each prompt-size bin. The
 // bins come zero-filled and ordered from the API; the 200k/272k edges mark
 // where long-context pricing kicks in, so the tail is the premium-billed share.
 function ContextHistogram({ rows, loading }: { rows: ContextBucketRow[] | null; loading: boolean }) {
-  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  if (loading) return <PanelLoading />
   const bins = rows ?? []
   const total = bins.reduce((a, r) => a + r.requests, 0)
   if (total === 0) return <PanelMessage>No data</PanelMessage>
@@ -399,6 +370,8 @@ export function Finops() {
   return (
     <div className="grid grid-cols-1 gap-5">
       <StatStrip
+        loading={breakdown.loading || budget.loading}
+        firstLoad={breakdown.firstLoad}
         stats={[
           {
             label: 'Spend (range)',
@@ -454,18 +427,22 @@ export function Finops() {
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           <div>
             <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By App</p>
-            {breakdown.loading ? (
-              <PanelMessage>Loading…</PanelMessage>
+            {breakdown.firstLoad ? (
+              <PanelLoading />
             ) : (
-              <SpendDoughnut rows={byApp} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
+              <Stale when={breakdown.stale}>
+                <SpendDoughnut rows={byApp} labelOf={(r) => r.app_name || r.app_id || 'unattributed'} />
+              </Stale>
             )}
           </div>
           <div>
             <p className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-gray-500">By Model</p>
-            {breakdown.loading ? (
-              <PanelMessage>Loading…</PanelMessage>
+            {breakdown.firstLoad ? (
+              <PanelLoading />
             ) : (
-              <SpendDoughnut rows={models} labelOf={(r) => r.request_model || '—'} />
+              <Stale when={breakdown.stale}>
+                <SpendDoughnut rows={models} labelOf={(r) => r.request_model || '—'} />
+              </Stale>
             )}
           </div>
         </div>
@@ -475,20 +452,23 @@ export function Finops() {
         title="Cost Allocation"
         sub="Suggested cost-share split across the biggest consumers (by user.id) · small consumers rolled up as Others"
       >
-        {breakdown.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {breakdown.firstLoad ? (
+          <PanelLoading />
         ) : (
-          <AllocationKey rows={byUser} labelOf={userLabel} />
+          <Stale when={breakdown.stale}>
+            <AllocationKey rows={byUser} labelOf={userLabel} />
+          </Stale>
         )}
       </Panel>
 
       <Panel title="Cost per Application" sub="Priced token usage attributed via service.peer.name · click a row to filter">
-        {breakdown.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {breakdown.firstLoad ? (
+          <PanelLoading />
         ) : byApp.length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={breakdown.loading}
             data={byApp}
             columns={appColumns}
             initialSort={[{ id: 'total_cost', desc: true }]}
@@ -513,10 +493,11 @@ export function Finops() {
             </a>
           }
         >
-          {breakdown.loading ? (
-            <PanelMessage>Loading…</PanelMessage>
+          {breakdown.firstLoad ? (
+            <PanelLoading />
           ) : (
             <DataTable
+              loading={breakdown.loading}
               data={byDept}
               columns={departmentColumns}
               initialSort={[{ id: 'total_cost', desc: true }]}
@@ -541,12 +522,13 @@ export function Finops() {
           </a>
         }
       >
-        {breakdown.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {breakdown.firstLoad ? (
+          <PanelLoading />
         ) : byUser.length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={breakdown.loading}
             data={byUser}
             columns={userColumns}
             initialSort={[{ id: 'total_cost', desc: true }]}

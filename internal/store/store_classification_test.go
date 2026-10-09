@@ -288,3 +288,163 @@ func TestClassificationByDepartment(t *testing.T) {
 		t.Errorf("Legal & Compliance = %+v, want 1 prompt / 1 trigger / credit", legal)
 	}
 }
+
+// TestClassificationTopicTimeseries checks that the topic trend plots matched
+// category prompts only, one series per topic, summing to the prompt volume.
+func TestClassificationTopicTimeseries(t *testing.T) {
+	s, ctx := classificationFixture(t)
+	from, to := classificationWindow()
+
+	points, err := s.QueryClassificationTopicTimeseries(ctx, from, to, "1 hour", Filter{})
+	if err != nil {
+		t.Fatalf("topic timeseries: %v", err)
+	}
+	byTopic := map[string]float64{}
+	var total float64
+	for _, p := range points {
+		byTopic[p.Label] += p.Value
+		total += p.Value
+	}
+	if byTopic["legal"] != 4 || byTopic["hr"] != 1 || len(byTopic) != 2 {
+		t.Errorf("topic series = %v, want legal=4 hr=1 only", byTopic)
+	}
+	// The series must sum to the headline prompt count — one category per prompt.
+	if total != 5 {
+		t.Errorf("topic series total = %v, want 5 (the prompt volume)", total)
+	}
+}
+
+// TestClassificationDepartmentTopics verifies each department's prompts are
+// broken down by winning topic, and that a department's cells sum to the prompt
+// volume QueryClassificationByDepartment reports for it.
+func TestClassificationDepartmentTopics(t *testing.T) {
+	s, ctx := classificationFixture(t)
+	s.SetDirectory(classDeptStub{})
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
+	from, to := classificationWindow()
+
+	cells, err := s.QueryClassificationDepartmentTopics(ctx, from, to, 0, Filter{})
+	if err != nil {
+		t.Fatalf("department topics: %v", err)
+	}
+	got := map[string]int64{}
+	for _, c := range cells {
+		got[c.Department+"/"+c.Category] = c.Prompts
+	}
+	if got["Engineering/legal"] != 4 {
+		t.Errorf("Engineering/legal = %d, want 4", got["Engineering/legal"])
+	}
+	if got["Legal & Compliance/hr"] != 1 {
+		t.Errorf("Legal & Compliance/hr = %d, want 1", got["Legal & Compliance/hr"])
+	}
+	if len(got) != 2 {
+		t.Errorf("cells = %v, want exactly 2 (one topic per department)", got)
+	}
+}
+
+// TestFoldDepartmentTopicTail covers the top-N cap that keeps the topic-mix
+// chart plottable for a tenant with hundreds of departments: the leading
+// departments survive intact, everything below is summarized into one Other
+// group, and no prompt is lost or double counted in the process.
+func TestFoldDepartmentTopicTail(t *testing.T) {
+	// 5 departments of descending volume, two topics each.
+	var cells []ClassificationDepartmentTopicCell
+	vol := map[string]int64{"big": 100, "mid": 60, "small": 30, "tiny": 10, "micro": 4}
+	for d, v := range vol {
+		cells = append(cells,
+			ClassificationDepartmentTopicCell{Department: d, Category: "legal", Prompts: v * 3 / 4},
+			ClassificationDepartmentTopicCell{Department: d, Category: "hr", Prompts: v - v*3/4},
+		)
+	}
+	total := func(in []ClassificationDepartmentTopicCell) int64 {
+		var n int64
+		for _, c := range in {
+			n += c.Prompts
+		}
+		return n
+	}
+	want := total(cells)
+
+	// Under the cap: returned untouched.
+	if got := foldDepartmentTopicTail(cells, 5); len(got) != len(cells) {
+		t.Errorf("limit == department count folded anyway: %d rows, want %d", len(got), len(cells))
+	}
+	if got := foldDepartmentTopicTail(cells, 0); len(got) != len(cells) {
+		t.Errorf("limit 0 folded anyway: %d rows, want %d", len(got), len(cells))
+	}
+
+	got := foldDepartmentTopicTail(cells, 2)
+	if total(got) != want {
+		t.Errorf("prompts after fold = %d, want %d (the fold must conserve volume)", total(got), want)
+	}
+
+	kept := map[string]bool{}
+	var otherPrompts, otherRows int64
+	var otherCount int64
+	for _, c := range got {
+		if c.Other {
+			otherRows++
+			otherPrompts += c.Prompts
+			otherCount = c.OtherCount
+			if c.Department != "" {
+				t.Errorf("Other row carries department %q, want empty", c.Department)
+			}
+			continue
+		}
+		kept[c.Department] = true
+	}
+	// Only the two highest-volume departments stay individual.
+	if len(kept) != 2 || !kept["big"] || !kept["mid"] {
+		t.Errorf("kept = %v, want exactly big and mid", kept)
+	}
+	if otherCount != 3 {
+		t.Errorf("OtherCount = %d, want 3 folded departments", otherCount)
+	}
+	if otherPrompts != vol["small"]+vol["tiny"]+vol["micro"] {
+		t.Errorf("Other prompts = %d, want %d", otherPrompts, vol["small"]+vol["tiny"]+vol["micro"])
+	}
+	// The tail collapses to one row per topic, not one per department.
+	if otherRows != 2 {
+		t.Errorf("Other rows = %d, want 2 (one per topic)", otherRows)
+	}
+}
+
+// TestClassificationDepartmentTopicsLimit checks the cap end to end through the
+// query, with the directory resolving two departments.
+func TestClassificationDepartmentTopicsLimit(t *testing.T) {
+	s, ctx := classificationFixture(t)
+	s.SetDirectory(classDeptStub{})
+	if err := s.SyncDirectory(ctx); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
+	from, to := classificationWindow()
+
+	// limit 1 keeps only Engineering (4 prompts) and folds Legal & Compliance (1).
+	got, err := s.QueryClassificationDepartmentTopics(ctx, from, to, 1, Filter{})
+	if err != nil {
+		t.Fatalf("department topics: %v", err)
+	}
+	var named, other int
+	var prompts int64
+	for _, c := range got {
+		prompts += c.Prompts
+		if c.Other {
+			other++
+			if c.OtherCount != 1 {
+				t.Errorf("OtherCount = %d, want 1", c.OtherCount)
+			}
+		} else if c.Department != "Engineering" {
+			t.Errorf("kept department %q, want Engineering", c.Department)
+		} else {
+			named++
+		}
+	}
+	if named != 1 || other != 1 {
+		t.Errorf("rows: named=%d other=%d, want 1/1", named, other)
+	}
+	if prompts != 5 {
+		t.Errorf("prompts after cap = %d, want 5 (all prompts retained)", prompts)
+	}
+}

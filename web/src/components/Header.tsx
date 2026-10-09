@@ -5,6 +5,7 @@ import { useDash, useApi, useFilterNav, useMe } from '../dash'
 import type { DashSearch, RangeKey } from '../dash'
 import type { UsageByAppRow } from '../types'
 import { MultiFilterSelect } from './FilterBar'
+import { NAV, resolveView, viewSearch } from '../nav'
 
 const PRESETS: { label: string; value: RangeKey }[] = [
   { label: '24h', value: '24h' },
@@ -71,17 +72,6 @@ function applyThemeMode(mode: ThemeMode) {
   const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
   document.documentElement.classList.toggle('dark', dark)
 }
-
-const NAV = [
-  { to: '/', label: 'Personal' },
-  { to: '/overview', label: 'Overview' },
-  { to: '/anomalies', label: 'Anomalies' },
-  { to: '/customers', label: 'Customers' },
-  { to: '/finops', label: 'FinOps' },
-  { to: '/operations', label: 'Operations' },
-  { to: '/classification', label: 'Classification' },
-  { to: '/traces', label: 'Traces' },
-]
 
 // personalOnly renders the header for the personal-usage view: the page nav is
 // hidden (a non-admin has nowhere else to go), but the time-range controls stay
@@ -244,7 +234,10 @@ export function Header({
       <div key={item.to} className={opts?.stacked ? 'flex flex-col' : 'flex items-center'}>
         <Link
           to={item.to}
-          search={(prev: DashSearch) => prev}
+          // A sub-view belongs to the section it lives in, so switching sections
+          // drops it: carrying e.g. view=anomalies onto Operations would leave a
+          // meaningless param in the URL and no submenu entry highlighted.
+          search={(prev: DashSearch) => ({ ...prev, view: undefined })}
           onClick={opts?.onNavigate}
           className={
             opts?.stacked
@@ -269,6 +262,58 @@ export function Header({
           ))}
       </div>
     ))
+
+  // The current section's submenu. Related pages are grouped under one nav
+  // entry (Operations → Metrics / Traces), so these are links on the `view`
+  // param rather than buttons: each sub-view stays bookmarkable, shareable and
+  // part of the back-button history. Underlined tabs rather than the main nav's
+  // filled pills, to read as a level below it.
+  const views = currentPage?.views
+  const activeView = views ? resolveView(views, dash.search.view) : undefined
+
+  const subLinks = (opts?: { stacked?: boolean; onNavigate?: () => void }) =>
+    views && currentPage
+      ? views.map((v) => {
+          const on = activeView === v.id
+          return (
+            <Link
+              key={v.id}
+              to={currentPage.to}
+              search={(prev: DashSearch) => ({ ...prev, view: viewSearch(views, v.id) })}
+              onClick={opts?.onNavigate}
+              // Every sub-link targets the same path, so the router's default
+              // active check (path only) would mark them all. Comparing the
+              // search too makes it exact, which also keeps the default view
+              // from matching while another view is selected.
+              activeOptions={{ exact: true, includeSearch: true }}
+              // Set explicitly as well: resolveView falls back to the default
+              // view for an unrecognised ?view=, where the router's exact match
+              // finds nothing and the accessible state would otherwise
+              // disagree with the highlight.
+              aria-current={on ? 'page' : undefined}
+              className={
+                opts?.stacked
+                  ? `rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                      on
+                        ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300'
+                        : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+                    }`
+                  : // Classic tabs: -mb-px pulls the 2px marker down onto the
+                    // bar's own border so the active view reads as attached to
+                    // the content below, instead of stacking a second line
+                    // above it.
+                    `-mb-px whitespace-nowrap border-b-2 px-2.5 pb-2 pt-0.5 text-xs font-medium transition-colors ${
+                      on
+                        ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                        : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-900 dark:text-gray-400 dark:hover:border-gray-700 dark:hover:text-white'
+                    }`
+              }
+            >
+              {v.label}
+            </Link>
+          )
+        })
+      : null
 
   return (
     <header className="pb-5">
@@ -305,25 +350,39 @@ export function Header({
                   </button>
                 </div>
                 {navLinks({ stacked: true, onNavigate: () => setNavOpen(false) })}
+                {views && (
+                  <>
+                    <span className="my-1 h-px w-full bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
+                    <span className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      {currentPage?.label}
+                    </span>
+                    {subLinks({ stacked: true, onNavigate: () => setNavOpen(false) })}
+                  </>
+                )}
               </div>
             </div>
           )}
           <div className="flex min-w-0 shrink items-center gap-2.5">
             <Receipt className="h-7 w-7 shrink-0 text-indigo-600" />
-            <h1
-              className={`hidden shrink-0 whitespace-nowrap text-lg font-semibold tracking-tight text-gray-900 lg:block dark:text-white ${
-                personalOnly || !currentPage ? 'sm:block' : ''
-              }`}
-            >
-              AI Insights
-            </h1>
-            {!personalOnly && currentPage && (
-              <>
-                <span className="hidden h-5 w-px shrink-0 bg-gray-200 sm:block lg:hidden dark:bg-gray-700" aria-hidden="true" />
-                <span className="hidden min-w-0 truncate text-lg font-medium text-gray-400 sm:block lg:hidden dark:text-gray-500">
+            {personalOnly ? (
+              // A non-admin has no page nav, so nothing else would name the
+              // product — the mark alone would leave the bar unidentified.
+              // Still dropped on the narrowest screens, where the range
+              // controls need the width more.
+              <h1 className="hidden shrink-0 whitespace-nowrap text-lg font-semibold tracking-tight text-gray-900 sm:block dark:text-white">
+                AI Insights
+              </h1>
+            ) : (
+              currentPage && (
+                // For an admin the nav names the product's sections, so the
+                // wordmark is redundant and the section is what's worth stating
+                // — but only below lg, where the nav sits behind the drawer.
+                // Above that it stays as the document's heading while the
+                // active pill carries it visually.
+                <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight text-gray-900 lg:sr-only dark:text-white">
                   {currentPage.label}
-                </span>
-              </>
+                </h1>
+              )
             )}
           </div>
           {!personalOnly && (
@@ -480,6 +539,20 @@ export function Header({
           </div>
         </div>
       </div>
+
+      {/* A section with several views gets its own tab bar on the content
+          gutter — the same edge the filter bar and every panel below use — with
+          its rule spanning the full width. That full span is what makes it read
+          as this page's tab bar rather than as a child of whichever nav pill it
+          happens to sit beneath. */}
+      {!personalOnly && views && currentPage && (
+        <nav
+          aria-label={`${currentPage.label} views`}
+          className="mt-4 flex min-w-0 items-center gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800"
+        >
+          {subLinks()}
+        </nav>
+      )}
     </header>
   )
 }

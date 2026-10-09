@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-table'
 import type { ColumnDef, SortingState } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
+import { PanelLoadingRows, Stale } from './Panel'
 
 // showMoreStep is how many extra rows each "Show more" click reveals on a
 // limited table.
@@ -18,6 +19,7 @@ export function DataTable<T>({
   initialSort,
   onRowClick,
   initialLimit,
+  loading,
 }: {
   data: T[]
   columns: ColumnDef<T, any>[]
@@ -28,6 +30,10 @@ export function DataTable<T>({
   // unbounded (users, departments, routes) and would otherwise render thousands
   // of DOM rows. Unset renders everything.
   initialLimit?: number
+  // loading marks the rows as not matching the current filters yet: placeholder
+  // rows before there is anything to show, dimmed existing rows during a
+  // refetch. Optional, so callers that never refetch can ignore it.
+  loading?: boolean
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSort ?? [])
   const [limit, setLimit] = useState(initialLimit)
@@ -43,8 +49,11 @@ export function DataTable<T>({
   const rows = limit ? allRows.slice(0, limit) : allRows
   const hidden = allRows.length - rows.length
 
+  if (loading && data.length === 0) return <PanelLoadingRows />
+
   return (
-    <div className="overflow-x-auto">
+    <Stale when={loading}>
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           {table.getHeaderGroups().map((hg) => (
@@ -119,6 +128,7 @@ export function DataTable<T>({
           </button>
         </div>
       )}
-    </div>
+      </div>
+    </Stale>
   )
 }

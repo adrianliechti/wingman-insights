@@ -18,6 +18,10 @@ export interface DashSearch {
   location?: string[]
   provider?: string[]
   models?: string[]
+  // view selects between a page's tabs (currently Operations: metrics/traces).
+  // It lives in the URL like every other piece of view state, so a tab can be
+  // linked and bookmarked, and the browser's back button steps through it.
+  view?: string
 }
 
 const RANGE_KEYS: RangeKey[] = ['24h', '3d', '7d', '14d', '30d']
@@ -42,6 +46,7 @@ export function validateSearch(search: Record<string, unknown>): DashSearch {
     location: strList(search.location),
     provider: strList(search.provider),
     models: strList(search.models),
+    view: str(search.view),
   }
 }
 
@@ -220,5 +225,17 @@ export function useApi<T>(path: string | null, extra?: Params) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  return { data, loading, error, params }
+  return {
+    data,
+    loading,
+    error,
+    params,
+    // firstLoad separates the two loading states callers need to render
+    // differently: there is nothing on screen yet (show a placeholder) versus a
+    // previous result is still showing while a new one is in flight (keep it,
+    // but mark it stale). data survives a refetch, so loading alone cannot tell
+    // them apart.
+    firstLoad: loading && data === null,
+    stale: loading && data !== null,
+  }
 }

@@ -2,3 +2,7 @@
 /insights.db
 /insights.db.wal
 /insights-directory.ndjson
+# Compiled binaries: `task build` produces ./insights, and a bare
+# `go build ./cmd/...` drops each command's binary in the repo root.
+/insights
+/demogen

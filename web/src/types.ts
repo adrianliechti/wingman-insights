@@ -339,6 +339,21 @@ export interface ClassificationDepartmentRow {
   top_risk: string
 }
 
+// ClassificationDepartmentTopicCell mirrors
+// store.ClassificationDepartmentTopicCell: how many prompts a department sent
+// about one topic. A department's cells sum to its prompt volume, so they stack
+// into a topic mix per team.
+export interface ClassificationDepartmentTopicCell {
+  department: string
+  category: string
+  prompts: number
+  // other marks the synthetic group aggregating every department outside the
+  // server-side top N, with other_count naming how many it covers. A tenant can
+  // have hundreds of departments, so the tail is summarized rather than plotted.
+  other?: boolean
+  other_count?: number
+}
+
 // Me is the caller's identity and authorization, from GET /api/me. When admin
 // is false the SPA shows only the personal-usage view. user is the identity
 // forwarded by oauth2-proxy (typically the caller's email); name is the

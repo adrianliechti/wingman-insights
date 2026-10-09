@@ -1,7 +1,7 @@
 import { useApi, useDash } from '../dash'
 import type { AnomalyPoint, TimeseriesPoint } from '../types'
 import { ChartLegend, Line, PartialNote, chartOptions, groupSeries, CHART } from './charts'
-import { Panel, PanelMessage } from './Panel'
+import { Panel, PanelLoading, PanelMessage } from './Panel'
 import { fmtTokens } from '../lib/format'
 
 // The token.usage metric only carries input/output per the OTel semconv;
@@ -23,7 +23,7 @@ export function TokenChart({ className }: { className?: string }) {
 
   let content
   if (loading) {
-    content = <PanelMessage>Loading…</PanelMessage>
+    content = <PanelLoading />
   } else if (points.length === 0) {
     content = <PanelMessage>No data</PanelMessage>
   } else {

@@ -10,12 +10,15 @@ import type {
   UserStatRow,
 } from '../types'
 import { AppCell, KindBadge, UserCell } from '../components/UserCell'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
 import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtCost, fmtTokens, fmtTime, pctChange } from '../lib/format'
+import { customerViews, resolveView } from '../nav'
+import { Classification } from './Classification'
+import { Anomalies } from './Anomalies'
 
 const SEGMENT_COLORS: Record<string, string> = {
   power: CHART.blue,
@@ -171,7 +174,24 @@ const TOKEN_AVG_SPECS = {
   output: { label: 'Avg output / request', color: CHART.turquoise },
 }
 
+// Customers has three views, selected by the `view` search param and switched
+// from the header submenu (see nav.ts): engagement (who uses the platform),
+// classification (what they use it for) and anomalies (where their consumption
+// looks abnormal). Only the active view is mounted, so the other views' queries
+// are never issued.
 export function Customers() {
+  const { search } = useDash()
+  switch (resolveView(customerViews, search.view)) {
+    case 'classification':
+      return <Classification />
+    case 'anomalies':
+      return <Anomalies />
+    default:
+      return <CustomerEngagement />
+  }
+}
+
+function CustomerEngagement() {
   const { spanMs } = useDash()
   const prev = usePrevRange()
   const setFilter = useFilterNav()
@@ -199,6 +219,8 @@ export function Customers() {
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <div className="lg:col-span-2">
         <StatStrip
+          loading={userCount.loading || interactions.loading || sessions.loading}
+          firstLoad={userCount.firstLoad}
           stats={[
             {
               label: 'Users',
@@ -244,15 +266,33 @@ export function Customers() {
         sub="Share of each weekly signup cohort still active N weeks later (fixed 12-week lookback)"
         className="lg:col-span-2"
       >
-        {cohort.loading ? <PanelMessage>Loading…</PanelMessage> : <CohortRetention cells={cohort.data ?? []} />}
+        {cohort.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={cohort.stale}>
+            <CohortRetention cells={cohort.data ?? []} />
+          </Stale>
+        )}
       </Panel>
 
       <Panel title="Engagement Segments" sub="Users by request frequency, with their share of spend">
-        {segments.loading ? <PanelMessage>Loading…</PanelMessage> : <SegmentBars rows={segments.data ?? []} />}
+        {segments.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={segments.stale}>
+            <SegmentBars rows={segments.data ?? []} />
+          </Stale>
+        )}
       </Panel>
 
       <Panel title="Model Preference by Segment" sub="Token volume by model — do power users pick premium models?">
-        {modelPref.loading ? <PanelMessage>Loading…</PanelMessage> : <ModelPreference rows={modelPref.data ?? []} />}
+        {modelPref.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={modelPref.stale}>
+            <ModelPreference rows={modelPref.data ?? []} />
+          </Stale>
+        )}
       </Panel>
 
       <Panel title="Model Mix" sub="Token volume per model — which models win over time" className="lg:col-span-2">
@@ -272,12 +312,13 @@ export function Customers() {
         sub="Reach and spend per application (service.peer.name) · click a row to filter"
         className="lg:col-span-2"
       >
-        {appAdoption.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {appAdoption.firstLoad ? (
+          <PanelLoading />
         ) : (appAdoption.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={appAdoption.loading}
             data={appAdoption.data!}
             columns={appColumns}
             initialSort={[{ id: 'cost', desc: true }]}
@@ -291,12 +332,13 @@ export function Customers() {
         sub="Per-user activity, engagement segment and spend · click a row to filter"
         className="lg:col-span-2"
       >
-        {userStats.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {userStats.firstLoad ? (
+          <PanelLoading />
         ) : (userStats.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={userStats.loading}
             data={userStats.data!}
             columns={userColumns}
             initialSort={[{ id: 'cost', desc: true }]}

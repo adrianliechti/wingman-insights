@@ -1,11 +1,13 @@
 import { CircleCheck } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
+import { opsViews, resolveView } from '../nav'
 import type { HTTPErrorsByCodeRow, HTTPSummaryRow, TimeseriesPoint, ToolStatRow } from '../types'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { DataTable } from '../components/DataTable'
 import { Bar, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtDuration, fmtTokens } from '../lib/format'
+import { Traces } from './Traces'
 
 // avgPeak collapses a timeseries into the mean and max bucket total over the
 // window. Series split across labels (e.g. server/client) are summed within
@@ -93,7 +95,16 @@ const toolColumns: ColumnDef<ToolStatRow, any>[] = [
   },
 ]
 
+// Operations has two views, selected by the `view` search param and switched
+// from the header submenu (see nav.ts): the aggregate service-health metrics,
+// and the per-request trace explorer that used to be its own nav entry. Only
+// the active view is mounted, so the other one's queries are never issued.
 export function Operations() {
+  const { search } = useDash()
+  return resolveView(opsViews, search.view) === 'traces' ? <Traces /> : <OperationsMetrics />
+}
+
+function OperationsMetrics() {
   const { spanMs } = useDash()
   const percentiles = useApi<TimeseriesPoint[]>('/api/ops/latency-percentiles')
   const ttfc = useApi<TimeseriesPoint[]>('/api/ops/ttfc-timeseries')
@@ -123,6 +134,7 @@ export function Operations() {
           spanMs={spanMs}
           specs={{ '': { label: 'Errors', color: CHART.negative, fill: true } }}
           yFmt={(v) => v.toFixed(2) + '%'}
+          yMin={0}
           loading={errorRate.loading}
         />
       </Panel>
@@ -171,46 +183,48 @@ export function Operations() {
       </Panel>
 
       <Panel title="HTTP Errors by Status Code">
-        {httpErrorsByCode.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {httpErrorsByCode.firstLoad ? (
+          <PanelLoading />
         ) : (httpErrorsByCode.data ?? []).length === 0 ? (
           <PanelMessage>
             <CircleCheck className="h-4 w-4 text-emerald-500" />
             No errors
           </PanelMessage>
         ) : (
-          <div className="h-56">
-            <Bar
-              data={{
-                labels: httpErrorsByCode.data!.map((d) => String(d.status_code)),
-                datasets: [{ data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: CHART.negative, borderRadius: 4 }],
-              }}
-              options={chartOptions()}
-            />
-          </div>
+          <Stale when={httpErrorsByCode.stale}>
+            <div className="h-56">
+              <Bar
+                data={{
+                  labels: httpErrorsByCode.data!.map((d) => String(d.status_code)),
+                  datasets: [{ data: httpErrorsByCode.data!.map((d) => d.count), backgroundColor: CHART.negative, borderRadius: 4 }],
+                }}
+                options={chartOptions()}
+              />
+            </div>
+          </Stale>
         )}
       </Panel>
 
       <Panel title="Tools" sub="execute_tool spans per tool">
-        {tools.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {tools.firstLoad ? (
+          <PanelLoading />
         ) : (tools.data ?? []).length === 0 ? (
           <PanelMessage>
             <CircleCheck className="h-4 w-4 text-emerald-500" />
             No tool calls in range
           </PanelMessage>
         ) : (
-          <DataTable data={tools.data!} columns={toolColumns} initialSort={[{ id: 'count', desc: true }]} />
+          <DataTable loading={tools.loading} data={tools.data!} columns={toolColumns} initialSort={[{ id: 'count', desc: true }]} />
         )}
       </Panel>
 
       <Panel title="Routes" sub="Latency and error rate per route" className="lg:col-span-2">
-        {httpSummary.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {httpSummary.firstLoad ? (
+          <PanelLoading />
         ) : (httpSummary.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
-          <DataTable data={httpSummary.data!} columns={httpSummaryColumns} initialSort={[{ id: 'total_requests', desc: true }]} initialLimit={25} />
+          <DataTable loading={httpSummary.loading} data={httpSummary.data!} columns={httpSummaryColumns} initialSort={[{ id: 'total_requests', desc: true }]} initialLimit={25} />
         )}
       </Panel>
     </div>

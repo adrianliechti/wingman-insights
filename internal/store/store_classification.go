@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"sort"
 	"time"
 )
 
@@ -189,6 +190,26 @@ func (s *Store) QueryClassificationRiskTimeseries(ctx context.Context, from, to 
 	`, args...)
 }
 
+// QueryClassificationTopicTimeseries buckets classified *prompts* over time, one
+// series per topic, so the mix of work users bring to the platform can be read
+// as a trend. Only matched category evaluations are counted — exactly one
+// category wins per prompt, so the series sum to the prompt volume.
+func (s *Store) QueryClassificationTopicTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
+	cte, args := classificationCTE(from, to, f)
+	args = append(args, interval)
+	return s.queryTimeseries(ctx, cte+`
+		SELECT
+			time_bucket(CAST(? AS INTERVAL), ts) AS bucket,
+			id AS label,
+			COALESCE(SUM(count), 0) AS value,
+			COALESCE(SUM(count), 0) AS count
+		FROM cls
+		WHERE kind = 'category' AND matched
+		GROUP BY bucket, id
+		ORDER BY bucket
+	`, args...)
+}
+
 // ClassificationMatrixCell is one (topic, risk) pair: how often that risk fired
 // in conversations about that topic. Prompts is how many prompts those
 // conversations held in total — the denominator for the cell's rate, and
@@ -306,4 +327,127 @@ func (s *Store) QueryClassificationByDepartment(ctx context.Context, from, to ti
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// ClassificationDepartmentTopicCell is one (department, topic) pair: how many
+// prompts that department sent about that topic. It backs the topic-mix-per-
+// department comparison — what each team actually uses the platform for.
+type ClassificationDepartmentTopicCell struct {
+	Department string `json:"department"`
+	Category   string `json:"category"`
+	Prompts    int64  `json:"prompts"`
+	// Other marks the synthetic group aggregating every department outside the
+	// requested top N, and OtherCount is how many departments it covers. A
+	// tenant can have hundreds of departments, which neither plots nor transfers
+	// usefully; summarizing the tail instead of truncating it keeps the long
+	// tail's own topic mix visible and the totals reconciled.
+	Other      bool  `json:"other,omitempty"`
+	OtherCount int64 `json:"other_count,omitempty"`
+}
+
+// QueryClassificationDepartmentTopics breaks each department's classified
+// prompts down by winning topic. Only matched category evaluations are counted,
+// so the cells of one department sum to that department's prompt volume (the
+// same figure QueryClassificationByDepartment reports).
+//
+// limit caps how many departments are returned individually: the highest-volume
+// `limit` are kept and everything below is folded into one Other group (limit
+// <= 0 returns every department). The fold happens here rather than in SQL
+// because DuckDB is in-process — reading the full grouping costs nothing, while
+// the capped result is what keeps the response bounded for a tenant whose
+// department count runs into the hundreds.
+func (s *Store) QueryClassificationDepartmentTopics(ctx context.Context, from, to time.Time, limit int, f Filter) ([]ClassificationDepartmentTopicCell, error) {
+	cte, args := classificationCTE(from, to, f)
+	r := dirResolve("cls", "user_id", "user_email")
+	rows, err := s.db.QueryContext(ctx, cte+`,
+		resolved AS (
+			SELECT `+r.Dept+` AS department, cls.id AS category, cls.count AS count
+			FROM cls`+r.Join+`
+			WHERE cls.kind = 'category' AND cls.matched
+		)
+		SELECT department, category, COALESCE(SUM(count), 0) AS prompts
+		FROM resolved
+		GROUP BY department, category
+		ORDER BY prompts DESC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ClassificationDepartmentTopicCell
+	for rows.Next() {
+		var c ClassificationDepartmentTopicCell
+		if err := rows.Scan(&c.Department, &c.Category, &c.Prompts); err != nil {
+			return nil, err
+		}
+		result = append(result, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return foldDepartmentTopicTail(result, limit), nil
+}
+
+// foldDepartmentTopicTail keeps the `limit` highest-volume departments and
+// aggregates every other department's cells into a single Other group. Ranking
+// breaks ties on the department name so the set of charted departments is stable
+// between refreshes instead of equal-volume teams swapping in and out.
+func foldDepartmentTopicTail(cells []ClassificationDepartmentTopicCell, limit int) []ClassificationDepartmentTopicCell {
+	if limit <= 0 {
+		return cells
+	}
+	totals := map[string]int64{}
+	for _, c := range cells {
+		totals[c.Department] += c.Prompts
+	}
+	if len(totals) <= limit {
+		return cells
+	}
+
+	names := make([]string, 0, len(totals))
+	for d := range totals {
+		names = append(names, d)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if totals[names[i]] != totals[names[j]] {
+			return totals[names[i]] > totals[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	keep := make(map[string]bool, limit)
+	for _, d := range names[:limit] {
+		keep[d] = true
+	}
+	otherCount := int64(len(names) - limit)
+
+	out := make([]ClassificationDepartmentTopicCell, 0, len(cells))
+	otherByTopic := map[string]int64{}
+	for _, c := range cells {
+		if keep[c.Department] {
+			out = append(out, c)
+			continue
+		}
+		otherByTopic[c.Category] += c.Prompts
+	}
+
+	topics := make([]string, 0, len(otherByTopic))
+	for t := range otherByTopic {
+		topics = append(topics, t)
+	}
+	sort.Slice(topics, func(i, j int) bool {
+		if otherByTopic[topics[i]] != otherByTopic[topics[j]] {
+			return otherByTopic[topics[i]] > otherByTopic[topics[j]]
+		}
+		return topics[i] < topics[j]
+	})
+	for _, t := range topics {
+		out = append(out, ClassificationDepartmentTopicCell{
+			Category:   t,
+			Prompts:    otherByTopic[t],
+			Other:      true,
+			OtherCount: otherCount,
+		})
+	}
+	return out
 }

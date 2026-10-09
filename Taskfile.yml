@@ -107,4 +107,8 @@ tasks:
       # Also writes insights-directory.ndjson (synthetic departments/locations).
       # Start the server with INSIGHTS_DIRECTORY_FILE=insights-directory.ndjson
       # to light up the department/location views (e.g. "Risk by department").
-      - go run ./cmd/demogen -duration={{.DURATION | default "168h"}} -interval={{.INTERVAL | default "5m"}} -directory={{.DIRECTORY | default "insights-directory.ndjson"}}
+      # RISKS=false mirrors a deployment that classifies topics only, so the
+      # Classification page's risk section collapses to its "not configured" note.
+      # DEPARTMENTS=745 USERS=1600 mirrors a large tenant, exercising the top-N
+      # department charts and the "Other" rollup.
+      - go run ./cmd/demogen -duration={{.DURATION | default "168h"}} -interval={{.INTERVAL | default "5m"}} -directory={{.DIRECTORY | default "insights-directory.ndjson"}} -risks={{.RISKS | default "true"}} -users={{.USERS | default "120"}} -departments={{.DEPARTMENTS | default "7"}}

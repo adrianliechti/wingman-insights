@@ -13,7 +13,7 @@ import { Line, Bar, Doughnut, Pie } from 'react-chartjs-2'
 import { fmtBucket } from '../lib/format'
 import type { TimeseriesPoint } from '../types'
 import { useDash } from '../dash'
-import { PanelMessage } from './Panel'
+import { PanelLoading, PanelMessage, Stale } from './Panel'
 import { useSyncExternalStore } from 'react'
 
 ChartJS.register(
@@ -81,7 +81,7 @@ const GRID = 'rgba(150, 140, 131, 0.2)' // LGT Warmgrey, faint
 
 // Chart.js legends render poorly (hollow rings, no spacing); ChartLegend
 // below replaces them, so the built-in legend is always off.
-export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: boolean }) {
+export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: boolean; yMin?: number }) {
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -117,6 +117,10 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
       },
       y: {
         stacked: extra?.stacked ?? false,
+        // Pinning the floor matters for metrics that are legitimately flat at
+        // zero: Chart.js scales a constant-zero series symmetrically around 0,
+        // which would render a healthy error rate as "-1.00%".
+        min: extra?.yMin,
         ticks: {
           color: TICK,
           font: { size: 11 },
@@ -131,6 +135,42 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
 export interface LegendItem {
   label: string
   color: string
+}
+
+// SegToggle is a compact segmented control for switching a chart's dimension or
+// units (e.g. absolute vs relative). Shared by the pages that offer more than
+// one view of the same panel.
+export function SegToggle<T extends string>({
+  value,
+  options,
+  onChange,
+  labels,
+}: {
+  value: T
+  options: readonly T[]
+  onChange: (v: T) => void
+  // labels overrides the button text per option; the raw option is used (and
+  // capitalized by CSS) when omitted.
+  labels?: Partial<Record<T, string>>
+}) {
+  return (
+    <div className="flex rounded-lg border border-gray-200 p-0.5 dark:border-gray-800">
+      {options.map((g) => (
+        <button
+          key={g}
+          onClick={() => onChange(g)}
+          aria-pressed={value === g}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+            value === g
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+          }`}
+        >
+          {labels?.[g] ?? g}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 export function ChartLegend({ items, align = 'end' }: { items: LegendItem[]; align?: 'start' | 'center' | 'end' }) {
@@ -250,6 +290,7 @@ export function TimeseriesPanel({
   loading,
   legend = true,
   stacked = false,
+  yMin,
 }: {
   points: TimeseriesPoint[] | null
   spanMs: number
@@ -259,21 +300,25 @@ export function TimeseriesPanel({
   loading?: boolean
   legend?: boolean
   stacked?: boolean
+  yMin?: number
 }) {
   const { from, to } = useDash()
-  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  // Nothing on screen yet: a shimmering stand-in. A refetch over an existing
+  // chart keeps the chart and marks it stale instead, so changing a filter
+  // doesn't blank every panel on the page.
+  if (loading && (!points || points.length === 0)) return <PanelLoading height={height} />
   if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
   const { labels, datasets, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from, to })
   return (
-    <div>
+    <Stale when={loading}>
       {legend && datasets.length > 1 && (
         <ChartLegend items={datasets.map((d) => ({ label: d.label, color: d.borderColor }))} />
       )}
       <div className={height}>
-        <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked })} />
+        <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked, yMin })} />
       </div>
       {hasPartial && <PartialNote count={partialCount} />}
-    </div>
+    </Stale>
   )
 }
 

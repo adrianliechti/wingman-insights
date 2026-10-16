@@ -169,7 +169,10 @@ export function MultiFilterSelect({
   )
 }
 
-export function FilterBar() {
+// hideModelFilters drops the Provider / Model selects for views whose queries
+// deliberately ignore them (see Filter.classificationClause in Go): offering a
+// filter that cannot change the numbers is worse than not offering it.
+export function FilterBar({ hideModelFilters = false }: { hideModelFilters?: boolean }) {
   const { search } = useDash()
   const setFilter = useFilterNav()
   // The options list itself must not shrink to the current selection, so this
@@ -189,8 +192,8 @@ export function FilterBar() {
     (search.user?.length ?? 0) > 0 ||
     (search.department?.length ?? 0) > 0 ||
     (search.location?.length ?? 0) > 0 ||
-    (search.provider?.length ?? 0) > 0 ||
-    (search.models?.length ?? 0) > 0
+    (!hideModelFilters &&
+      ((search.provider?.length ?? 0) > 0 || (search.models?.length ?? 0) > 0))
   )
   const appOptions = useMemo(
     () => (data?.apps ?? []).map((a) => ({ value: a.id, label: a.name || a.id })),
@@ -255,22 +258,26 @@ export function FilterBar() {
           onChange={(v) => setFilter({ location: v })}
         />
       )}
-      <MultiFilterSelect
-        icon={Bot}
-        placeholder="All providers"
-        noun="providers"
-        value={search.provider}
-        options={providerOptions}
-        onChange={(v) => setFilter({ provider: v })}
-      />
-      <MultiFilterSelect
-        icon={Cpu}
-        placeholder="All models"
-        noun="models"
-        value={search.models}
-        options={modelOptions}
-        onChange={(v) => setFilter({ models: v })}
-      />
+      {!hideModelFilters && (
+        <>
+          <MultiFilterSelect
+            icon={Bot}
+            placeholder="All providers"
+            noun="providers"
+            value={search.provider}
+            options={providerOptions}
+            onChange={(v) => setFilter({ provider: v })}
+          />
+          <MultiFilterSelect
+            icon={Cpu}
+            placeholder="All models"
+            noun="models"
+            value={search.models}
+            options={modelOptions}
+            onChange={(v) => setFilter({ models: v })}
+          />
+        </>
+      )}
       {hasFilter && (
         <button
           onClick={() =>

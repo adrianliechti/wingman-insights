@@ -9,6 +9,8 @@ import (
 
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
+	metrics "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -109,4 +111,61 @@ func TestDecodeOTLPBodyLimit(t *testing.T) {
 
 func strAttr(key, val string) *common.KeyValue {
 	return &common.KeyValue{Key: key, Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: val}}}
+}
+
+// TestExtractWingmanMetric covers the wingman.* ingest branch: a Wingman-defined
+// histogram (e.g. the classification score) must be stored as a GenAI row, with
+// its wingman.classification.* attributes preserved in the attributes map and
+// gen_ai.conversation.id mapped to the session id.
+func TestExtractWingmanMetric(t *testing.T) {
+	h := &Handler{}
+	req := &colmetrics.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metrics.ResourceMetrics{{
+			Resource: &resourcepb.Resource{Attributes: []*common.KeyValue{strAttr("service.name", "wingman-chat")}},
+			ScopeMetrics: []*metrics.ScopeMetrics{{
+				Metrics: []*metrics.Metric{{
+					Name: "wingman.classification.score",
+					Data: &metrics.Metric_Histogram{Histogram: &metrics.Histogram{
+						AggregationTemporality: metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA,
+						DataPoints: []*metrics.HistogramDataPoint{{
+							Count: 1,
+							Sum:   proto.Float64(0.9),
+							Attributes: []*common.KeyValue{
+								strAttr("gen_ai.operation.name", "evaluate"),
+								strAttr("gen_ai.request.model", "classifier"),
+								strAttr("gen_ai.conversation.id", "chat-1"),
+								strAttr("wingman.classification.kind", "category"),
+								strAttr("wingman.classification.id", "legal"),
+							},
+						}},
+					}},
+				}},
+			}},
+		}},
+	}
+
+	genai, httpRows := h.extract(req)
+	if len(httpRows) != 0 {
+		t.Fatalf("http rows = %d, want 0", len(httpRows))
+	}
+	if len(genai) != 1 {
+		t.Fatalf("genai rows = %d, want 1", len(genai))
+	}
+	row := genai[0]
+	if row.MetricName != "wingman.classification.score" {
+		t.Errorf("metric name = %q", row.MetricName)
+	}
+	if row.OperationName != "evaluate" || row.RequestModel != "classifier" {
+		t.Errorf("operation/model = %q/%q", row.OperationName, row.RequestModel)
+	}
+	if row.SessionID != "chat-1" {
+		t.Errorf("session id = %q, want chat-1", row.SessionID)
+	}
+	if row.Count != 1 || row.Sum != 0.9 {
+		t.Errorf("count/sum = %d/%v, want 1/0.9", row.Count, row.Sum)
+	}
+	if row.Attributes["wingman.classification.kind"] != "category" ||
+		row.Attributes["wingman.classification.id"] != "legal" {
+		t.Errorf("classification attributes not preserved: %v", row.Attributes)
+	}
 }

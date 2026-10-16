@@ -1,3 +1,5 @@
+import { Skeleton } from './Panel'
+
 export interface Stat {
   label: string
   value: string
@@ -23,22 +25,46 @@ function DeltaChip({ pct, positiveIsGood = true }: { pct: number; positiveIsGood
 }
 
 // StatStrip renders headline numbers as one flat divided row instead of
-// individual cards.
-export function StatStrip({ stats }: { stats: Stat[] }) {
+// individual cards. `loading` marks the figures as not matching the current
+// filters yet: headline numbers read as authoritative, so a stale one is worse
+// than none — on the first load they are replaced by placeholders, and on a
+// refetch they are dimmed and shimmer until the new values land.
+export function StatStrip({
+  stats,
+  loading,
+  firstLoad,
+}: {
+  stats: Stat[]
+  loading?: boolean
+  firstLoad?: boolean
+}) {
   return (
     <div className="flex flex-col divide-y divide-gray-200 rounded-lg border border-gray-200 sm:flex-row sm:divide-x sm:divide-y-0 dark:divide-gray-800 dark:border-gray-800">
       {stats.map((s) => (
         <div key={s.label} className="flex-1 px-5 py-4">
           <p className="text-xs font-medium uppercase tracking-wider text-gray-500">{s.label}</p>
-          <p className="mt-1.5 flex items-baseline gap-2">
-            <span className="text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">
-              {s.value}
-            </span>
-            {s.delta && s.delta.pct != null && (
-              <DeltaChip pct={s.delta.pct} positiveIsGood={s.delta.positiveIsGood} />
-            )}
-          </p>
-          {s.sub && <p className="mt-0.5 text-xs text-gray-500">{s.sub}</p>}
+          {firstLoad ? (
+            <Skeleton className="mt-2 h-7 w-24" />
+          ) : (
+            <p
+              className={`mt-1.5 flex items-baseline gap-2 ${
+                loading ? 'animate-pulse opacity-40 transition-opacity' : 'transition-opacity'
+              }`}
+            >
+              <span className="text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">
+                {s.value}
+              </span>
+              {s.delta && s.delta.pct != null && (
+                <DeltaChip pct={s.delta.pct} positiveIsGood={s.delta.positiveIsGood} />
+              )}
+            </p>
+          )}
+          {s.sub &&
+            (firstLoad ? (
+              <Skeleton className="mt-1.5 h-3 w-36" />
+            ) : (
+              <p className={`mt-0.5 text-xs text-gray-500 ${loading ? 'opacity-40' : ''}`}>{s.sub}</p>
+            ))}
         </div>
       ))}
     </div>

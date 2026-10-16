@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useApi, useDash } from '../dash'
 import type { UsageByAppRow, UsageResponse, ContextBucketRow } from '../types'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { Bar, Line, ChartLegend, Doughnut, PALETTE, chartOptions, useChartBlue, CHART } from '../components/charts'
 import { fmtTokens, fmtModelName } from '../lib/format'
@@ -295,7 +295,7 @@ function CostChart({
 function AppShareChart() {
   const { data, loading } = useApi<UsageByAppRow[]>('/api/personal/usage-by-app')
   const blue = useChartBlue()
-  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  if (loading) return <PanelLoading />
   const rows = (data ?? []).filter((r) => r.cost > 0 || tokenVolume(r.tokens) > 0)
   if (rows.length === 0) return <PanelMessage>No data</PanelMessage>
   const label = (r: UsageByAppRow) => r.name || r.app || 'unattributed'
@@ -323,7 +323,7 @@ function AppShareChart() {
 // 200k/272k edges mark where long-context pricing kicks in, so the tail is the
 // caller's premium-billed share.
 function ContextChart({ rows, loading }: { rows: ContextBucketRow[] | null; loading: boolean }) {
-  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  if (loading) return <PanelLoading />
   const bins = rows ?? []
   const total = bins.reduce((a, r) => a + r.requests, 0)
   if (total === 0) return <PanelMessage>No data</PanelMessage>
@@ -512,10 +512,14 @@ export function Personal() {
       <section className="rounded-lg border border-gray-200 p-5 lg:col-span-2 dark:border-gray-800">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            {usage.loading ? (
+            {usage.firstLoad ? (
               <div className="mt-2 h-11 w-40 animate-pulse rounded-md bg-gray-200 dark:bg-gray-800" />
             ) : (
-              <p className="text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white">
+              <p
+                className={`text-5xl font-bold tracking-tight tabular-nums text-gray-900 dark:text-white ${
+                  usage.stale ? 'animate-pulse opacity-40' : ''
+                }`}
+              >
                 {fmtUsd(data?.cost ?? 0)}
               </p>
             )}
@@ -542,19 +546,37 @@ export function Personal() {
             ))}
           </div>
         </div>
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <CostChart buckets={costSeries} hourly={hourly} type={costChartType} />}
+        {usage.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={usage.stale}>
+            <CostChart buckets={costSeries} hourly={hourly} type={costChartType} />
+          </Stale>
+        )}
       </section>
 
       <div className="lg:col-span-2">
-        <StatStrip stats={tokenStats} />
+        <StatStrip stats={tokenStats} loading={usage.loading} firstLoad={usage.firstLoad} />
       </div>
 
       <Panel title="Usage by Model" sub="Share of token volume">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />}
+        {usage.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={usage.stale}>
+            <ShareBars rows={modelTokens} fmt={fmtTokens} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />
+          </Stale>
+        )}
       </Panel>
 
       <Panel title="Cost by Model" sub="Share of estimated spend">
-        {usage.loading ? <PanelMessage>Loading…</PanelMessage> : <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />}
+        {usage.firstLoad ? (
+          <PanelLoading />
+        ) : (
+          <Stale when={usage.stale}>
+            <ShareBars rows={modelCost} fmt={fmtUsd} colorFor={colorForModel} rateFor={rateForModel} labelFor={fmtModelName} expanded={modelExpanded} onToggle={() => setModelExpanded((v) => !v)} />
+          </Stale>
+        )}
       </Panel>
 
       <Panel title="By Application" sub="Share of token volume">

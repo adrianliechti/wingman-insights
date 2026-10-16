@@ -15,6 +15,7 @@ import (
 	"insights/internal/ingest"
 	"insights/internal/store"
 	"insights/pkg/directory/entra"
+	filedir "insights/pkg/directory/file"
 )
 
 func main() {
@@ -56,6 +57,22 @@ func main() {
 				sync()
 			}
 		}()
+	} else if dir, ok, err := filedir.FromEnv(); err != nil {
+		// A configured-but-broken directory file is a startup error: silently
+		// resolving nothing would make the department/location views look empty
+		// for a reason the operator can't see.
+		log.Fatalf("directory file: %v", err)
+	} else if ok {
+		// Static NDJSON directory (local/dev/demo or air-gapped). It never
+		// changes at runtime, so materialize the in-DB table once; no refresh
+		// loop. Entra, when configured, takes precedence over the file.
+		s.SetDirectory(dir)
+		s.SetDepartmentPrefix(strings.EqualFold(os.Getenv("INSIGHTS_ENTRA_DEPARTMENT_MODE"), "prefix"))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		if err := s.SyncDirectory(ctx); err != nil {
+			log.Printf("directory: table sync failed: %v", err)
+		}
+		cancel()
 	}
 
 	// Optional retention: without it the database grows unboundedly. When

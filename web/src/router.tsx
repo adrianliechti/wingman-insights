@@ -3,17 +3,18 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
   useLocation,
   useSearch,
 } from '@tanstack/react-router'
-import { DashProvider, MeProvider, useMe, validateSearch } from './dash'
+import { DashProvider, MeProvider, useDash, useMe, validateSearch } from './dash'
+import { customerViews, resolveView } from './nav'
+import type { ReactNode } from 'react'
 import type { DashSearch } from './dash'
 import { Header } from './components/Header'
 import { FilterBar } from './components/FilterBar'
 import { Overview } from './pages/Overview'
 import { Personal } from './pages/Personal'
-import { Traces } from './pages/Traces'
-import { Anomalies } from './pages/Anomalies'
 import { Customers } from './pages/Customers'
 import { Operations } from './pages/Operations'
 import { Finops } from './pages/Finops'
@@ -25,6 +26,7 @@ import { Finops } from './pages/Finops'
 // endpoints are scoped to the caller and ignore those filters.
 function Shell() {
   const { me, loading } = useMe()
+  const { search } = useDash()
   const { pathname } = useLocation()
   if (loading) {
     return <div className="py-20 text-center text-sm text-gray-400 dark:text-gray-600">Loading…</div>
@@ -38,10 +40,15 @@ function Shell() {
     )
   }
   const isPersonal = pathname === '/' || pathname.endsWith('/personal')
+  // Classification data points carry the *classifier's* provider/model, not the
+  // one the user chatted with, so those filters are dropped server-side; the
+  // bar hides them there instead of showing selects that change nothing.
+  const isClassification =
+    pathname.endsWith('/customers') && resolveView(customerViews, search.view) === 'classification'
   return (
     <>
       <Header personalRange={isPersonal} />
-      {!isPersonal && <FilterBar />}
+      {!isPersonal && <FilterBar hideModelFilters={isClassification} />}
       <Outlet />
     </>
   )
@@ -67,14 +74,34 @@ const rootRoute = createRootRoute({
   validateSearch,
 })
 
-const pages = [
+// Routes are declared with a widened `path: string` so the router's link types
+// stay permissive app-wide; adding them as literal entries narrows the type
+// registry to just those literals and makes every other <Link to=…> fail.
+const pages: {
+  path: string
+  component: () => ReactNode
+  beforeLoad?: (ctx: { search: DashSearch }) => void
+}[] = [
   { path: '/', component: Personal },
   { path: '/overview', component: Overview },
-  { path: '/anomalies', component: Anomalies },
   { path: '/customers', component: Customers },
   { path: '/finops', component: Finops },
   { path: '/operations', component: Operations },
-  { path: '/traces', component: Traces },
+  // Pages that became sub-views of a section (see nav.ts) keep their old paths
+  // as redirects, so existing links and bookmarks still work and carry the
+  // current range and filters across. component never renders — beforeLoad
+  // throws first — and is only present to keep the entries uniformly typed.
+  ...[
+    { path: '/traces', to: '/operations', view: 'traces' },
+    { path: '/classification', to: '/customers', view: 'classification' },
+    { path: '/anomalies', to: '/customers', view: 'anomalies' },
+  ].map(({ path, to, view }) => ({
+    path,
+    component: Operations,
+    beforeLoad: ({ search }: { search: DashSearch }) => {
+      throw redirect({ to, search: { ...search, view } })
+    },
+  })),
 ]
 
 const routeTree = rootRoute.addChildren(
@@ -83,6 +110,7 @@ const routeTree = rootRoute.addChildren(
       getParentRoute: () => rootRoute,
       path: p.path,
       component: p.component,
+      beforeLoad: p.beforeLoad,
     }),
   ),
 )

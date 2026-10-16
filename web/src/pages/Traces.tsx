@@ -3,7 +3,7 @@ import { CircleAlert } from 'lucide-react'
 import { useApi } from '../dash'
 import { apiGet } from '../api'
 import type { SpanRow, TraceSummary } from '../types'
-import { PanelMessage } from '../components/Panel'
+import { PanelLoading, PanelMessage } from '../components/Panel'
 import { CHART } from '../components/charts'
 import { fmtCost, fmtDuration, fmtTime, fmtTokens } from '../lib/format'
 import { format } from 'date-fns'
@@ -177,7 +177,7 @@ function TraceView({ trace }: { trace: TraceSummary }) {
     return (
       <>
         <div className="border-gray-200 lg:border-r dark:border-gray-800">
-          <PanelMessage>Loading…</PanelMessage>
+          <PanelLoading />
         </div>
         <div />
       </>
@@ -318,7 +318,7 @@ export function Traces() {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {loading ? (
-            <PanelMessage>Loading…</PanelMessage>
+            <PanelLoading />
           ) : traces.length === 0 ? (
             <PanelMessage>No traces</PanelMessage>
           ) : (
@@ -364,7 +364,7 @@ export function Traces() {
 
       {loading ? (
         <div className="lg:col-span-2">
-          <PanelMessage>Loading…</PanelMessage>
+          <PanelLoading />
         </div>
       ) : !selected ? (
         <div className="lg:col-span-2">

@@ -1,19 +1,14 @@
-import { AlertTriangle, CircleCheck } from 'lucide-react'
-import { Link } from '@tanstack/react-router'
+import { useMemo } from 'react'
 import { useApi, useDash } from '../dash'
-import type { DashSearch } from '../dash'
 import type {
   ActiveUsersRow,
-  AnomalyPoint,
   CostRow,
-  GenAIErrorRow,
   ModelDistributionRow,
   OperationRow,
   TimeseriesPoint,
-  TokenPartitionsPoint,
   TokenSummaryRow,
 } from '../types'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage } from '../components/Panel'
 import { DataTable } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
 import { ChartLegend, Doughnut, PALETTE, TimeseriesPanel, CHART } from '../components/charts'
@@ -22,7 +17,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 function ModelDistributionChart() {
   const { data, loading } = useApi<ModelDistributionRow[]>('/api/genai/model-distribution')
-  if (loading) return <PanelMessage>Loading…</PanelMessage>
+  if (loading) return <PanelLoading />
   if (!data || data.length === 0) return <PanelMessage>No data</PanelMessage>
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -60,27 +55,20 @@ const operationColumns: ColumnDef<OperationRow, any>[] = [
   { accessorKey: 'avg_duration', header: 'Avg Duration', meta: { align: 'right' }, cell: (c) => fmtDuration(c.getValue()) },
 ]
 
-const errorColumns: ColumnDef<GenAIErrorRow, any>[] = [
-  {
-    accessorKey: 'error_type',
-    header: 'Error',
-    cell: (c) => (
-      <span className="rounded bg-red-500/10 px-1.5 py-0.5 font-mono text-xs text-red-500 dark:text-red-400">{c.getValue()}</span>
-    ),
-  },
-  { accessorKey: 'request_model', header: 'Model' },
-  { accessorKey: 'count', header: 'Count', meta: { align: 'right' } },
-]
+// Spend is plotted as one total series. The endpoint returns a row per model,
+// but which model the money went to is the FinOps page's question; here it only
+// has to answer how much, and whether it is trending.
+const SPEND_SPECS = {
+  spend: { label: 'Spend', color: CHART.blue, fill: true },
+}
 
-// Token composition stacks the disjoint token partitions from spans: non-cached
-// input, cache read/write (subsets of input), output and reasoning (subset of
-// output). "Cache write" tracks the forthcoming read/write cache naming.
-const COMPOSITION_SPECS = {
-  input: { label: 'Input', color: CHART.blue, fill: true },
-  cache_read: { label: 'Cache read', color: CHART.petrol, fill: true },
-  cache_creation: { label: 'Cache write', color: CHART.orange, fill: true },
-  output: { label: 'Output', color: CHART.turquoise, fill: true },
-  reasoning: { label: 'Reasoning', color: CHART.redwine, fill: true },
+// Health is summarised with percentiles rather than an average: an average
+// duration hides the slow tail that users actually notice. The full latency
+// breakdown (TTFC, throughput, HTTP) lives on Operations.
+const PERCENTILE_SPECS = {
+  p50: { label: 'p50', color: CHART.positive },
+  p95: { label: 'p95', color: CHART.warning },
+  p99: { label: 'p99', color: CHART.negative },
 }
 
 export function Overview() {
@@ -88,30 +76,20 @@ export function Overview() {
   const summary = useApi<TokenSummaryRow[]>('/api/genai/token-summary')
   const costs = useApi<CostRow[]>('/api/genai/costs', { group_by: 'model' })
   const active = useApi<ActiveUsersRow>('/api/genai/active-users')
-  const anomalies = useApi<AnomalyPoint[]>('/api/genai/anomalies', { group_by: 'user' })
   const operations = useApi<OperationRow[]>('/api/genai/operations')
-  const errors = useApi<GenAIErrorRow[]>('/api/genai/errors')
-  const duration = useApi<TimeseriesPoint[]>('/api/genai/operation-duration-timeseries')
-  const partitions = useApi<TokenPartitionsPoint[]>('/api/genai/token-partitions')
+  const costTrend = useApi<TimeseriesPoint[]>('/api/finops/cost-timeseries', { by: 'model' })
+  const percentiles = useApi<TimeseriesPoint[]>('/api/ops/latency-percentiles')
+  const errorRate = useApi<TimeseriesPoint[]>('/api/ops/error-rate')
 
-  // Composition, cache hit rate and reasoning share are all arithmetic over the
-  // same per-bucket token partitions — one fetch, three views.
-  const parts = partitions.data ?? []
-  const composition: TimeseriesPoint[] = parts.flatMap((p) => [
-    { bucket: p.bucket, label: 'input', value: p.uncached, count: 0 },
-    { bucket: p.bucket, label: 'cache_read', value: p.cache_read, count: 0 },
-    { bucket: p.bucket, label: 'cache_creation', value: p.cache_write, count: 0 },
-    { bucket: p.bucket, label: 'output', value: p.response, count: 0 },
-    { bucket: p.bucket, label: 'reasoning', value: p.reasoning, count: 0 },
-  ])
-  const cache: TimeseriesPoint[] = parts.map((p) => {
-    const input = p.uncached + p.cache_read + p.cache_write
-    return { bucket: p.bucket, value: input > 0 ? (100 * p.cache_read) / input : 0, count: 0 }
-  })
-  const reasoning: TimeseriesPoint[] = parts.map((p) => {
-    const output = p.response + p.reasoning
-    return { bucket: p.bucket, value: output > 0 ? (100 * p.reasoning) / output : 0, count: 0 }
-  })
+  // Sum the per-model rows into a single spend series, keeping buckets ordered
+  // so the partial-interval detection in groupSeries can infer the interval.
+  const spendSeries: TimeseriesPoint[] = useMemo(() => {
+    const byBucket = new Map<string, number>()
+    for (const p of costTrend.data ?? []) byBucket.set(p.bucket, (byBucket.get(p.bucket) ?? 0) + p.value)
+    return [...byBucket.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([bucket, value]) => ({ bucket, label: 'spend', value, count: 0 }))
+  }, [costTrend.data])
 
   const rows = summary.data ?? []
   const totalsByType = (type: string) =>
@@ -122,7 +100,6 @@ export function Overview() {
   const requests = rows.filter((r) => r.token_type === 'input').reduce((acc, r) => acc + r.total_requests, 0)
   const spend = (costs.data ?? []).reduce((acc, r) => acc + r.total_cost, 0)
   const saved = (costs.data ?? []).reduce((acc, r) => acc + r.cache_savings, 0)
-  const flagged = anomalies.data ?? []
   const headlineLoading = costs.loading || summary.loading || active.loading
 
   return (
@@ -173,94 +150,54 @@ export function Overview() {
         </div>
       </div>
 
-      {flagged.length > 0 && (
-        <Link
-          to="/anomalies"
-          search={(prev: DashSearch) => prev}
-          className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 transition-colors hover:bg-amber-100 lg:col-span-2 dark:border-amber-500/30 dark:bg-amber-500/10 dark:hover:bg-amber-500/15"
-        >
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-          <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
-            {flagged.length} consumption {flagged.length === 1 ? 'anomaly' : 'anomalies'}
-          </span>
-          <span className="text-xs text-amber-700 dark:text-amber-400">
-            top: <span>{flagged[0].name || flagged[0].group_key || '—'}</span> at{' '}
-            {(flagged[0].tokens / (flagged[0].expected || 1)).toFixed(2)}× expected
-          </span>
-          <span className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400">View →</span>
-        </Link>
-      )}
-
       <TokenChart className="lg:col-span-2" />
 
       <Panel
-        title="Token Composition"
-        sub="Where tokens go — cache and reasoning broken out (from spans)"
+        title="Spend over Time"
+        sub="Estimated cost per interval, priced from spans — unpriced models are not counted"
         className="lg:col-span-2"
       >
         <TimeseriesPanel
-          points={composition}
+          points={spendSeries}
           spanMs={spanMs}
-          specs={COMPOSITION_SPECS}
-          yFmt={fmtTokens}
-          stacked
-          loading={partitions.loading}
+          specs={SPEND_SPECS}
+          yFmt={fmtCost}
+          loading={costTrend.loading}
         />
       </Panel>
 
       <Panel title="Models" sub="Requests per model and operation breakdown" className="lg:col-span-2">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[18rem_1fr]">
           <ModelDistributionChart />
-          {operations.loading ? (
-            <PanelMessage>Loading…</PanelMessage>
+          {operations.firstLoad ? (
+            <PanelLoading />
           ) : (operations.data ?? []).length === 0 ? (
             <PanelMessage>No data</PanelMessage>
           ) : (
-            <DataTable data={operations.data!} columns={operationColumns} initialSort={[{ id: 'total_count', desc: true }]} />
+            <DataTable loading={operations.loading} data={operations.data!} columns={operationColumns} initialSort={[{ id: 'total_count', desc: true }]} />
           )}
         </div>
       </Panel>
 
-      <Panel title="Operation Duration" sub="Average duration per model" className="lg:col-span-2">
+      <Panel title="Latency" sub="Per-request durations from spans — p99 is the slow tail users notice">
         <TimeseriesPanel
-          points={duration.data}
+          points={percentiles.data}
           spanMs={spanMs}
+          specs={PERCENTILE_SPECS}
           yFmt={(v) => fmtDuration(v)}
-          loading={duration.loading}
+          loading={percentiles.loading}
         />
       </Panel>
 
-      <Panel title="Cache Hit Rate" sub="Share of input tokens served from cache">
+      <Panel title="Error Rate" sub="Share of failed GenAI operations">
         <TimeseriesPanel
-          points={cache}
+          points={errorRate.data}
           spanMs={spanMs}
+          specs={{ '': { label: 'Errors', color: CHART.negative, fill: true } }}
           yFmt={(v) => v.toFixed(2) + '%'}
-          specs={{ '': { label: 'Cache read share', color: CHART.petrol, fill: true } }}
-          loading={partitions.loading}
+          yMin={0}
+          loading={errorRate.loading}
         />
-      </Panel>
-
-      <Panel title="Reasoning Share" sub="Share of output tokens spent on reasoning">
-        <TimeseriesPanel
-          points={reasoning}
-          spanMs={spanMs}
-          yFmt={(v) => v.toFixed(2) + '%'}
-          specs={{ '': { label: 'Reasoning share', color: CHART.redwine, fill: true } }}
-          loading={partitions.loading}
-        />
-      </Panel>
-
-      <Panel title="Errors" sub="GenAI request failures by type and model" className="lg:col-span-2">
-        {errors.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
-        ) : (errors.data ?? []).length === 0 ? (
-          <PanelMessage>
-            <CircleCheck className="h-4 w-4 text-emerald-500" />
-            No errors
-          </PanelMessage>
-        ) : (
-          <DataTable data={errors.data!} columns={errorColumns} initialSort={[{ id: 'count', desc: true }]} />
-        )}
       </Panel>
     </div>
   )

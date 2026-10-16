@@ -29,6 +29,24 @@ func (h *Handler) userStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rows)
 }
 
+// topicMixDepartments is how many departments the topic-mix chart shows
+// individually before the rest are folded into one "Other" group. A stacked bar
+// stops being readable well before this, and a tenant can have hundreds of
+// departments, so the cap bounds both the chart and the response.
+const topicMixDepartments = 12
+
+// classificationDepartmentTopics is the per-department topic mix, capped to the
+// leading departments so a large org stays plottable.
+func (h *Handler) classificationDepartmentTopics(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	rows, err := h.store.QueryClassificationDepartmentTopics(r.Context(), from, to, topicMixDepartments, h.parseFilter(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, rows)
+}
+
 // userStatsCount is the selected-range count behind the Users table. Keeping
 // it separate from the rolling DAU/WAU/MAU endpoint makes the customer-page
 // headline describe exactly the population being listed.

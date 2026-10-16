@@ -5,7 +5,7 @@ import { useApi, useDash, useFilterNav } from '../dash'
 import type { AnomalyFeedRow, BurstRow, ScorePoint, TopConsumerRow } from '../types'
 import type { TimeseriesPoint } from '../types'
 import { KindBadge, UserCell } from '../components/UserCell'
-import { Panel, PanelMessage } from '../components/Panel'
+import { Panel, PanelLoading, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
@@ -203,6 +203,8 @@ export function Anomalies() {
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <div className="lg:col-span-2">
         <StatStrip
+          loading={feed.loading}
+          firstLoad={feed.firstLoad}
           stats={[
             { label: 'Open Anomalies', value: String(rows.length), sub: '≥ 3σ above baseline' },
             { label: 'Worst Z-Score', value: worst ? worst.toFixed(2) + 'σ' : '—', sub: worst >= 5 ? 'critical' : 'warning' },
@@ -223,8 +225,8 @@ export function Anomalies() {
         sub="Strongest spend and token spikes ranked across users, applications and models · click a row to filter"
         className="lg:col-span-2"
       >
-        {feed.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {feed.firstLoad ? (
+          <PanelLoading />
         ) : rows.length === 0 ? (
           <PanelMessage>
             <AlertTriangle className="h-4 w-4 opacity-50" />
@@ -232,6 +234,7 @@ export function Anomalies() {
           </PanelMessage>
         ) : (
           <DataTable
+            loading={feed.loading}
             data={rows}
             columns={feedColumns}
             initialSort={[{ id: 'score', desc: true }]}
@@ -296,12 +299,13 @@ export function Anomalies() {
       </Panel>
 
       <Panel title="Top Consumers" sub="Heaviest users by token volume — click a row to filter to them">
-        {topConsumers.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {topConsumers.firstLoad ? (
+          <PanelLoading />
         ) : (topConsumers.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={topConsumers.loading}
             data={topConsumers.data!}
             columns={consumerColumns}
             initialSort={[{ id: 'total_tokens', desc: true }]}
@@ -311,12 +315,13 @@ export function Anomalies() {
       </Panel>
 
       <Panel title="Request Bursts" sub="Peak requests/min per user — a runaway agent loop spikes here · click a row to filter">
-        {burst.loading ? (
-          <PanelMessage>Loading…</PanelMessage>
+        {burst.firstLoad ? (
+          <PanelLoading />
         ) : (burst.data ?? []).length === 0 ? (
           <PanelMessage>No data</PanelMessage>
         ) : (
           <DataTable
+            loading={burst.loading}
             data={burst.data!}
             columns={burstColumns}
             initialSort={[{ id: 'peak_rpm', desc: true }]}

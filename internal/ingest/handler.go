@@ -119,7 +119,7 @@ func (h *Handler) extract(req *colmetrics.ExportMetricsServiceRequest) ([]store.
 			for _, m := range sm.Metrics {
 				name := m.Name
 				switch {
-				case strings.HasPrefix(name, "gen_ai."):
+				case strings.HasPrefix(name, "gen_ai."), strings.HasPrefix(name, "wingman."):
 					genaiRows = append(genaiRows, extractGenAI(m, serviceName, now)...)
 				case strings.HasPrefix(name, "http.client."), strings.HasPrefix(name, "http.server."):
 					httpRows = append(httpRows, extractHTTP(m, serviceName, now)...)

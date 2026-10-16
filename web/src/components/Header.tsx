@@ -386,7 +386,7 @@ export function Header({
             )}
           </div>
           {!personalOnly && (
-            <nav className="hidden h-9 min-w-0 items-center overflow-x-auto rounded-lg border border-gray-200 bg-white p-0.5 lg:flex dark:border-gray-800 dark:bg-gray-900">
+            <nav className="no-scrollbar hidden h-9 min-w-0 items-center overflow-x-auto rounded-lg border border-gray-200 bg-white p-0.5 lg:flex dark:border-gray-800 dark:bg-gray-900">
               {navLinks()}
             </nav>
           )}
@@ -548,7 +548,7 @@ export function Header({
       {!personalOnly && views && currentPage && (
         <nav
           aria-label={`${currentPage.label} views`}
-          className="mt-4 flex min-w-0 items-center gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800"
+          className="no-scrollbar mt-4 flex min-w-0 items-center gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800"
         >
           {subLinks()}
         </nav>

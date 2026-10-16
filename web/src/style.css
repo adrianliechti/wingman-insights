@@ -146,6 +146,19 @@ html.dark {
   background-color: var(--color-gray-950);
 }
 
+/* The horizontal nav strips scroll when they run out of width, but their
+   scrollbar is noise on a single row of links — and on platforms configured to
+   always show scrollbars it sits there permanently, reading as a stray line
+   under the tabs. Hide the bar; the strip still scrolls by wheel, trackpad,
+   touch and keyboard focus. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Shimmer skeleton — a highlight sweeps across a muted base to signal loading
    with more life than a flat pulse. Respects reduced-motion by falling back to
    a static muted fill. */

@@ -7,7 +7,8 @@ import {
   useLocation,
   useSearch,
 } from '@tanstack/react-router'
-import { DashProvider, MeProvider, useMe, validateSearch } from './dash'
+import { DashProvider, MeProvider, useDash, useMe, validateSearch } from './dash'
+import { customerViews, resolveView } from './nav'
 import type { ReactNode } from 'react'
 import type { DashSearch } from './dash'
 import { Header } from './components/Header'
@@ -25,6 +26,7 @@ import { Finops } from './pages/Finops'
 // endpoints are scoped to the caller and ignore those filters.
 function Shell() {
   const { me, loading } = useMe()
+  const { search } = useDash()
   const { pathname } = useLocation()
   if (loading) {
     return <div className="py-20 text-center text-sm text-gray-400 dark:text-gray-600">Loading…</div>
@@ -38,10 +40,15 @@ function Shell() {
     )
   }
   const isPersonal = pathname === '/' || pathname.endsWith('/personal')
+  // Classification data points carry the *classifier's* provider/model, not the
+  // one the user chatted with, so those filters are dropped server-side; the
+  // bar hides them there instead of showing selects that change nothing.
+  const isClassification =
+    pathname.endsWith('/customers') && resolveView(customerViews, search.view) === 'classification'
   return (
     <>
       <Header personalRange={isPersonal} />
-      {!isPersonal && <FilterBar />}
+      {!isPersonal && <FilterBar hideModelFilters={isClassification} />}
       <Outlet />
     </>
   )

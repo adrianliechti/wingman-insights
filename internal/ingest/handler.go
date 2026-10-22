@@ -22,7 +22,8 @@ import (
 )
 
 type Handler struct {
-	store *store.Store
+	store  *store.Store
+	buffer *metricBuffer
 }
 
 func NewHandler(s *store.Store) *Handler {
@@ -43,6 +44,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	genaiRows, httpRows := h.extract(req)
+	for _, row := range genaiRows {
+		if len(row.Attributes["wingman.classification.event_id"]) > 128 {
+			http.Error(w, "classification event id exceeds 128 bytes", http.StatusBadRequest)
+			return
+		}
+	}
+	if h.buffer != nil {
+		if err := h.buffer.enqueue(metricExport{genai: genaiRows, http: httpRows, bytes: proto.Size(req)}); err != nil {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		writeOTLP(w, ct, &colmetrics.ExportMetricsServiceResponse{})
+		return
+	}
 
 	// One transaction for the whole export: OTLP senders retry the full request
 	// on a 5xx, so persisting one family and failing the other would double-count
@@ -120,7 +136,15 @@ func (h *Handler) extract(req *colmetrics.ExportMetricsServiceRequest) ([]store.
 				name := m.Name
 				switch {
 				case strings.HasPrefix(name, "gen_ai."), strings.HasPrefix(name, "wingman."):
-					genaiRows = append(genaiRows, extractGenAI(m, serviceName, now)...)
+					rows := extractGenAI(m, serviceName, now)
+					source := telemetrySource(rm.Resource, sm.Scope.GetName())
+					for i := range rows {
+						rows[i].Attributes["wingman.telemetry.source"] = source
+						if source != "gateway" && strings.HasPrefix(rows[i].MetricName, "gen_ai.") {
+							rows[i].MetricName = strings.Replace(rows[i].MetricName, "gen_ai.", "wingman.chat.", 1)
+						}
+					}
+					genaiRows = append(genaiRows, rows...)
 				case strings.HasPrefix(name, "http.client."), strings.HasPrefix(name, "http.server."):
 					httpRows = append(httpRows, extractHTTP(m, serviceName, now)...)
 				}
@@ -293,4 +317,17 @@ func valueToInterface(v *common.AnyValue) any {
 		return m
 	}
 	return nil
+}
+
+// Source is established by the emitter's resource and instrumentation scope,
+// never by service.name (which deployments can rename). The browser proxy
+// stamps chat on resources, overriding any client-supplied gateway scope.
+func telemetrySource(res *resourcepb.Resource, scope string) string {
+	if res != nil && getStringAttr(res.Attributes, "wingman.telemetry.source") == "chat" {
+		return "chat"
+	}
+	if scope == "github.com/adrianliechti/wingman" {
+		return "gateway"
+	}
+	return "chat"
 }

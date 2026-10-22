@@ -186,6 +186,10 @@ func (s *Store) columnExists(table, column string) bool {
 
 func (s *Store) migrate() error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS classification_events (
+			event_id VARCHAR PRIMARY KEY,
+			time TIMESTAMP NOT NULL
+		)`,
 		"CREATE SEQUENCE IF NOT EXISTS genai_metrics_id_seq",
 		`CREATE TABLE IF NOT EXISTS genai_metrics (
 			id            BIGINT DEFAULT nextval('genai_metrics_id_seq') PRIMARY KEY,
@@ -346,6 +350,18 @@ func (s *Store) migrate() error {
 	// row). No-op once every row is priced, so it stays cheap on later starts.
 	if err := s.backfillSpanCost(context.Background()); err != nil {
 		return fmt.Errorf("backfill span cost: %w", err)
+	}
+	// Reconcile existing spans after pricing backfills have finished.
+	if _, err := s.db.ExecContext(context.Background(), clearChatUsageSQL); err != nil {
+		return fmt.Errorf("backfill chat usage: %w", err)
+	}
+	// Browser model metrics describe the client loop, not another provider call.
+	if _, err := s.db.Exec(`UPDATE genai_metrics
+		SET metric_name = replace(metric_name, 'gen_ai.', 'wingman.chat.')
+		WHERE starts_with(metric_name, 'gen_ai.')
+		AND (json_extract_string(attributes, '$."wingman.telemetry.source"') = 'chat'
+		 OR (json_extract_string(attributes, '$."gen_ai.system"') IS NOT NULL AND COALESCE(provider_name, '') = ''))`); err != nil {
+		return fmt.Errorf("backfill chat metric names: %w", err)
 	}
 	// trace_id is a high-selectivity point/IN lookup: QueryTrace filters
 	// trace_id = ? and QueryTraceList does trace_id IN (...). An ART index turns

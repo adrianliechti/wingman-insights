@@ -91,7 +91,7 @@ func TestAllQueriesExecute(t *testing.T) {
 			"ClassificationTopicTS":    func() error { _, e := s.QueryClassificationTopicTimeseries(ctx, from, to, iv, f); return e },
 			"ClassificationMatrix":     func() error { _, e := s.QueryClassificationMatrix(ctx, from, to, f); return e },
 			"ClassificationByDept":     func() error { _, e := s.QueryClassificationByDepartment(ctx, from, to, f); return e },
-			"ClassificationDeptTopics": func() error { _, e := s.QueryClassificationDepartmentTopics(ctx, from, to, 12, f); return e },
+			"ClassificationDeptTopics": func() error { _, e := s.QueryClassificationDepartmentTopics(ctx, from, to, f); return e },
 		}
 		for name, call := range calls {
 			if err := call(); err != nil {

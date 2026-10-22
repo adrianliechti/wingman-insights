@@ -74,6 +74,10 @@ func (s *Store) InsertMetrics(ctx context.Context, genai []GenAIMetricRow, http 
 		return err
 	}
 	defer tx.Rollback()
+	genai, err = deduplicateClassifications(ctx, tx, genai)
+	if err != nil {
+		return fmt.Errorf("classification deduplication: %w", err)
+	}
 	if err := insertGenAIMetrics(ctx, tx, genai); err != nil {
 		return fmt.Errorf("genai metrics: %w", err)
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"sort"
 	"time"
 )
 
@@ -76,12 +75,14 @@ func classificationCTE(from, to time.Time, f Filter) (string, []any) {
 // yes/no checks, several can fire on one prompt, so Triggers can exceed Prompts
 // (TriggersPerHundred expresses that intensity).
 type ClassificationStats struct {
-	Prompts            int64   `json:"prompts"`
-	Conversations      int64   `json:"conversations"`
-	Users              int64   `json:"users"`
-	RiskEvaluations    int64   `json:"risk_evaluations"`
-	Triggers           int64   `json:"triggers"`
-	TriggersPerHundred float64 `json:"triggers_per_hundred"`
+	// Only winning categories with a conversation ID contribute to this average.
+	PromptsPerConversation float64 `json:"prompts_per_conversation"`
+	Prompts                int64   `json:"prompts"`
+	Conversations          int64   `json:"conversations"`
+	Users                  int64   `json:"users"`
+	RiskEvaluations        int64   `json:"risk_evaluations"`
+	Triggers               int64   `json:"triggers"`
+	TriggersPerHundred     float64 `json:"triggers_per_hundred"`
 }
 
 // QueryClassificationStats aggregates the whole window into one headline row.
@@ -94,9 +95,14 @@ func (s *Store) QueryClassificationStats(ctx context.Context, from, to time.Time
 			COUNT(DISTINCT NULLIF(session_id, ''))                              AS conversations,
 			COUNT(DISTINCT NULLIF(COALESCE(NULLIF(user_id, ''), user_email), '')) AS users,
 			COALESCE(SUM(CASE WHEN kind = 'risk' THEN count ELSE 0 END), 0)     AS risk_evaluations,
-			COALESCE(SUM(CASE WHEN kind = 'risk' AND matched THEN count ELSE 0 END), 0) AS triggers
+			COALESCE(SUM(CASE WHEN kind = 'risk' AND matched THEN count ELSE 0 END), 0) AS triggers,
+            COALESCE(
+                SUM(CASE WHEN kind = 'category' AND matched AND count > 0 AND session_id <> '' THEN count ELSE 0 END) * 1.0 /
+                NULLIF(COUNT(DISTINCT CASE WHEN kind = 'category' AND matched AND count > 0 THEN NULLIF(session_id, '') END), 0),
+                0
+            ) AS prompts_per_conversation
 		FROM cls
-	`, args...).Scan(&st.Prompts, &st.Conversations, &st.Users, &st.RiskEvaluations, &st.Triggers)
+	`, args...).Scan(&st.Prompts, &st.Conversations, &st.Users, &st.RiskEvaluations, &st.Triggers, &st.PromptsPerConversation)
 	if err != nil {
 		return nil, err
 	}
@@ -229,11 +235,15 @@ type ClassificationMatrixCell struct {
 func (s *Store) QueryClassificationMatrix(ctx context.Context, from, to time.Time, f Filter) ([]ClassificationMatrixCell, error) {
 	cte, args := classificationCTE(from, to, f)
 	rows, err := s.db.QueryContext(ctx, cte+`,
-		conv AS (
-			SELECT session_id,
-				COALESCE(mode(CASE WHEN kind = 'category' AND matched THEN id END), '') AS category,
-				COALESCE(SUM(CASE WHEN kind = 'category' AND matched THEN count ELSE 0 END), 0) AS prompts
+		topic_counts AS (
+			SELECT session_id, id, SUM(count) AS prompts
 			FROM cls
+			WHERE session_id <> '' AND kind = 'category' AND matched AND count > 0 AND id <> ''
+			GROUP BY session_id, id
+		),
+		conv AS (
+			SELECT session_id, arg_max(id, prompts ORDER BY id) AS category, SUM(prompts) AS prompts
+			FROM topic_counts
 			GROUP BY session_id
 		),
 		cat AS (
@@ -336,27 +346,13 @@ type ClassificationDepartmentTopicCell struct {
 	Department string `json:"department"`
 	Category   string `json:"category"`
 	Prompts    int64  `json:"prompts"`
-	// Other marks the synthetic group aggregating every department outside the
-	// requested top N, and OtherCount is how many departments it covers. A
-	// tenant can have hundreds of departments, which neither plots nor transfers
-	// usefully; summarizing the tail instead of truncating it keeps the long
-	// tail's own topic mix visible and the totals reconciled.
-	Other      bool  `json:"other,omitempty"`
-	OtherCount int64 `json:"other_count,omitempty"`
 }
 
 // QueryClassificationDepartmentTopics breaks each department's classified
 // prompts down by winning topic. Only matched category evaluations are counted,
 // so the cells of one department sum to that department's prompt volume (the
 // same figure QueryClassificationByDepartment reports).
-//
-// limit caps how many departments are returned individually: the highest-volume
-// `limit` are kept and everything below is folded into one Other group (limit
-// <= 0 returns every department). The fold happens here rather than in SQL
-// because DuckDB is in-process — reading the full grouping costs nothing, while
-// the capped result is what keeps the response bounded for a tenant whose
-// department count runs into the hundreds.
-func (s *Store) QueryClassificationDepartmentTopics(ctx context.Context, from, to time.Time, limit int, f Filter) ([]ClassificationDepartmentTopicCell, error) {
+func (s *Store) QueryClassificationDepartmentTopics(ctx context.Context, from, to time.Time, f Filter) ([]ClassificationDepartmentTopicCell, error) {
 	cte, args := classificationCTE(from, to, f)
 	r := dirResolve("cls", "user_id", "user_email")
 	rows, err := s.db.QueryContext(ctx, cte+`,
@@ -386,68 +382,5 @@ func (s *Store) QueryClassificationDepartmentTopics(ctx context.Context, from, t
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return foldDepartmentTopicTail(result, limit), nil
-}
-
-// foldDepartmentTopicTail keeps the `limit` highest-volume departments and
-// aggregates every other department's cells into a single Other group. Ranking
-// breaks ties on the department name so the set of charted departments is stable
-// between refreshes instead of equal-volume teams swapping in and out.
-func foldDepartmentTopicTail(cells []ClassificationDepartmentTopicCell, limit int) []ClassificationDepartmentTopicCell {
-	if limit <= 0 {
-		return cells
-	}
-	totals := map[string]int64{}
-	for _, c := range cells {
-		totals[c.Department] += c.Prompts
-	}
-	if len(totals) <= limit {
-		return cells
-	}
-
-	names := make([]string, 0, len(totals))
-	for d := range totals {
-		names = append(names, d)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		if totals[names[i]] != totals[names[j]] {
-			return totals[names[i]] > totals[names[j]]
-		}
-		return names[i] < names[j]
-	})
-	keep := make(map[string]bool, limit)
-	for _, d := range names[:limit] {
-		keep[d] = true
-	}
-	otherCount := int64(len(names) - limit)
-
-	out := make([]ClassificationDepartmentTopicCell, 0, len(cells))
-	otherByTopic := map[string]int64{}
-	for _, c := range cells {
-		if keep[c.Department] {
-			out = append(out, c)
-			continue
-		}
-		otherByTopic[c.Category] += c.Prompts
-	}
-
-	topics := make([]string, 0, len(otherByTopic))
-	for t := range otherByTopic {
-		topics = append(topics, t)
-	}
-	sort.Slice(topics, func(i, j int) bool {
-		if otherByTopic[topics[i]] != otherByTopic[topics[j]] {
-			return otherByTopic[topics[i]] > otherByTopic[topics[j]]
-		}
-		return topics[i] < topics[j]
-	})
-	for _, t := range topics {
-		out = append(out, ClassificationDepartmentTopicCell{
-			Category:   t,
-			Prompts:    otherByTopic[t],
-			Other:      true,
-			OtherCount: otherCount,
-		})
-	}
-	return out
+	return result, nil
 }

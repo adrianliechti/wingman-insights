@@ -325,7 +325,7 @@ func TestClassificationDepartmentTopics(t *testing.T) {
 	}
 	from, to := classificationWindow()
 
-	cells, err := s.QueryClassificationDepartmentTopics(ctx, from, to, 0, Filter{})
+	cells, err := s.QueryClassificationDepartmentTopics(ctx, from, to, Filter{})
 	if err != nil {
 		t.Fatalf("department topics: %v", err)
 	}
@@ -344,107 +344,101 @@ func TestClassificationDepartmentTopics(t *testing.T) {
 	}
 }
 
-// TestFoldDepartmentTopicTail covers the top-N cap that keeps the topic-mix
-// chart plottable for a tenant with hundreds of departments: the leading
-// departments survive intact, everything below is summarized into one Other
-// group, and no prompt is lost or double counted in the process.
-func TestFoldDepartmentTopicTail(t *testing.T) {
-	// 5 departments of descending volume, two topics each.
-	var cells []ClassificationDepartmentTopicCell
-	vol := map[string]int64{"big": 100, "mid": 60, "small": 30, "tiny": 10, "micro": 4}
-	for d, v := range vol {
-		cells = append(cells,
-			ClassificationDepartmentTopicCell{Department: d, Category: "legal", Prompts: v * 3 / 4},
-			ClassificationDepartmentTopicCell{Department: d, Category: "hr", Prompts: v - v*3/4},
-		)
+// Missing conversation IDs must not join unrelated users' topics and risks.
+// Counts, rather than export-row frequency, determine a known conversation's topic.
+func TestClassificationMatrixRequiresCorrelationAndWeightsPromptCounts(t *testing.T) {
+	s, ctx := classificationFixture(t)
+	from, to := classificationWindow()
+	now := time.Now().UTC().Add(-time.Hour)
+	row := func(session, kind, id string, count int64) GenAIMetricRow {
+		return GenAIMetricRow{ReceivedAt: now, Time: now, MetricName: classificationMetric,
+			SessionID: session, EndUserID: "direct-user", Count: count, Sum: float64(count) * 0.9,
+			Attributes: map[string]string{"wingman.classification.kind": kind, "wingman.classification.id": id, "wingman.classification.matched": "true"}}
 	}
-	total := func(in []ClassificationDepartmentTopicCell) int64 {
-		var n int64
-		for _, c := range in {
-			n += c.Prompts
+	if err := s.InsertGenAIMetrics(ctx, []GenAIMetricRow{
+		row("", "category", "uncorrelated", 100), row("", "risk", "unknown-risk", 10),
+		row("weighted", "category", "large-batch", 20),
+		row("weighted", "category", "small-batches", 1), row("weighted", "category", "small-batches", 1),
+		row("weighted", "risk", "weighted-risk", 3),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cells, err := s.QueryClassificationMatrix(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cell := range cells {
+		if cell.Risk == "unknown-risk" {
+			t.Fatalf("fabricated correlation: %+v", cell)
 		}
-		return n
-	}
-	want := total(cells)
-
-	// Under the cap: returned untouched.
-	if got := foldDepartmentTopicTail(cells, 5); len(got) != len(cells) {
-		t.Errorf("limit == department count folded anyway: %d rows, want %d", len(got), len(cells))
-	}
-	if got := foldDepartmentTopicTail(cells, 0); len(got) != len(cells) {
-		t.Errorf("limit 0 folded anyway: %d rows, want %d", len(got), len(cells))
-	}
-
-	got := foldDepartmentTopicTail(cells, 2)
-	if total(got) != want {
-		t.Errorf("prompts after fold = %d, want %d (the fold must conserve volume)", total(got), want)
-	}
-
-	kept := map[string]bool{}
-	var otherPrompts, otherRows int64
-	var otherCount int64
-	for _, c := range got {
-		if c.Other {
-			otherRows++
-			otherPrompts += c.Prompts
-			otherCount = c.OtherCount
-			if c.Department != "" {
-				t.Errorf("Other row carries department %q, want empty", c.Department)
+		if cell.Risk == "weighted-risk" {
+			found = true
+			if cell.Category != "large-batch" || cell.Prompts != 22 || cell.Triggers != 3 {
+				t.Fatalf("weighted topic: %+v", cell)
 			}
-			continue
 		}
-		kept[c.Department] = true
 	}
-	// Only the two highest-volume departments stay individual.
-	if len(kept) != 2 || !kept["big"] || !kept["mid"] {
-		t.Errorf("kept = %v, want exactly big and mid", kept)
+	if !found {
+		t.Fatal("lost correlated risk")
 	}
-	if otherCount != 3 {
-		t.Errorf("OtherCount = %d, want 3 folded departments", otherCount)
+	stats, err := s.QueryClassificationStats(ctx, from, to, Filter{User: []string{"direct-user"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if otherPrompts != vol["small"]+vol["tiny"]+vol["micro"] {
-		t.Errorf("Other prompts = %d, want %d", otherPrompts, vol["small"]+vol["tiny"]+vol["micro"])
-	}
-	// The tail collapses to one row per topic, not one per department.
-	if otherRows != 2 {
-		t.Errorf("Other rows = %d, want 2 (one per topic)", otherRows)
+	if stats.Prompts != 122 || stats.Triggers != 13 || stats.Users != 1 || stats.Conversations != 1 {
+		t.Fatalf("direct identity and aggregate counts must survive missing IDs: %+v", stats)
 	}
 }
 
-// TestClassificationDepartmentTopicsLimit checks the cap end to end through the
-// query, with the directory resolving two departments.
-func TestClassificationDepartmentTopicsLimit(t *testing.T) {
+func TestPromptsPerConversationExcludesMissingIDsAndRiskOnlyConversations(t *testing.T) {
 	s, ctx := classificationFixture(t)
-	s.SetDirectory(classDeptStub{})
-	if err := s.SyncDirectory(ctx); err != nil {
-		t.Fatalf("sync directory: %v", err)
-	}
 	from, to := classificationWindow()
-
-	// limit 1 keeps only Engineering (4 prompts) and folds Legal & Compliance (1).
-	got, err := s.QueryClassificationDepartmentTopics(ctx, from, to, 1, Filter{})
+	stats, err := s.QueryClassificationStats(ctx, from, to, Filter{})
 	if err != nil {
-		t.Fatalf("department topics: %v", err)
+		t.Fatal(err)
 	}
-	var named, other int
-	var prompts int64
-	for _, c := range got {
-		prompts += c.Prompts
-		if c.Other {
-			other++
-			if c.OtherCount != 1 {
-				t.Errorf("OtherCount = %d, want 1", c.OtherCount)
-			}
-		} else if c.Department != "Engineering" {
-			t.Errorf("kept department %q, want Engineering", c.Department)
-		} else {
-			named++
+	if stats.PromptsPerConversation != 2.5 {
+		t.Fatalf("average = %v, want 5 / 2", stats.PromptsPerConversation)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	row := func(session, kind string, matched bool, count int64) GenAIMetricRow {
+		match := "false"
+		if matched {
+			match = "true"
 		}
+		return GenAIMetricRow{ReceivedAt: now, Time: now, MetricName: classificationMetric,
+			SessionID: session, EndUserID: "new-user", Count: count, Sum: float64(count) * 0.9,
+			Attributes: map[string]string{"wingman.classification.kind": kind, "wingman.classification.id": "test", "wingman.classification.matched": match}}
 	}
-	if named != 1 || other != 1 {
-		t.Errorf("rows: named=%d other=%d, want 1/1", named, other)
+	if err := s.InsertGenAIMetrics(ctx, []GenAIMetricRow{
+		row("", "category", true, 100),
+		row("risk-only", "risk", true, 12),
+		row("losing", "category", false, 5),
+		row("zero", "category", true, 0),
+		row("new-chat", "category", true, 2), row("new-chat", "category", true, 4),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if prompts != 5 {
-		t.Errorf("prompts after cap = %d, want 5 (all prompts retained)", prompts)
+	stats, err = s.QueryClassificationStats(ctx, from, to, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.PromptsPerConversation != 11.0/3 {
+		t.Fatalf("average = %v, want 11 / 3", stats.PromptsPerConversation)
+	}
+	stats, err = s.QueryClassificationStats(ctx, from, to, Filter{User: []string{"new-user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.PromptsPerConversation != 6 {
+		t.Fatalf("filtered average = %v, want 6", stats.PromptsPerConversation)
+	}
+	stats, err = s.QueryClassificationStats(ctx, from, to, Filter{User: []string{"absent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.PromptsPerConversation != 0 {
+		t.Fatalf("empty average = %v, want 0", stats.PromptsPerConversation)
 	}
 }

@@ -72,6 +72,7 @@ const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
 ]
 
 const toolColumns: ColumnDef<ToolStatRow, any>[] = [
+  { accessorKey: 'mcp_server', header: 'MCP Server', cell: (c) => c.getValue() || '—' },
   {
     accessorKey: 'tool_name',
     header: 'Tool',

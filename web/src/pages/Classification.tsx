@@ -14,6 +14,7 @@ import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
 import { DataTable } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
+import { DepartmentTopics } from '../components/DepartmentTopics'
 import {
   Bar,
   TimeseriesPanel,
@@ -270,135 +271,6 @@ function DepartmentComparison({
   )
 }
 
-// DepartmentTopicMix stacks each department's prompts by topic — what each team
-// actually brings to the platform. Topics keep one color across every stack, and
-// departments stay ordered by prompt volume in both modes so bars don't jump
-// when the mode is switched.
-//
-// Bars are horizontal because department names are free text and can be long;
-// as vertical categories they collapse into rotated, unreadable labels well
-// before the chart runs out of departments. The server caps how many are listed
-// individually and folds the remainder into one "Other" group, which is pinned
-// last — it is a summary of the tail, not a competitor in the ranking.
-// Principals with no resolved department fold into "Unassigned".
-//
-// mode 'relative' normalizes each bar to 100%, which is what makes departments
-// of very different sizes comparable: absolute bars are dominated by the biggest
-// team, hiding that a small team's mix may be entirely different. The raw count
-// stays in the tooltip either way, since a 100% bar built from a handful of
-// prompts should not read as strongly as one built from thousands.
-function DepartmentTopicMix({
-  cells,
-  mode,
-}: {
-  cells: ClassificationDepartmentTopicCell[]
-  mode: 'absolute' | 'relative'
-}) {
-  const { departments, topics, byKey, totalByDept, otherLabel } = useMemo(() => {
-    const totalByDept = new Map<string, number>()
-    const totalByTopic = new Map<string, number>()
-    const byKey = new Map<string, number>()
-    let otherLabel = ''
-    for (const c of cells) {
-      // The Other group has no department name of its own, and must stay
-      // distinct from the (also unnamed) unassigned bucket.
-      if (c.other) otherLabel = `Other (${fmtTokens(c.other_count ?? 0)} depts)`
-      const dept = c.other ? otherLabel : c.department || 'Unassigned'
-      totalByDept.set(dept, (totalByDept.get(dept) ?? 0) + c.prompts)
-      totalByTopic.set(c.category, (totalByTopic.get(c.category) ?? 0) + c.prompts)
-      byKey.set(dept + '\0' + c.category, (byKey.get(dept + '\0' + c.category) ?? 0) + c.prompts)
-    }
-    const desc = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
-    const ranked = desc(totalByDept).filter((d) => d !== otherLabel)
-    return {
-      departments: otherLabel ? [...ranked, otherLabel] : ranked,
-      topics: desc(totalByTopic),
-      byKey,
-      totalByDept,
-      otherLabel,
-    }
-  }, [cells])
-
-  if (cells.length === 0) return <PanelMessage>No classified activity in range</PanelMessage>
-
-  const relative = mode === 'relative'
-  const raw = (dept: string, topic: string) => byKey.get(dept + '\0' + topic) ?? 0
-  const datasets = topics.map((t, i) => ({
-    label: pretty(t),
-    data: departments.map((d) => {
-      const n = raw(d, t)
-      if (!relative) return n
-      const total = totalByDept.get(d) ?? 0
-      return total > 0 ? (n / total) * 100 : 0
-    }),
-    backgroundColor: PALETTE[i % PALETTE.length],
-    borderRadius: 3,
-  }))
-
-  const base = chartOptions({ stacked: true })
-  const fmtValue = relative ? (v: number) => v.toFixed(0) + '%' : fmtTokens
-  const options = {
-    ...base,
-    indexAxis: 'y' as const,
-    scales: {
-      // Horizontal bars swap the roles: x carries the value, y the department.
-      x: {
-        ...base.scales.y,
-        stacked: true,
-        ticks: { ...base.scales.y.ticks, callback: (v: any) => fmtValue(Number(v)) },
-        // Pin to 0–100 in relative mode so every bar is a full row and rounding
-        // can't leave a sliver of empty space at the end.
-        ...(relative ? { min: 0, max: 100 } : {}),
-      },
-      y: {
-        ...base.scales.x,
-        stacked: true,
-        ticks: {
-          ...base.scales.x.ticks,
-          autoSkip: false,
-          callback: (_v: any, i: number) => deptAxisLabel(departments[i] ?? ''),
-        },
-      },
-    },
-    plugins: {
-      ...base.plugins,
-      tooltip: {
-        ...base.plugins.tooltip,
-        callbacks: {
-          // Keyed on dataIndex, not the tick label, so the truncated axis text
-          // can never break the lookup — and the tooltip shows the full name.
-          title: (items: any[]) => departments[items[0]?.dataIndex] ?? '',
-          afterTitle: (items: any[]) =>
-            `${fmtTokens(totalByDept.get(departments[items[0]?.dataIndex]) ?? 0)} prompts`,
-          label: (ctx: any) => {
-            const n = raw(departments[ctx.dataIndex] ?? '', topics[ctx.datasetIndex])
-            if (n === 0) return ''
-            return relative
-              ? ` ${ctx.dataset.label}: ${Number(ctx.parsed.x).toFixed(1)}% (${fmtTokens(n)})`
-              : ` ${ctx.dataset.label}: ${fmtTokens(n)}`
-          },
-        },
-      },
-    },
-  }
-
-  return (
-    <div>
-      <ChartLegend items={datasets.map((d) => ({ label: d.label, color: d.backgroundColor }))} />
-      {/* Height follows the row count so bars keep a usable thickness whether
-          the org has three departments or the capped maximum. */}
-      <div style={{ height: Math.max(180, departments.length * 26 + 40) }}>
-        <Bar data={{ labels: departments, datasets }} options={options} />
-      </div>
-      {otherLabel && (
-        <p className="mt-2 text-[10px] text-gray-400 dark:text-gray-500">
-          Smaller departments are summarized as “{otherLabel}”. Filter by department to inspect one.
-        </p>
-      )}
-    </div>
-  )
-}
-
 // departmentColumns is the full department list — the way to reach any of
 // potentially hundreds of departments, which no chart can show. Sortable on
 // every measure so the table doubles as the ranking the chart only previews.
@@ -519,7 +391,6 @@ const riskColumns: ColumnDef<ClassificationRow, any>[] = [
 export function Classification() {
   const { spanMs } = useDash()
   const setFilter = useFilterNav()
-  const [topicMixMode, setTopicMixMode] = useState<'absolute' | 'relative'>('absolute')
   const [deptMetric, setDeptMetric] = useState<'rate' | 'triggers'>('rate')
   const stats = useApi<ClassificationStats>('/api/classification/stats')
   const summary = useApi<ClassificationRow[]>('/api/classification/summary')
@@ -565,13 +436,14 @@ export function Classification() {
     noTopics ? null : '/api/classification/department-topics',
   )
   const riskSeries = useApi<TimeseriesPoint[]>(noRisks ? null : '/api/classification/risk-timeseries')
-  const matrix = useApi<ClassificationMatrixCell[]>(noRisks ? null : '/api/classification/matrix')
+  const matrix = useApi<ClassificationMatrixCell[]>(noRisks || !stats.data?.conversations ? null : '/api/classification/matrix')
   const departments = useApi<ClassificationDepartmentRow[]>(
     noRisks ? null : '/api/classification/departments',
   )
 
   const prompts = stats.data?.prompts ?? 0
   const conversations = stats.data?.conversations ?? 0
+  const promptsPerConversation = stats.data?.prompts_per_conversation ?? 0
   const promptTotal = categories.reduce((sum, c) => sum + c.matched, 0)
   const topTopic = categories.find((c) => c.matched > 0)
   const topRisk = triggered[0]
@@ -592,7 +464,7 @@ export function Classification() {
     {
       label: 'Prompts classified',
       value: fmtTokens(prompts),
-      sub: `${fmtTokens(conversations)} conversations · ${fmtTokens(stats.data?.users ?? 0)} users`,
+      sub: `${fmtTokens(stats.data?.users ?? 0)} users${conversations > 0 ? ` · ${fmtTokens(conversations)} identified conversations` : ''}`,
     },
     {
       label: 'Top topic',
@@ -606,8 +478,8 @@ export function Classification() {
     },
     {
       label: 'Prompts / conversation',
-      value: conversations > 0 ? fmtRate(prompts / conversations) : '—',
-      sub: 'How deep a typical conversation runs',
+      value: promptsPerConversation > 0 ? fmtRate(promptsPerConversation) : '—',
+      sub: 'Classified prompts in the selected period',
     },
   ]
 
@@ -684,7 +556,6 @@ export function Classification() {
             <Panel
               title="Topics over time"
               sub="Classified prompts per interval, stacked by topic"
-              className="lg:col-span-2"
             >
               <TimeseriesPanel
                 points={topicSeries.data}
@@ -715,25 +586,17 @@ export function Classification() {
 
             <Panel
               title="Topics by department"
-              sub={
-                topicMixMode === 'relative'
-                  ? 'Each team’s topic mix as a share of its own prompts — comparable across team sizes'
-                  : 'What each team uses the platform for, by prompt volume'
-              }
-              action={
-                <SegToggle
-                  value={topicMixMode}
-                  options={['absolute', 'relative'] as const}
-                  onChange={setTopicMixMode}
-                />
-              }
+              sub="Every active department, compared by topic share — search any team or rank by a topic"
+              className="lg:col-span-2"
             >
               {deptTopics.firstLoad ? (
                 <PanelLoading />
               ) : (
-                <Stale when={deptTopics.stale}>
-                  <DepartmentTopicMix cells={deptTopics.data ?? []} mode={topicMixMode} />
-                </Stale>
+                <DepartmentTopics
+                  cells={deptTopics.data ?? []}
+                  loading={deptTopics.stale}
+                  onSelectDepartment={(department) => setFilter({ department: [department] })}
+                />
               )}
             </Panel>
           </div>
@@ -852,19 +715,21 @@ export function Classification() {
               )}
             </Panel>
 
-            <Panel
-              title="Topics vs risks"
-              sub="Conversations grouped by dominant topic (prompt count in brackets), shaded by triggers per 100 of those prompts"
-              className="lg:col-span-2"
-            >
-              {matrix.firstLoad ? (
-                <PanelLoading />
-              ) : (
-                <Stale when={matrix.stale}>
-                  <TopicRiskMatrix cells={matrix.data ?? []} />
-                </Stale>
-              )}
-            </Panel>
+            {conversations > 0 && (
+              <Panel
+                title="Topics vs risks"
+                sub="Conversations grouped by dominant topic (prompt count in brackets), shaded by triggers per 100 of those prompts"
+                className="lg:col-span-2"
+              >
+                {matrix.firstLoad ? (
+                  <PanelLoading />
+                ) : (
+                  <Stale when={matrix.stale}>
+                    <TopicRiskMatrix cells={matrix.data ?? []} />
+                  </Stale>
+                )}
+              </Panel>
+            )}
 
             <Panel
               title="Risk detail"

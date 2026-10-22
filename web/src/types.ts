@@ -110,6 +110,7 @@ export interface SessionStats {
 
 export interface ToolStatRow {
   tool_name: string
+  mcp_server: string
   count: number
   avg_duration: number
   error_count: number
@@ -290,6 +291,7 @@ export interface BurstRow {
 // risk fired. Since risks are independent checks, several can fire on one
 // prompt, so triggers_per_hundred can exceed 100.
 export interface ClassificationStats {
+  prompts_per_conversation: number
   prompts: number
   conversations: number
   users: number
@@ -347,11 +349,6 @@ export interface ClassificationDepartmentTopicCell {
   department: string
   category: string
   prompts: number
-  // other marks the synthetic group aggregating every department outside the
-  // server-side top N, with other_count naming how many it covers. A tenant can
-  // have hundreds of departments, so the tail is summarized rather than plotted.
-  other?: boolean
-  other_count?: number
 }
 
 // Me is the caller's identity and authorization, from GET /api/me. When admin

@@ -71,7 +71,9 @@ func extractSpans(req *coltrace.ExportTraceServiceRequest) []store.SpanRow {
 				if !hasGenAIAttr(sp.Attributes) {
 					continue
 				}
-				rows = append(rows, extractSpan(sp, serviceName, now))
+				row := extractSpan(sp, serviceName, now)
+				row.Attributes["wingman.telemetry.source"] = telemetrySource(rs.Resource, ss.Scope.GetName())
+				rows = append(rows, row)
 			}
 		}
 	}

@@ -68,7 +68,7 @@ func (s *Store) QueryTokensPerRequest(ctx context.Context, from, to time.Time, i
 
 // QuerySessionsTimeseries counts distinct sessions per bucket.
 func (s *Store) QuerySessionsTimeseries(ctx context.Context, from, to time.Time, interval string, f Filter) ([]TimeseriesPoint, error) {
-	clause, fargs := f.genaiClause()
+	clause, fargs := f.spansClause()
 	args := append([]any{interval, from, to}, fargs...)
 	return s.queryTimeseries(ctx, `
 		SELECT
@@ -76,7 +76,7 @@ func (s *Store) QuerySessionsTimeseries(ctx context.Context, from, to time.Time,
 			'' as label,
 			COUNT(DISTINCT session_id) as value,
 			COUNT(DISTINCT session_id) as count
-		FROM genai_metrics
+		FROM genai_spans
 		WHERE session_id IS NOT NULL AND session_id != ''
 		  AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket
@@ -92,9 +92,9 @@ type SessionStats struct {
 }
 
 func (s *Store) QuerySessionStats(ctx context.Context, from, to time.Time, f Filter) (*SessionStats, error) {
-	clause, fargs := f.genaiClause()
+	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
-	r := dirResolve("genai_metrics", "enduser_id", "enduser_email")
+	r := dirResolve("genai_spans", "user_id", "user_email")
 	// avg_per_user divides by distinct resolved identities, so a user under
 	// several OTel ids isn't counted as several users.
 	row := s.db.QueryRowContext(ctx, `
@@ -104,11 +104,11 @@ func (s *Store) QuerySessionStats(ctx context.Context, from, to time.Time, f Fil
 				THEN CAST(COUNT(DISTINCT session_id) AS DOUBLE) / COUNT(DISTINCT `+r.ID+`)
 				ELSE 0 END as avg_per_user,
 			CASE WHEN COUNT(DISTINCT session_id) > 0
-				THEN SUM(CASE WHEN metric_name = 'gen_ai.client.token.usage' THEN sum ELSE 0 END) / COUNT(DISTINCT session_id)
+				THEN COALESCE(SUM(input_tokens + output_tokens), 0) / COUNT(DISTINCT session_id)
 				ELSE 0 END as avg_tokens
-		FROM genai_metrics`+r.Join+`
+		FROM genai_spans`+r.Join+`
 		WHERE session_id IS NOT NULL AND session_id != ''
-		  AND genai_metrics.time >= ? AND genai_metrics.time <= ?`+clause, args...)
+		  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause, args...)
 	st := &SessionStats{}
 	if err := row.Scan(&st.Sessions, &st.AvgPerUser, &st.AvgTokensPerSess); err != nil {
 		return nil, err
@@ -130,6 +130,7 @@ func (s *Store) QueryLatencyPercentiles(ctx context.Context, from, to time.Time,
 			quantile_cont(duration, 0.99) as p99
 		FROM genai_spans
 		WHERE request_model IS NOT NULL AND request_model != ''
+		  AND COALESCE(json_extract_string(attributes, '$."wingman.telemetry.source"'), 'gateway') = 'gateway'
 		  AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket
 		ORDER BY bucket
@@ -197,6 +198,7 @@ func (s *Store) QueryGenAIErrorRate(ctx context.Context, from, to time.Time, int
 // ToolStatRow summarizes execute_tool spans per tool.
 type ToolStatRow struct {
 	ToolName    string  `json:"tool_name"`
+	MCPServer   string  `json:"mcp_server"`
 	Count       int64   `json:"count"`
 	AvgDuration float64 `json:"avg_duration"`
 	ErrorCount  int64   `json:"error_count"`
@@ -208,13 +210,14 @@ func (s *Store) QueryToolStats(ctx context.Context, from, to time.Time, f Filter
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			tool_name,
+			COALESCE(attributes ->> '$."wingman.mcp.server.id"', attributes ->> '$."server.address"', '') AS mcp_server,
 			COUNT(*) as count,
 			AVG(duration) as avg_duration,
 			SUM(CASE WHEN status = 'error' OR (error_type IS NOT NULL AND error_type != '') THEN 1 ELSE 0 END) as error_count
 		FROM genai_spans
 		WHERE tool_name IS NOT NULL AND tool_name != ''
 		  AND time >= ? AND time <= ?`+clause+`
-		GROUP BY tool_name
+		GROUP BY tool_name, mcp_server
 		ORDER BY count DESC
 	`, args...)
 	if err != nil {
@@ -225,7 +228,7 @@ func (s *Store) QueryToolStats(ctx context.Context, from, to time.Time, f Filter
 	var result []ToolStatRow
 	for rows.Next() {
 		var r ToolStatRow
-		if err := rows.Scan(&r.ToolName, &r.Count, &r.AvgDuration, &r.ErrorCount); err != nil {
+		if err := rows.Scan(&r.ToolName, &r.MCPServer, &r.Count, &r.AvgDuration, &r.ErrorCount); err != nil {
 			return nil, err
 		}
 		result = append(result, r)

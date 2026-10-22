@@ -111,6 +111,11 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 
 	for _, r := range rows {
 		attrs, _ := json.Marshal(r.Attributes)
+		// Chat observations remain available as spans and raw attributes, but
+		// only gateway provider calls contribute to the usage ledger.
+		if r.Attributes["wingman.telemetry.source"] == "chat" {
+			r.InputTokens, r.OutputTokens, r.CacheRead, r.CacheCreation, r.Reasoning = 0, 0, 0, 0, 0
+		}
 		inputCost, outputCost, cacheReadCost, cacheCreationCost, cost, savings, priced := r.costBreakdown()
 		_, err := stmt.ExecContext(ctx,
 			r.ReceivedAt, r.Time, r.Duration, r.TraceID, r.SpanID, r.ParentSpanID,
@@ -126,6 +131,23 @@ func (s *Store) InsertSpans(ctx context.Context, rows []SpanRow) error {
 	}
 	return tx.Commit()
 }
+
+// Historical browser spans were priced before the gateway became authoritative.
+// Keep their raw attributes and tool metadata; suppress only materialized usage.
+const clearChatUsageSQL = `UPDATE genai_spans SET
+ attributes = json_merge_patch(COALESCE(attributes, '{}'), '{"wingman.telemetry.source":"chat"}'),
+ input_tokens = 0, output_tokens = 0, cache_read_tokens = 0,
+ cache_creation_tokens = 0, reasoning_tokens = 0,
+ input_cost = 0, output_cost = 0, cache_read_cost = 0,
+ cache_creation_cost = 0, cost = 0, cache_savings = 0
+ WHERE (json_extract_string(attributes, '$."wingman.telemetry.source"') = 'chat'
+  OR (json_extract_string(attributes, '$."wingman.telemetry.source"') IS NULL
+   AND (json_extract_string(attributes, '$."wingman.operation.name"') IS NOT NULL
+    OR (json_extract_string(attributes, '$."gen_ai.system"') IS NOT NULL AND COALESCE(provider_name, '') = ''))))
+ AND (json_extract_string(attributes, '$."wingman.telemetry.source"') IS DISTINCT FROM 'chat'
+  OR COALESCE(input_tokens, 0) <> 0 OR COALESCE(output_tokens, 0) <> 0
+  OR COALESCE(cache_read_tokens, 0) <> 0 OR COALESCE(cache_creation_tokens, 0) <> 0
+  OR COALESCE(reasoning_tokens, 0) <> 0 OR COALESCE(cost, 0) <> 0)`
 
 func sortTraceSummaries(rows []TraceSummary) {
 	sort.Slice(rows, func(i, j int) bool {

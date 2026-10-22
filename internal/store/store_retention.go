@@ -16,15 +16,25 @@ import (
 // the deletes themselves are already durable and the next prune (or clean
 // shutdown) checkpoints again.
 func (s *Store) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	// Keep event claims and their observations consistent even if pruning fails
+	// or the metric writer commits concurrently with retention.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
 	var total int64
-	for _, table := range []string{"genai_metrics", "http_metrics", "genai_spans"} {
-		res, err := s.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE time < ?", cutoff)
+	for _, table := range []string{"genai_metrics", "http_metrics", "genai_spans", "classification_events"} {
+		res, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE time < ?", cutoff)
 		if err != nil {
-			return total, fmt.Errorf("%s: %w", table, err)
+			return 0, fmt.Errorf("%s: %w", table, err)
 		}
 		if n, err := res.RowsAffected(); err == nil {
 			total += n
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	if total > 0 {
 		if _, err := s.db.ExecContext(ctx, "CHECKPOINT"); err != nil {

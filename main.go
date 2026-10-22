@@ -104,7 +104,9 @@ func main() {
 	// senders target it directly via OTEL_EXPORTER_OTLP_ENDPOINT. Metrics and
 	// GenAI spans are stored; logs are accepted and discarded so senders don't
 	// log export failures.
-	mux.Handle("POST /v1/metrics", ingest.NewHandler(s))
+	metricsHandler := ingest.NewBufferedHandler(s)
+	mux.Handle("POST /v1/metrics", metricsHandler)
+	mux.HandleFunc("GET /metrics", metricsHandler.ServeMetrics)
 	mux.Handle("POST /v1/traces", ingest.NewTracesHandler(s))
 	mux.Handle("POST /v1/logs", ingest.DiscardLogs())
 
@@ -166,6 +168,11 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown timed out, forcing close: %v", err)
 		srv.Close()
+	}
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer flushCancel()
+	if err := metricsHandler.Close(flushCtx); err != nil {
+		log.Printf("metrics drain failed: %v", err)
 	}
 }
 

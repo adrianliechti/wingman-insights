@@ -25,9 +25,13 @@ var contextBuckets = []struct {
 // ContextBucketRow is one input-size bin: how many LLM calls landed in it and
 // what they cost (summed from the per-span materialized cost column).
 type ContextBucketRow struct {
-	Bucket   string  `json:"bucket"`
-	Requests int64   `json:"requests"`
-	Cost     float64 `json:"cost"`
+	Bucket           string  `json:"bucket"`
+	Requests         int64   `json:"requests"`
+	Cost             float64 `json:"cost"`
+	UnpricedRequests int64   `json:"unpriced_requests"`
+	UnpricedTokens   int64   `json:"unpriced_tokens"`
+	MinInputTokens   int64   `json:"min_input_tokens"`
+	MaxInputTokens   *int64  `json:"max_input_tokens"`
 }
 
 // QueryContextHistogram bins LLM calls (spans carrying input tokens) by their
@@ -44,7 +48,9 @@ func (s *Store) QueryContextHistogram(ctx context.Context, from, to time.Time, f
 		}
 	}
 	query := `SELECT CASE` + cases.String() + ` END AS bin,
-			COUNT(*), COALESCE(SUM(cost), 0)
+			COUNT(*), COALESCE(SUM(cost), 0),
+			COALESCE(SUM(CASE WHEN COALESCE(priced,false) THEN 0 ELSE 1 END),0),
+			COALESCE(SUM(CASE WHEN COALESCE(priced,false) THEN 0 ELSE input_tokens+output_tokens END),0)
 		FROM genai_spans
 		WHERE input_tokens > 0 AND time >= ? AND time <= ?` + clause + `
 		GROUP BY bin`
@@ -59,17 +65,28 @@ func (s *Store) QueryContextHistogram(ctx context.Context, from, to time.Time, f
 	result := make([]ContextBucketRow, len(contextBuckets))
 	for i, b := range contextBuckets {
 		result[i].Bucket = b.Label
+		result[i].MinInputTokens = 1
+		if i > 0 {
+			result[i].MinInputTokens = contextBuckets[i-1].Max + 1
+		}
+		if b.Max > 0 {
+			max := b.Max
+			result[i].MaxInputTokens = &max
+		}
 	}
 	for rows.Next() {
 		var bin int
 		var n int64
 		var cost float64
-		if err := rows.Scan(&bin, &n, &cost); err != nil {
+		var unpricedRequests, unpricedTokens int64
+		if err := rows.Scan(&bin, &n, &cost, &unpricedRequests, &unpricedTokens); err != nil {
 			return nil, err
 		}
 		if bin >= 0 && bin < len(result) {
 			result[bin].Requests = n
 			result[bin].Cost = cost
+			result[bin].UnpricedRequests = unpricedRequests
+			result[bin].UnpricedTokens = unpricedTokens
 		}
 	}
 	return result, rows.Err()

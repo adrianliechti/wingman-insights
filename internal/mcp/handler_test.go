@@ -158,7 +158,7 @@ func TestHTTPDiscoveryAndPersonalScoping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 2 {
+	if len(listed.Tools) != 3 {
 		t.Fatalf("personal tools = %d", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {
@@ -221,7 +221,7 @@ func TestHTTPDiscoveryAndPersonalScoping(t *testing.T) {
 	if !reflect.DeepEqual(bob.Query.Filters.Users, []string{"bob"}) || bob.Data.Tokens.Input != 2000000 || !bob.Data.Tokens.Priced {
 		t.Fatalf("request identity leaked: %+v", bob)
 	}
-	for _, name := range []string{"get_categories", "get_category_trends"} {
+	for _, name := range []string{"get_categories", "get_category_trends", "get_adoption"} {
 		if r, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name}); err == nil && !r.IsError {
 			t.Fatalf("downgraded caller retained access to %s", name)
 		}
@@ -235,7 +235,7 @@ func TestAdminCategoriesAndCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 4 {
+	if len(listed.Tools) != 6 {
 		t.Fatalf("admin tools=%d", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {
@@ -295,7 +295,7 @@ func TestEmptyDataAndInvalidInputs(t *testing.T) {
 		if r.TotalRows != 0 || r.Truncated || len(r.Query.Warnings) == 0 {
 			t.Fatalf("empty result: %+v", r)
 		}
-		if strings.Contains(string(r.Data), "null") {
+		if strings.Contains(string(r.Data), `"buckets":null`) || strings.Contains(string(r.Data), `"rows":null`) {
 			t.Fatalf("empty arrays must be []: %s", r.Data)
 		}
 	}

@@ -43,6 +43,8 @@ type Chart struct {
 type chartValue struct {
 	x, xLabel, series, seriesLabel string
 	value                          float64
+	weight                         float64
+	weighted                       bool
 }
 
 func chartOptions(in ChartOptions) (int, error) {
@@ -82,6 +84,22 @@ func chartInterval(value string, optional bool, from, to time.Time, topN int) (s
 
 func measure(metric string) ChartAxis {
 	switch metric {
+	case "requests":
+		return ChartAxis{Label: "Provider calls", Type: "quantitative", Unit: "requests"}
+	case "active_users", "new_users", "returning_users", "new_vs_returning_users":
+		return ChartAxis{Label: "Observed users", Type: "quantitative", Unit: "users"}
+	case "cost_per_request_usd":
+		return ChartAxis{Label: "Estimated cost per provider call (USD)", Type: "quantitative", Unit: "USD/request"}
+	case "input_tokens_per_request", "output_tokens_per_request", "tokens_per_request":
+		return ChartAxis{Label: strings.ReplaceAll(metric, "_", " "), Type: "quantitative", Unit: "tokens/request"}
+	case "cache_read_share_percent":
+		return ChartAxis{Label: "Cache-read share of input (%)", Type: "quantitative", Unit: "percent"}
+	case "reasoning_share_percent":
+		return ChartAxis{Label: "Reasoning share of output (%)", Type: "quantitative", Unit: "percent"}
+	case "request_share_percent":
+		return ChartAxis{Label: "Share of provider calls (%)", Type: "quantitative", Unit: "percent"}
+	case "cost_share_percent":
+		return ChartAxis{Label: "Share of known estimated cost (%)", Type: "quantitative", Unit: "percent"}
 	case "total_tokens":
 		return ChartAxis{Label: "Tokens", Type: "quantitative", Unit: "tokens"}
 	case "cache_savings_usd":
@@ -119,12 +137,23 @@ func rankGroups(totals map[string]float64, n int) (map[string]bool, []string) {
 
 func foldChart(values []chartValue, n int, foldX bool) ([]chartValue, bool) {
 	totals := map[string]float64{}
+	weights := map[string]float64{}
+	weighted := false
 	for _, p := range values {
 		id := p.series
 		if foldX {
 			id = p.x
 		}
 		totals[id] += p.value
+		weights[id] += p.weight
+		weighted = weighted || p.weighted
+	}
+	if weighted {
+		for id, v := range totals {
+			if weights[id] > 0 {
+				totals[id] = v / weights[id]
+			}
+		}
 	}
 	keep, ids := rankGroups(totals, n)
 	if len(ids) <= n {
@@ -142,6 +171,7 @@ func foldChart(values []chartValue, n int, foldX bool) ([]chartValue, bool) {
 		k := key{p.x, p.series}
 		if prev, ok := byKey[k]; ok {
 			p.value += prev.value
+			p.weight += prev.weight
 		}
 		byKey[k] = p
 	}
@@ -164,7 +194,12 @@ func makeChart(title, kind, xLabel, metric string, values []chartValue, topN int
 		c.IncludesOther = c.IncludesOther || folded
 	}
 	if c.IncludesOther {
-		c.Notes = append(c.Notes, "Other (remaining) combines all groups outside the top N; chart totals include the full result, independently of raw row truncation.")
+		c.Notes = append(c.Notes, "Other (remaining) combines all groups outside the top N; counts and spend are summed, averages and rates use pooled denominators. Charts use full results independently of raw row truncation.")
+	}
+	for i := range values {
+		if values[i].weighted && values[i].weight > 0 {
+			values[i].value /= values[i].weight
+		}
 	}
 	if metric == "share_percent" {
 		totals := map[string]float64{}
@@ -263,11 +298,13 @@ func usageChart(data UsageData, q QueryInfo, metric string, topN int, from, to t
 	values := []chartValue{}
 	if iv != "" {
 		for _, b := range data.Buckets {
-			v := b.Cost
-			if metric == "total_tokens" {
-				v = float64(b.Tokens.Input + b.Tokens.Output + b.Tokens.Cached)
+			u := store.UsageTotals{Cost: b.Cost, Tokens: b.Tokens, Requests: b.Statistics.Requests, CacheReadTokens: b.Statistics.CacheReadTokens, CacheCreationTokens: b.Statistics.CacheCreationTokens}
+			p, ok := usageChartValue(u, metric)
+			if !ok {
+				continue
 			}
-			values = append(values, chartValue{x: b.Bucket, xLabel: b.Bucket, series: "model:" + b.Model, seriesLabel: display(b.Model), value: v})
+			p.x, p.xLabel, p.series, p.seriesLabel = b.Bucket, b.Bucket, "model:"+b.Model, display(b.Model)
+			values = append(values, p)
 		}
 	} else if data.Tokens.Input+data.Tokens.Output+data.Tokens.Cached > 0 {
 		if metric == "total_tokens" {
@@ -278,7 +315,11 @@ func usageChart(data UsageData, q QueryInfo, metric string, topN int, from, to t
 				values = append(values, chartValue{x: "partition:" + p.label, xLabel: p.label, series: metric, seriesLabel: "Tokens", value: float64(p.n)})
 			}
 		} else {
-			values = append(values, chartValue{x: q.Scope, xLabel: categoryLabel(q.Scope), series: metric, seriesLabel: "Estimated cost", value: data.Cost})
+			u := store.UsageTotals{Cost: data.Cost, Tokens: data.Tokens, Requests: data.Statistics.Requests, CacheReadTokens: data.Statistics.CacheReadTokens, CacheCreationTokens: data.Statistics.CacheCreationTokens}
+			if p, ok := usageChartValue(u, metric); ok {
+				p.x, p.xLabel, p.series, p.seriesLabel = q.Scope, categoryLabel(q.Scope), metric, measure(metric).Label
+				values = append(values, p)
+			}
 		}
 	}
 	kind := "bar"
@@ -290,6 +331,29 @@ func usageChart(data UsageData, q QueryInfo, metric string, topN int, from, to t
 		kind = "line"
 	}
 	return makeChart("AI usage", kind, xLabel, metric, values, topN, iv != "", from, to, iv, false, q.Warnings)
+}
+
+func usageChartValue(u store.UsageTotals, metric string) (chartValue, bool) {
+	v := usageMetric(u, metric)
+	if v == nil {
+		return chartValue{}, false
+	}
+	p := chartValue{value: *v}
+	switch metric {
+	case "cost_per_request_usd":
+		p.value, p.weight, p.weighted = u.Cost, float64(u.Requests), true
+	case "input_tokens_per_request":
+		p.value, p.weight, p.weighted = float64(u.Tokens.Input+u.Tokens.Cached), float64(u.Requests), true
+	case "output_tokens_per_request":
+		p.value, p.weight, p.weighted = float64(u.Tokens.Output), float64(u.Requests), true
+	case "tokens_per_request":
+		p.value, p.weight, p.weighted = float64(u.Tokens.Input+u.Tokens.Cached+u.Tokens.Output), float64(u.Requests), true
+	case "cache_read_share_percent":
+		p.value, p.weight, p.weighted = 100*float64(u.CacheReadTokens), float64(u.Tokens.Input+u.Tokens.Cached), true
+	case "reasoning_share_percent":
+		p.value, p.weight, p.weighted = 100*float64(u.Tokens.Reasoning), float64(u.Tokens.Output), true
+	}
+	return p, true
 }
 
 func display(value string) string {

@@ -38,8 +38,11 @@ type UsageInput struct {
 	RangeFilters
 	ModelFilters
 	ChartOptions
-	Interval    string `json:"interval,omitempty" jsonschema:"For a time-series chart use auto (recommended), hour, or day. Auto chooses hourly or daily buckets to fit the chart. Omit for totals only. Buckets align to UTC boundaries."`
-	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default) or total_tokens. Total tokens = input + output + cached; reasoning is already part of output. Does not change the original data payload."`
+	ComparePrevious bool   `json:"compare_previous,omitempty" jsonschema:"Compare with the immediately preceding equal-length window. No boundary event is counted in both periods. Cannot be combined with compare_from/compare_to."`
+	CompareFrom     string `json:"compare_from,omitempty" jsonschema:"Optional comparison start in RFC3339, e.g. last calendar month's start. Supply compare_to too; each window is limited to 90 days. Unequal windows are reported explicitly."`
+	CompareTo       string `json:"compare_to,omitempty" jsonschema:"Optional inclusive comparison end in RFC3339. Supply compare_from too. For adjacent periods end before the current from to avoid overlap."`
+	Interval        string `json:"interval,omitempty" jsonschema:"For a time-series chart use auto (recommended), hour, or day. Auto chooses hourly or daily buckets to fit the chart. Omit for totals only. Buckets align to UTC boundaries."`
+	ChartMetric     string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default), total_tokens, requests, cost_per_request_usd, input_tokens_per_request, output_tokens_per_request, tokens_per_request, cache_read_share_percent, reasoning_share_percent, or cache_savings_usd. Requests are token-bearing provider calls, not conversations. Averages and shares use pooled denominators; undefined values are null."`
 }
 
 type CostInput struct {
@@ -91,16 +94,19 @@ type Response[T any] struct {
 }
 
 type UsageBucket struct {
-	Bucket string            `json:"bucket"`
-	Model  string            `json:"model"`
-	Cost   float64           `json:"cost_usd"`
-	Tokens store.TokenTotals `json:"tokens"`
+	Bucket     string            `json:"bucket"`
+	Model      string            `json:"model"`
+	Cost       float64           `json:"cost_usd"`
+	Tokens     store.TokenTotals `json:"tokens"`
+	Statistics UsageStatistics   `json:"statistics"`
 }
 
 type UsageData struct {
-	Cost    float64           `json:"cost_usd"`
-	Tokens  store.TokenTotals `json:"tokens"`
-	Buckets []UsageBucket     `json:"buckets"`
+	Cost       float64           `json:"cost_usd"`
+	Tokens     store.TokenTotals `json:"tokens"`
+	Buckets    []UsageBucket     `json:"buckets"`
+	Statistics UsageStatistics   `json:"statistics"`
+	Comparison *UsageComparison  `json:"comparison,omitempty"`
 }
 
 type CostData struct {
@@ -245,7 +251,7 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 	if err != nil {
 		return out, err
 	}
-	metric, err := chartMetric(in.ChartMetric, "cost_usd", "cost_usd", "total_tokens")
+	metric, err := chartMetric(in.ChartMetric, "cost_usd", usageMetrics...)
 	if err != nil {
 		return out, err
 	}
@@ -253,6 +259,11 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 	if err != nil {
 		return out, err
 	}
+	compareFrom, compareTo, compare, err := comparisonRange(in, from, to)
+	if err != nil {
+		return out, err
+	}
+	var totals store.UsageTotals
 	out.Data = UsageData{Tokens: store.TokenTotals{Priced: true}, Buckets: []UsageBucket{}}
 	if iv == "" {
 		u, err := t.store.QueryUsageTotals(ctx, from, to, f)
@@ -260,6 +271,7 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 			return out, err
 		}
 		out.Data.Cost, out.Data.Tokens = u.Cost, u.Tokens
+		totals = u
 	} else {
 		q.Interval = strings.TrimPrefix(iv, "1 ")
 		points, err := t.store.QueryUsageTimeseries(ctx, from, to, iv, f)
@@ -270,7 +282,11 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 			return out, inputError("trend exceeds 2000 points; use day or narrow the range and filters")
 		}
 		for _, p := range points {
-			out.Data.Buckets = append(out.Data.Buckets, UsageBucket{Bucket: p.Bucket.UTC().Format(time.RFC3339), Model: p.Model, Cost: p.Cost, Tokens: p.Tokens})
+			out.Data.Buckets = append(out.Data.Buckets, UsageBucket{Bucket: p.Bucket.UTC().Format(time.RFC3339), Model: p.Model, Cost: p.Cost, Tokens: p.Tokens, Statistics: usageStatistics(store.UsageTotals{Cost: p.Cost, Tokens: p.Tokens, Requests: p.Requests, CacheReadTokens: p.CacheReadTokens, CacheCreationTokens: p.CacheCreationTokens, UnpricedTokens: p.UnpricedTokens})})
+			totals.Requests += p.Requests
+			totals.CacheReadTokens += p.CacheReadTokens
+			totals.CacheCreationTokens += p.CacheCreationTokens
+			totals.UnpricedTokens += p.UnpricedTokens
 			// Derive totals from the same snapshot as the trend, matching the
 			// personal API even while telemetry is being ingested.
 			out.Data.Cost += p.Cost
@@ -288,6 +304,23 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 			}
 			return a.Model < b.Model
 		})
+	}
+	totals.Cost, totals.Tokens = out.Data.Cost, out.Data.Tokens
+	out.Data.Statistics = usageStatistics(totals)
+	if compare {
+		previous, err := t.store.QueryUsageTotals(ctx, compareFrom, compareTo, f)
+		if err != nil {
+			return out, err
+		}
+		out.Data.Comparison = compareUsage(totals, previous, compareFrom, compareTo, metric)
+		if !previous.Tokens.Priced {
+			q.Warnings = append(q.Warnings, "Comparison-period cost is incomplete because some usage has no catalog price.")
+		}
+		if to.Sub(from) != compareTo.Sub(compareFrom) && !in.ComparePrevious {
+			warning := "Comparison windows have different lengths; changes in totals are not normalized by duration."
+			q.Warnings = append(q.Warnings, warning)
+			out.Data.Comparison.Chart.Notes = append(out.Data.Comparison.Chart.Notes, warning)
+		}
 	}
 	if !out.Data.Tokens.Priced {
 		q.Warnings = append(q.Warnings, "Some usage has no catalog price; estimated cost is incomplete.")

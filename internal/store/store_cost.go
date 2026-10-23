@@ -245,9 +245,13 @@ type UsageBucketPoint struct {
 	// InputCost/OutputCost split Cost by billed direction (input covers the
 	// uncached prompt plus cache read/creation; output covers response plus
 	// reasoning), from the per-span materialized columns.
-	InputCost  float64
-	OutputCost float64
-	Tokens     TokenTotals
+	InputCost           float64
+	OutputCost          float64
+	Tokens              TokenTotals
+	Requests            int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	UnpricedTokens      int64
 }
 
 // QueryUsageTimeseries returns cost and token consumption per time bucket,
@@ -288,7 +292,8 @@ func (s *Store) queryUsageTimeseries(ctx context.Context, from, to time.Time, in
 			COALESCE(SUM(input_cost + cache_read_cost + cache_creation_cost), 0) as input_cost,
 			COALESCE(SUM(output_cost), 0) as output_cost,
 			COALESCE(SUM(cache_savings), 0) as cache_savings,
-			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,`+spansPartCols+`
+			COALESCE(BOOL_AND(COALESCE(priced, false)), true) as priced,
+			COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(priced,false) THEN 0 ELSE input_tokens + output_tokens END),0),`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause+`
 		GROUP BY bucket, model
@@ -305,11 +310,12 @@ func (s *Store) queryUsageTimeseries(ctx context.Context, from, to time.Time, in
 		var parts tokenParts
 		var cacheSavings float64
 		var priced bool
-		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &p.InputCost, &p.OutputCost, &cacheSavings, &priced,
+		if err := rows.Scan(&p.Bucket, &p.Model, &p.Cost, &p.InputCost, &p.OutputCost, &cacheSavings, &priced, &p.Requests, &p.UnpricedTokens,
 			&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning); err != nil {
 			return nil, err
 		}
 		p.Tokens = usageTokenTotals(parts, cacheSavings, priced)
+		p.CacheReadTokens, p.CacheCreationTokens = int64(parts.CacheRead), int64(parts.CacheWrite)
 		result = append(result, p)
 	}
 	return result, rows.Err()
@@ -352,8 +358,12 @@ func usageTokenTotals(p tokenParts, cacheSavings float64, priced bool) TokenTota
 // UsageTotals is cost and token consumption for a window and filter, read in a
 // single scan of genai_spans.
 type UsageTotals struct {
-	Cost   float64
-	Tokens TokenTotals
+	Cost                float64
+	Tokens              TokenTotals
+	Requests            int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	UnpricedTokens      int64
 }
 
 // QueryUsageTotals returns the total cost and token counts for the given window
@@ -371,15 +381,17 @@ func (s *Store) QueryUsageTotals(ctx context.Context, from, to time.Time, f Filt
 		SELECT
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(cache_savings), 0),
-			COALESCE(BOOL_AND(COALESCE(priced, false)), true),`+spansPartCols+`
+			COALESCE(BOOL_AND(COALESCE(priced, false)), true),
+			COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(priced,false) THEN 0 ELSE input_tokens + output_tokens END),0),`+spansPartCols+`
 		FROM genai_spans
 		WHERE (input_tokens > 0 OR output_tokens > 0) AND time >= ? AND time <= ?`+clause,
-		args...).Scan(&u.Cost, &cacheSavings, &priced,
+		args...).Scan(&u.Cost, &cacheSavings, &priced, &u.Requests, &u.UnpricedTokens,
 		&parts.Uncached, &parts.CacheRead, &parts.CacheWrite, &parts.Response, &parts.Reasoning)
 	if err != nil {
 		return UsageTotals{}, err
 	}
 	u.Tokens = usageTokenTotals(parts, cacheSavings, priced)
+	u.CacheReadTokens, u.CacheCreationTokens = int64(parts.CacheRead), int64(parts.CacheWrite)
 	return u, nil
 }
 

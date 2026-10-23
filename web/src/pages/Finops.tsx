@@ -1,18 +1,17 @@
 import { useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
-import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import { apiUrl } from '../api'
 import type { BudgetResponse, ContextBucketRow, CostRow, TimeseriesPoint } from '../types'
 import { AppCell, KindBadge, UserCell, userLabel } from '../components/UserCell'
 import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { Bar, ChartLegend, chartOptions, Doughnut, PALETTE, Pie, SegToggle, TimeseriesPanel, CHART } from '../components/charts'
 import { costsByApp, costsByDepartment, costsByModel, costsByUser } from '../lib/costs'
 import { fmtCost, fmtTokens, pctChange } from '../lib/format'
 
-function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
+function costCols<T extends CostRow>(): DataTableColumns<T> {
   return [
     { accessorKey: 'input_tokens', header: 'Input', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
     { accessorKey: 'output_tokens', header: 'Output', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
@@ -70,7 +69,7 @@ function costCols<T extends CostRow>(): ColumnDef<T, any>[] {
   ]
 }
 
-const userColumns: ColumnDef<CostRow, any>[] = [
+const userColumns: DataTableColumns<CostRow> = [
   {
     accessorKey: 'id',
     header: 'User',
@@ -85,7 +84,7 @@ const userColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
-const appColumns: ColumnDef<CostRow, any>[] = [
+const appColumns: DataTableColumns<CostRow> = [
   {
     accessorKey: 'app_id',
     header: 'Application',
@@ -94,7 +93,7 @@ const appColumns: ColumnDef<CostRow, any>[] = [
   ...costCols(),
 ]
 
-const departmentColumns: ColumnDef<CostRow, any>[] = [
+const departmentColumns: DataTableColumns<CostRow> = [
   {
     accessorKey: 'department',
     header: 'Department',

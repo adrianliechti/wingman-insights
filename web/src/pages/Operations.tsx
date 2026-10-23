@@ -1,10 +1,9 @@
 import { CircleCheck } from 'lucide-react'
-import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash } from '../dash'
 import { opsViews, resolveView } from '../nav'
 import type { HTTPErrorsByCodeRow, HTTPSummaryRow, TimeseriesPoint, ToolStatRow } from '../types'
 import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { Bar, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtDuration, fmtTokens } from '../lib/format'
 import { Traces } from './Traces'
@@ -45,7 +44,7 @@ const PERCENTILE_SPECS = {
   p99: { label: 'p99', color: CHART.negative },
 }
 
-const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
+const httpSummaryColumns: DataTableColumns<HTTPSummaryRow> = [
   { accessorKey: 'direction', header: 'Direction' },
   { accessorKey: 'method', header: 'Method' },
   {
@@ -71,7 +70,7 @@ const httpSummaryColumns: ColumnDef<HTTPSummaryRow, any>[] = [
   },
 ]
 
-const toolColumns: ColumnDef<ToolStatRow, any>[] = [
+const toolColumns: DataTableColumns<ToolStatRow> = [
   { accessorKey: 'mcp_server', header: 'MCP Server', cell: (c) => c.getValue() || '—' },
   {
     accessorKey: 'tool_name',

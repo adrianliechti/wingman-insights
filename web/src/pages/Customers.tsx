@@ -1,4 +1,3 @@
-import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav, usePrevRange } from '../dash'
 import type {
   AppAdoptionRow,
@@ -12,7 +11,7 @@ import type {
 import { AppCell, KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
 import { Bar, ChartLegend, PALETTE, TimeseriesPanel, chartOptions, CHART } from '../components/charts'
 import { fmtCost, fmtTokens, fmtTime, pctChange } from '../lib/format'
@@ -128,7 +127,7 @@ function SegmentTag({ seg }: { seg: string }) {
   )
 }
 
-const userColumns: ColumnDef<UserStatRow, any>[] = [
+const userColumns: DataTableColumns<UserStatRow> = [
   {
     accessorKey: 'id',
     header: 'User',
@@ -152,7 +151,7 @@ const userColumns: ColumnDef<UserStatRow, any>[] = [
   },
 ]
 
-const appColumns: ColumnDef<AppAdoptionRow, any>[] = [
+const appColumns: DataTableColumns<AppAdoptionRow> = [
   {
     accessorKey: 'app_id',
     header: 'Application',

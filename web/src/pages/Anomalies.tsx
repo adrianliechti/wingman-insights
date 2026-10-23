@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
-import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav } from '../dash'
 import type { AnomalyFeedRow, BurstRow, ScorePoint, TopConsumerRow } from '../types'
 import type { TimeseriesPoint } from '../types'
 import { KindBadge, UserCell } from '../components/UserCell'
 import { Panel, PanelLoading, PanelMessage } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
 import { Heatmap } from '../components/Heatmap'
 import { ChartLegend, Line, chartOptions, groupSeries, CHART } from '../components/charts'
@@ -106,7 +105,7 @@ function AnomalyLeaderboard({ feed, dimension }: { feed: AnomalyFeedRow[]; dimen
   )
 }
 
-const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
+const consumerColumns: DataTableColumns<TopConsumerRow> = [
   { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
   { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   { accessorKey: 'total_requests', header: 'Requests', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },
@@ -114,7 +113,7 @@ const consumerColumns: ColumnDef<TopConsumerRow, any>[] = [
   { accessorKey: 'tpm', header: 'TPM', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) + '/min' },
 ]
 
-const burstColumns: ColumnDef<BurstRow, any>[] = [
+const burstColumns: DataTableColumns<BurstRow> = [
   { id: 'user', header: 'User', cell: (c) => <UserCell r={c.row.original} /> },
   { id: 'kind', accessorKey: 'kind', header: 'Kind', cell: (c) => <KindBadge kind={c.getValue()} /> },
   {
@@ -149,7 +148,7 @@ export function Anomalies() {
   const usersFlagged = new Set(rows.filter((r) => r.dimension === 'user').map((r) => r.group_key)).size
   const appsFlagged = new Set(rows.filter((r) => r.dimension === 'app').map((r) => r.group_key)).size
 
-  const feedColumns: ColumnDef<AnomalyFeedRow, any>[] = [
+  const feedColumns: DataTableColumns<AnomalyFeedRow> = [
     { accessorKey: 'bucket', header: 'When', cell: (c) => fmtTime(c.getValue()) },
     { accessorKey: 'dimension', header: 'Dimension', cell: (c) => <Badge text={c.getValue() === 'app' ? 'application' : c.getValue()} /> },
     {

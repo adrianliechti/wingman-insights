@@ -1,19 +1,49 @@
 import { useState } from 'react'
 import {
+  createSortedRowModel,
   flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
+  metaHelper,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_basic,
+  sortFn_datetime,
+  sortFn_text,
+  tableFeatures,
+  useTable,
 } from '@tanstack/react-table'
-import type { ColumnDef, SortingState } from '@tanstack/react-table'
+import type { ColumnDef, RowData, SortingState } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import { PanelLoadingRows, Stale } from './Panel'
+
+// align is the only per-column extra these tables carry; declaring it as the
+// table's columnMeta slot types `meta: { align: 'right' }` at every call site.
+type ColumnMeta = { align?: 'right' }
+
+// Sorting is the only table feature in use, so register just that one plus its
+// row model. The sortFns registry is what `sortFn: 'auto'` resolves against —
+// without it, auto-detection cannot find the built-ins and every column falls
+// back to the basic comparator, which would reorder the text columns.
+const features = tableFeatures({
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: {
+    alphanumeric: sortFn_alphanumeric,
+    basic: sortFn_basic,
+    datetime: sortFn_datetime,
+    text: sortFn_text,
+  },
+  columnMeta: metaHelper<ColumnMeta>(),
+})
+
+// DataTableColumns keeps the feature set in this module: callers describe their
+// columns without naming the table's features themselves.
+export type DataTableColumns<T extends RowData> = ColumnDef<typeof features, T, any>[]
 
 // showMoreStep is how many extra rows each "Show more" click reveals on a
 // limited table.
 const showMoreStep = 100
 
-export function DataTable<T>({
+export function DataTable<T extends RowData>({
   data,
   columns,
   initialSort,
@@ -22,7 +52,7 @@ export function DataTable<T>({
   loading,
 }: {
   data: T[]
-  columns: ColumnDef<T, any>[]
+  columns: DataTableColumns<T>
   initialSort?: SortingState
   onRowClick?: (row: T) => void
   // initialLimit caps how many (sorted) rows render initially, with a
@@ -37,13 +67,12 @@ export function DataTable<T>({
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSort ?? [])
   const [limit, setLimit] = useState(initialLimit)
-  const table = useReactTable({
+  const table = useTable({
+    features,
     data,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
   })
   const allRows = table.getRowModel().rows
   const rows = limit ? allRows.slice(0, limit) : allRows
@@ -61,7 +90,7 @@ export function DataTable<T>({
               {hg.headers.map((header) => {
                 const sorted = header.column.getIsSorted()
                 const canSort = header.column.getCanSort()
-                const align = (header.column.columnDef.meta as any)?.align === 'right' ? 'justify-end text-right' : 'text-left'
+                const align = header.column.columnDef.meta?.align === 'right' ? 'justify-end text-right' : 'text-left'
                 return (
                   <th key={header.id} className="px-3 py-2">
                     <button
@@ -95,8 +124,11 @@ export function DataTable<T>({
               onClick={onRowClick ? () => onRowClick(row.original) : undefined}
               className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30 ${onRowClick ? 'cursor-pointer' : ''}`}
             >
-              {row.getVisibleCells().map((cell) => {
-                const align = (cell.column.columnDef.meta as any)?.align === 'right' ? 'text-right' : 'text-left'
+              {/* getAllCells rather than getVisibleCells: column visibility is
+                  not one of the registered features, so every cell is visible
+                  and the core accessor is the one available. */}
+              {row.getAllCells().map((cell) => {
+                const align = cell.column.columnDef.meta?.align === 'right' ? 'text-right' : 'text-left'
                 return (
                   <td key={cell.id} className={`px-3 py-2.5 tabular-nums text-gray-700 dark:text-gray-300 ${align}`}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}

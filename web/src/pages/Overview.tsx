@@ -9,11 +9,10 @@ import type {
   TokenSummaryRow,
 } from '../types'
 import { Panel, PanelLoading, PanelMessage } from '../components/Panel'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { TokenChart } from '../components/TokenChart'
 import { ChartLegend, Doughnut, PALETTE, TimeseriesPanel, CHART } from '../components/charts'
 import { fmtCost, fmtDuration, fmtTokens } from '../lib/format'
-import type { ColumnDef } from '@tanstack/react-table'
 
 function ModelDistributionChart() {
   const { data, loading } = useApi<ModelDistributionRow[]>('/api/genai/model-distribution')
@@ -48,7 +47,7 @@ function ModelDistributionChart() {
   )
 }
 
-const operationColumns: ColumnDef<OperationRow, any>[] = [
+const operationColumns: DataTableColumns<OperationRow> = [
   { accessorKey: 'operation_name', header: 'Operation' },
   { accessorKey: 'request_model', header: 'Model' },
   { accessorKey: 'total_count', header: 'Count', meta: { align: 'right' }, cell: (c) => fmtTokens(c.getValue()) },

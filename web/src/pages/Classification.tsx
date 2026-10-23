@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { CircleCheck, Info } from 'lucide-react'
-import type { ColumnDef } from '@tanstack/react-table'
 import { useApi, useDash, useFilterNav } from '../dash'
 import type {
   ClassificationDepartmentRow,
@@ -12,7 +11,7 @@ import type {
 } from '../types'
 import { Panel, PanelLoading, PanelMessage, Stale } from '../components/Panel'
 import { StatStrip } from '../components/StatCard'
-import { DataTable } from '../components/DataTable'
+import { DataTable, type DataTableColumns } from '../components/DataTable'
 import { Heatmap } from '../components/Heatmap'
 import { DepartmentTopics } from '../components/DepartmentTopics'
 import {
@@ -274,7 +273,7 @@ function DepartmentComparison({
 // departmentColumns is the full department list — the way to reach any of
 // potentially hundreds of departments, which no chart can show. Sortable on
 // every measure so the table doubles as the ranking the chart only previews.
-const departmentColumns: ColumnDef<ClassificationDepartmentRow, any>[] = [
+const departmentColumns: DataTableColumns<ClassificationDepartmentRow> = [
   {
     accessorKey: 'department',
     header: 'Department',
@@ -336,7 +335,7 @@ const departmentColumns: ColumnDef<ClassificationDepartmentRow, any>[] = [
   },
 ]
 
-const riskColumns: ColumnDef<ClassificationRow, any>[] = [
+const riskColumns: DataTableColumns<ClassificationRow> = [
   {
     accessorKey: 'id',
     header: 'Risk',

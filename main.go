@@ -13,6 +13,7 @@ import (
 
 	"insights/internal/api"
 	"insights/internal/ingest"
+	mcpserver "insights/internal/mcp"
 	"insights/internal/store"
 	"insights/pkg/directory/entra"
 	filedir "insights/pkg/directory/file"
@@ -121,6 +122,9 @@ func main() {
 
 	h.Register(app)
 	h.RegisterPersonal(app)
+	if os.Getenv("INSIGHTS_MCP_ENABLED") == "true" {
+		app.Handle("/mcp", mcpserver.NewHandler(s, os.Getenv("INSIGHTS_ADMIN_GROUP")))
+	}
 
 	app.Handle("/", newSPAHandler(basePath))
 

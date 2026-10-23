@@ -912,21 +912,44 @@ func emitBurst() *coltrace.ExportTraceServiceRequest {
 	}}}
 }
 
+// post applies the OTLP retry contract: the ingest queue sheds load with 503 +
+// Retry-After once its in-memory cap is reached, so a generator that treats the
+// first 503 as fatal aborts a run the server merely asked it to pace.
+func post(url string, data []byte) error {
+	const attempts = 10
+	for attempt := 1; ; attempt++ {
+		resp, err := http.Post(url, "application/x-protobuf", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError
+		if !retryable || attempt == attempts {
+			return fmt.Errorf("status %d", resp.StatusCode)
+		}
+		time.Sleep(retryAfter(resp.Header.Get("Retry-After"), attempt))
+	}
+}
+
+// retryAfter honors the server's hint, falling back to capped exponential
+// backoff so a sustained stall still drains instead of hot-looping.
+func retryAfter(header string, attempt int) time.Duration {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	backoff := time.Duration(1<<min(attempt-1, 4)) * 250 * time.Millisecond
+	return min(backoff, 4*time.Second)
+}
+
 func sendTraces(req *coltrace.ExportTraceServiceRequest) error {
 	data, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
-	url := strings.Replace(*endpoint, "/v1/metrics", "/v1/traces", 1)
-	resp, err := http.Post(url, "application/x-protobuf", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status %d", resp.StatusCode)
-	}
-	return nil
+	return post(strings.Replace(*endpoint, "/v1/metrics", "/v1/traces", 1), data)
 }
 
 func send(req *colmetrics.ExportMetricsServiceRequest) error {
@@ -934,15 +957,7 @@ func send(req *colmetrics.ExportMetricsServiceRequest) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(*endpoint, "application/x-protobuf", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status %d", resp.StatusCode)
-	}
-	return nil
+	return post(*endpoint, data)
 }
 
 // histo emits a delta histogram for one interval — the shape wingman's insights

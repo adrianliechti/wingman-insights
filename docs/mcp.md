@@ -11,7 +11,6 @@ decodes the JWT payload and **does not verify its signature, issuer, audience, o
 expiry**. Token trust is supplied by the caller/upstream integration. There is no
 OAuth login/discovery flow or token issuance in this implementation. This is a
 temporary trusted-token integration, not a standalone authentication boundary.
-
 The `oid` claim identifies the caller, falling back to `sub` if `oid` is absent.
 This value must match a telemetry user ID or a directory alias. No token or a
 missing identity returns HTTP 401. Forwarded identity/group headers are ignored.
@@ -23,8 +22,9 @@ the caller can query organization-wide data and use all six tools. If the
 variable is unset, nobody receives admin access. Other callers see only
 `get_usage`, `get_cost_breakdown`, and `get_prompt_sizes`; their user filter is always replaced by their
 token identity, even if they request someone else's data. Grouping by department
-or location still returns only their own costs. Development auth flags do not
-grant MCP access or bypass the requirement for a token.
+or location still returns only their own costs. The dashboard's own development
+auth flags do not by themselves grant MCP access or bypass the requirement for a
+token; see [Local development](#local-development).
 
 Configure your MCP client with this HTTP URL and bearer header. For example:
 
@@ -41,9 +41,62 @@ Configure your MCP client with this HTTP URL and bearer header. For example:
 ```
 
 Client configuration syntax varies; use its remote Streamable HTTP option. Use
-HTTPS in deployment. Same-origin browser requests and clients without an Origin
-header are supported; cross-origin browser requests are rejected. Request bodies
-are limited to 1 MiB. Keep tokens out of checked-in configuration and logs.
+HTTPS in deployment. Request bodies are limited to 1 MiB. Keep tokens out of
+checked-in configuration and logs.
+
+## Browser clients and CORS
+
+Same-origin browser requests and clients without an `Origin` header are
+supported; cross-origin browser requests are rejected with 403 and no CORS
+headers, so a web client on another origin cannot connect by default. Tools that
+proxy through their own backend — including the MCP Inspector, whose browser UI
+calls its own origin — are unaffected.
+
+Set `INSIGHTS_MCP_ALLOWED_ORIGINS` to a comma-separated list of origins to admit
+browser clients. Listed origins become trusted, preflight `OPTIONS` requests are
+answered without a token, and responses expose `Mcp-Session-Id`,
+`Mcp-Protocol-Version`, and `WWW-Authenticate` so client SDKs can read them.
+
+```sh
+INSIGHTS_MCP_ALLOWED_ORIGINS=https://client.example,https://other.example
+```
+
+The value `*` admits any origin and disables the cross-origin protection
+altogether, logging a warning at startup. Because tokens are trusted without
+verification, `*` means any website a user visits can call this endpoint with
+whatever identity it chooses — only use it where the network is the real
+boundary, and never together with `INSIGHTS_MCP_AUTH_DISABLED`, which would let
+any page read organization-wide data anonymously.
+
+## Local development
+
+Set `INSIGHTS_MCP_AUTH_DISABLED=true` to accept unauthenticated callers as a
+fixed identity instead of answering 401, so local clients need no token
+plumbing. It is **development only** and off by default. Because it hands data
+to anonymous callers, the server additionally requires `INSIGHTS_AUTH_DISABLED=true`
+and exits at startup otherwise, so no single variable can open up a deployment.
+Enabling it logs a warning naming the assumed identity.
+
+The identity defaults to `dev`, matching the dashboard's dev user. Override it
+with `INSIGHTS_MCP_DEV_USER` to impersonate a real telemetry user — useful
+because `dev` usually has no recorded usage, so personal scope returns empty
+data. `INSIGHTS_DEV_ADMIN=true` grants the anonymous caller admin scope and all
+four tools, mirroring the dashboard.
+
+A valid bearer token still takes precedence when one is sent, so scope and
+admin behavior remain testable without toggling the flag:
+
+```sh
+INSIGHTS_MCP_ENABLED=true INSIGHTS_AUTH_DISABLED=true \
+INSIGHTS_MCP_AUTH_DISABLED=true INSIGHTS_MCP_DEV_USER=dev@example.com \
+INSIGHTS_DEV_ADMIN=true go run .
+```
+
+Note that the embedded SPA answers unmatched paths, so OAuth discovery probes
+such as `/.well-known/oauth-authorization-server` return the dashboard HTML
+rather than 404. Clients that react to a 401 by attempting OAuth discovery can
+fail confusingly; supply a token (or enable this bypass) so the 401 never
+occurs.
 
 ## Tools and filters
 
@@ -276,3 +329,7 @@ deduplication, new/returning history, application/anonymous exclusions, prompt-s
 bin boundaries, cost coverage and empty distributions.
 Run `go test ./...` for backend regression coverage
 after building the embedded web assets (`npm ci && npm run build` in `web`).
+category counts/shares/trends, invalid inputs, limits, empty data, cancellation,
+the development auth bypass, the CORS allowlist, and generic error responses. Run
+`go test ./...` for backend regression coverage after building the embedded web
+assets (`npm ci && npm run build` in `web`).

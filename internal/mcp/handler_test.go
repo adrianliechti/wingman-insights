@@ -358,6 +358,119 @@ func TestTrustedTokenBoundary(t *testing.T) {
 	}
 }
 
+func TestDevFallbackOnlyWhenEnabled(t *testing.T) {
+	// nil store is safe: initialization registers tools but executes no queries.
+	noFallback := NewHandler(nil, "admins")
+	r := httptest.NewRequest("POST", "/mcp", nil)
+	w := httptest.NewRecorder()
+	noFallback.ServeHTTP(w, r)
+	if w.Code != 401 {
+		t.Fatalf("missing token accepted without the dev option: status=%d", w.Code)
+	}
+
+	// The option replaces the 401 with a fixed identity, so an anonymous caller
+	// reaches the transport instead of the auth wall.
+	h := NewHandler(nil, "admins", WithDevFallback("dev@example.com", true))
+	r = httptest.NewRequest("POST", "/mcp", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code == 401 {
+		t.Fatal("dev fallback did not accept an unauthenticated caller")
+	}
+
+	if p := devPrincipal(t, "  ", false); p.user != "dev" {
+		t.Fatalf("blank dev user not defaulted: %q", p.user)
+	}
+	if p := devPrincipal(t, "alice", true); p.user != "alice" || !p.admin {
+		t.Fatalf("dev identity not honored: %+v", p)
+	}
+}
+
+// devPrincipal resolves the identity an Option would install.
+func devPrincipal(t *testing.T, user string, admin bool) principal {
+	t.Helper()
+	var cfg handlerConfig
+	WithDevFallback(user, admin)(&cfg)
+	if cfg.dev == nil {
+		t.Fatal("option installed no principal")
+	}
+	return *cfg.dev
+}
+
+func TestCORSAllowlist(t *testing.T) {
+	// nil store is safe: initialization registers tools but executes no queries.
+	const origin = "https://client.example"
+
+	// Default: cross-origin browser POSTs stay rejected and no CORS is offered.
+	closed := NewHandler(nil, "admins")
+	r := httptest.NewRequest("POST", "http://insights.example/mcp", nil)
+	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Origin", origin)
+	w := httptest.NewRecorder()
+	closed.ServeHTTP(w, r)
+	if w.Code != 403 || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("default allowed cross-origin: status=%d acao=%q", w.Code, w.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// An explicit allowlist answers preflights without credentials and echoes
+	// the origin, but still refuses origins it was not given.
+	listed := NewHandler(nil, "admins", WithAllowedOrigins(origin))
+	r = httptest.NewRequest("OPTIONS", "http://insights.example/mcp", nil)
+	r.Header.Set("Origin", origin)
+	r.Header.Set("Access-Control-Request-Method", "POST")
+	r.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	w = httptest.NewRecorder()
+	listed.ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("preflight status=%d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("preflight origin=%q", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "authorization, content-type" {
+		t.Fatalf("preflight headers=%q", got)
+	}
+	if !strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), "Mcp-Session-Id") {
+		t.Fatal("session header not exposed to browser clients")
+	}
+	if w.Header().Get("Vary") != "Origin" {
+		t.Fatal("per-origin response not marked Vary: Origin")
+	}
+
+	r = httptest.NewRequest("POST", "http://insights.example/mcp", nil)
+	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	listed.ServeHTTP(w, r)
+	if w.Code != 403 || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unlisted origin admitted: status=%d", w.Code)
+	}
+
+	// Wildcard admits any origin and drops the cross-origin protection.
+	open := NewHandler(nil, "admins", WithAllowedOrigins("*"))
+	r = httptest.NewRequest("POST", "http://insights.example/mcp", nil)
+	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Origin", "https://anything.example")
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	w = httptest.NewRecorder()
+	open.ServeHTTP(w, r)
+	if w.Code == 403 {
+		t.Fatal("wildcard still rejected a cross-origin request")
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("wildcard acao=%q", got)
+	}
+
+	// Preflights must not require a token, or the browser reports a CORS error.
+	r = httptest.NewRequest("OPTIONS", "http://insights.example/mcp", nil)
+	r.Header.Set("Origin", "https://anything.example")
+	w = httptest.NewRecorder()
+	open.ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("unauthenticated preflight status=%d", w.Code)
+	}
+}
+
 func TestLimitsCancellationAndErrorRedaction(t *testing.T) {
 	s := fixture(t)
 	client, _ := connect(t, s, "admin", "admins")

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -118,12 +119,15 @@ func main() {
 	basePath := normalizeBasePath(os.Getenv("INSIGHTS_BASE_PATH"))
 
 	app := http.NewServeMux()
+	// Resolved before any handler is built so a misconfigured development
+	// bypass fails fast rather than after auth setup succeeds.
+	mcpOpts := mcpOptions()
 	h := api.NewHandler(s)
 
 	h.Register(app)
 	h.RegisterPersonal(app)
 	if os.Getenv("INSIGHTS_MCP_ENABLED") == "true" {
-		app.Handle("/mcp", mcpserver.NewHandler(s, os.Getenv("INSIGHTS_ADMIN_GROUP")))
+		app.Handle("/mcp", mcpserver.NewHandler(s, os.Getenv("INSIGHTS_ADMIN_GROUP"), mcpOpts...))
 	}
 
 	app.Handle("/", newSPAHandler(basePath))
@@ -178,6 +182,45 @@ func main() {
 	if err := metricsHandler.Close(flushCtx); err != nil {
 		log.Printf("metrics drain failed: %v", err)
 	}
+}
+
+// mcpOptions resolves the optional MCP browser allowlist and the
+// development-only auth bypass. Both are inert unless explicitly requested and,
+// because the bypass hands org-wide data to anonymous callers, it additionally
+// requires dashboard auth to already be disabled — so no single variable can
+// open up a real deployment.
+func mcpOptions() []mcpserver.Option {
+	var opts []mcpserver.Option
+	if origins := splitList(os.Getenv("INSIGHTS_MCP_ALLOWED_ORIGINS")); len(origins) > 0 {
+		opts = append(opts, mcpserver.WithAllowedOrigins(origins...))
+		if slices.Contains(origins, "*") {
+			log.Print("WARNING: INSIGHTS_MCP_ALLOWED_ORIGINS=* lets any website call MCP from a browser; prefer an explicit origin list")
+		}
+	}
+	if os.Getenv("INSIGHTS_MCP_AUTH_DISABLED") != "true" {
+		return opts
+	}
+	if os.Getenv("INSIGHTS_AUTH_DISABLED") != "true" {
+		log.Fatal("INSIGHTS_MCP_AUTH_DISABLED=true is a development-only bypass and also requires INSIGHTS_AUTH_DISABLED=true")
+	}
+	user := strings.TrimSpace(os.Getenv("INSIGHTS_MCP_DEV_USER"))
+	if user == "" {
+		user = "dev"
+	}
+	admin := os.Getenv("INSIGHTS_DEV_ADMIN") == "true"
+	log.Printf("WARNING: MCP auth is disabled; unauthenticated callers act as %q (admin=%t) — development only", user, admin)
+	return append(opts, mcpserver.WithDevFallback(user, admin))
+}
+
+// splitList parses a comma-separated env value, dropping blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // normalizeBasePath cleans a configured base path into a canonical form with a

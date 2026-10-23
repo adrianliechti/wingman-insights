@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"insights/internal/store"
@@ -20,10 +21,52 @@ type principal struct {
 
 type principalKey struct{}
 
+type handlerConfig struct {
+	dev     *principal
+	origins []string
+}
+
+func (c *handlerConfig) allowsAnyOrigin() bool { return slices.Contains(c.origins, "*") }
+
+// Option customizes the MCP handler. The zero set keeps the production
+// behavior: every request must carry a bearer token.
+type Option func(*handlerConfig)
+
+// WithDevFallback accepts unauthenticated callers as the given identity instead
+// of answering 401. It exists so local development can skip token plumbing and
+// must never be enabled in a deployment; the caller owns that gate.
+func WithDevFallback(user string, admin bool) Option {
+	return func(c *handlerConfig) {
+		if user = strings.TrimSpace(user); user == "" {
+			user = "dev"
+		}
+		c.dev = &principal{user: user, admin: admin}
+	}
+}
+
+// WithAllowedOrigins lets browser clients on the given origins call the
+// endpoint: each is registered as a trusted origin and answered with CORS
+// headers. A single "*" allows any origin, which also disables the cross-origin
+// protection entirely — only sound when the network itself is the boundary.
+// Without this option cross-origin browser requests stay rejected.
+func WithAllowedOrigins(origins ...string) Option {
+	return func(c *handlerConfig) {
+		for _, origin := range origins {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				c.origins = append(c.origins, origin)
+			}
+		}
+	}
+}
+
 // NewHandler trusts the identity and groups in the bearer JWT without verifying
 // it. This is a temporary integration boundary: the caller/upstream must supply
 // a trusted token. It deliberately does not change dashboard/companion auth.
-func NewHandler(s *store.Store, adminGroup string) http.Handler {
+func NewHandler(s *store.Store, adminGroup string, opts ...Option) http.Handler {
+	var cfg handlerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	personal := newServer(s, false)
 	admin := newServer(s, true)
 	transport := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
@@ -37,15 +80,77 @@ func NewHandler(s *store.Store, adminGroup string) http.Handler {
 		JSONResponse:                 true,
 		PropagateRequestCancellation: true,
 	})
-	protected := http.NewCrossOriginProtection().Handler(http.MaxBytesHandler(transport, 1<<20))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// A wildcard allowlist makes every request "trusted", so the CSRF check can
+	// only reject callers the operator already chose to admit.
+	var guarded http.Handler = http.MaxBytesHandler(transport, 1<<20)
+	if !cfg.allowsAnyOrigin() {
+		protection := http.NewCrossOriginProtection()
+		for _, origin := range cfg.origins {
+			// Rejected only for malformed values; the allowlist is operator input.
+			if err := protection.AddTrustedOrigin(origin); err != nil {
+				panic("mcp: invalid allowed origin " + origin + ": " + err.Error())
+			}
+		}
+		guarded = protection.Handler(guarded)
+	}
+	authenticated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := tokenPrincipal(r.Header.Get("Authorization"), adminGroup)
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="insights-mcp"`)
-			http.Error(w, "a bearer JWT with an oid or sub identity is required", http.StatusUnauthorized)
-			return
+			// A valid token still wins when present, so the bypass changes only
+			// the unauthenticated case and scope tests stay possible without
+			// toggling flags.
+			if cfg.dev == nil {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="insights-mcp"`)
+				http.Error(w, "a bearer JWT with an oid or sub identity is required", http.StatusUnauthorized)
+				return
+			}
+			p = *cfg.dev
 		}
-		protected.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
+		guarded.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
+	})
+	// CORS wraps auth so preflights, which carry no credentials, are answered
+	// instead of collecting a 401 the browser would report as a CORS failure.
+	return withCORS(&cfg, authenticated)
+}
+
+// withCORS answers browser preflights and annotates allowed cross-origin
+// responses. It is a no-op when no origins are configured.
+func withCORS(cfg *handlerConfig, next http.Handler) http.Handler {
+	if len(cfg.origins) == 0 {
+		return next
+	}
+	any := cfg.allowsAnyOrigin()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := any && origin != ""
+		if !allowed && slices.Contains(cfg.origins, origin) {
+			allowed = true
+			// The response varies per origin, so caches must not share it.
+			w.Header().Add("Vary", "Origin")
+		}
+		if allowed {
+			h := w.Header()
+			if any {
+				h.Set("Access-Control-Allow-Origin", "*")
+			} else {
+				h.Set("Access-Control-Allow-Origin", origin)
+			}
+			// Streamable HTTP clients read the session and negotiated version
+			// off the response; both are invisible to JS unless exposed.
+			h.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version, WWW-Authenticate")
+			if r.Method == http.MethodOptions {
+				h.Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
+				requested := r.Header.Get("Access-Control-Request-Headers")
+				if requested == "" {
+					requested = "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID"
+				}
+				h.Set("Access-Control-Allow-Headers", requested)
+				h.Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

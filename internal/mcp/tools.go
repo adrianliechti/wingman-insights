@@ -37,25 +37,33 @@ type ModelFilters struct {
 type UsageInput struct {
 	RangeFilters
 	ModelFilters
-	Interval string `json:"interval,omitempty" jsonschema:"Optional trend interval: hour or day. Omit to return totals only. Buckets align to UTC boundaries."`
+	ChartOptions
+	Interval    string `json:"interval,omitempty" jsonschema:"For a time-series chart use auto (recommended), hour, or day. Auto chooses hourly or daily buckets to fit the chart. Omit for totals only. Buckets align to UTC boundaries."`
+	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default) or total_tokens. Total tokens = input + output + cached; reasoning is already part of output. Does not change the original data payload."`
 }
 
 type CostInput struct {
 	RangeFilters
 	ModelFilters
-	GroupBy string `json:"group_by,omitempty" jsonschema:"Grouping: model (default), application, department, location, or user. Non-admin results remain personal for every grouping."`
-	Limit   int    `json:"limit,omitempty" jsonschema:"Number of ranked rows to return: 1 to 100, default 20. Totals cover all matching rows before truncation."`
+	ChartOptions
+	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default), total_tokens, or cache_savings_usd. Chart groups are ranked by this measure; the original data rows remain ranked by cost."`
+	GroupBy     string `json:"group_by,omitempty" jsonschema:"Grouping: model (default), application, department, location, or user. Non-admin results remain personal for every grouping."`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Number of ranked rows to return: 1 to 100, default 20. Totals cover all matching rows before truncation."`
 }
 
 type CategoryInput struct {
 	RangeFilters
-	GroupBy string `json:"group_by,omitempty" jsonschema:"Grouping: category (default) for overall shares, or department for category shares within each department."`
-	Limit   int    `json:"limit,omitempty" jsonschema:"Number of ranked category rows to return: 1 to 100, default 20. Shares and total prompts are computed before truncation."`
+	ChartOptions
+	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: prompts (default) or share_percent (0 to 100). Department shares use each department's classified prompt count, including Other."`
+	GroupBy     string `json:"group_by,omitempty" jsonschema:"Grouping: category (default) for overall shares, or department for category shares within each department."`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Number of ranked category rows to return: 1 to 100, default 20. Shares and total prompts are computed before truncation."`
 }
 
 type CategoryTrendInput struct {
 	RangeFilters
-	Interval string `json:"interval,omitempty" jsonschema:"Trend interval: hour (default) or day. Buckets align to UTC boundaries. At most 2000 topic/bucket points; use day or narrow the time range and filters if exceeded."`
+	ChartOptions
+	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: prompts (default) or share_percent (0 to 100 within each time bucket). Counts describe classified prompts only."`
+	Interval    string `json:"interval,omitempty" jsonschema:"Trend interval: auto (default, recommended for charts), hour, or day. Buckets align to UTC boundaries. At most 2000 topic/bucket points; use day or narrow the time range and filters if exceeded."`
 }
 
 type AppliedFilters struct {
@@ -79,6 +87,7 @@ type Response[T any] struct {
 	Data      T         `json:"data"`
 	TotalRows int       `json:"total_rows"`
 	Truncated bool      `json:"truncated"`
+	Chart     Chart     `json:"chart"`
 }
 
 type UsageBucket struct {
@@ -232,7 +241,15 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 	if err != nil {
 		return out, err
 	}
-	iv, err := interval(in.Interval, true)
+	topN, err := chartOptions(in.ChartOptions)
+	if err != nil {
+		return out, err
+	}
+	metric, err := chartMetric(in.ChartMetric, "cost_usd", "cost_usd", "total_tokens")
+	if err != nil {
+		return out, err
+	}
+	iv, err := chartInterval(in.Interval, true, from, to, topN)
 	if err != nil {
 		return out, err
 	}
@@ -244,7 +261,7 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 		}
 		out.Data.Cost, out.Data.Tokens = u.Cost, u.Tokens
 	} else {
-		q.Interval = in.Interval
+		q.Interval = strings.TrimPrefix(iv, "1 ")
 		points, err := t.store.QueryUsageTimeseries(ctx, from, to, iv, f)
 		if err != nil {
 			return out, err
@@ -279,12 +296,21 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 		q.Warnings = append(q.Warnings, "No matching recorded usage.")
 	}
 	out.Query, out.TotalRows = q, len(out.Data.Buckets)
-	return out, nil
+	out.Chart, err = usageChart(out.Data, q, metric, topN, from, to, iv)
+	return out, err
 }
 
 func (t tools) costs(ctx context.Context, in CostInput) (Response[CostData], error) {
 	var out Response[CostData]
 	q, from, to, f, err := t.query(ctx, in.RangeFilters, in.ModelFilters)
+	if err != nil {
+		return out, err
+	}
+	topN, err := chartOptions(in.ChartOptions)
+	if err != nil {
+		return out, err
+	}
+	metric, err := chartMetric(in.ChartMetric, "cost_usd", "cost_usd", "total_tokens", "cache_savings_usd")
 	if err != nil {
 		return out, err
 	}
@@ -327,6 +353,7 @@ func (t tools) costs(ctx context.Context, in CostInput) (Response[CostData], err
 		return key(a) < key(b)
 	})
 	out.TotalRows = len(out.Data.Rows)
+	chartRows := out.Data.Rows
 	if len(out.Data.Rows) > limit {
 		out.Data.Rows = out.Data.Rows[:limit]
 		out.Truncated = true
@@ -338,7 +365,8 @@ func (t tools) costs(ctx context.Context, in CostInput) (Response[CostData], err
 		q.Warnings = append(q.Warnings, "No matching recorded usage.")
 	}
 	out.Query = q
-	return out, nil
+	out.Chart, err = costChart(chartRows, group, metric, topN, q)
+	return out, err
 }
 
 func categoryLabel(id string) string {
@@ -355,6 +383,14 @@ func categoryLabel(id string) string {
 func (t tools) categories(ctx context.Context, in CategoryInput) (Response[CategoryData], error) {
 	var out Response[CategoryData]
 	q, from, to, f, err := t.query(ctx, in.RangeFilters, ModelFilters{})
+	if err != nil {
+		return out, err
+	}
+	topN, err := chartOptions(in.ChartOptions)
+	if err != nil {
+		return out, err
+	}
+	metric, err := chartMetric(in.ChartMetric, "prompts", "prompts", "share_percent")
 	if err != nil {
 		return out, err
 	}
@@ -410,6 +446,7 @@ func (t tools) categories(ctx context.Context, in CategoryInput) (Response[Categ
 		return a.Category < b.Category
 	})
 	out.TotalRows = len(out.Data.Rows)
+	chartRows := out.Data.Rows
 	if len(out.Data.Rows) > limit {
 		out.Data.Rows = out.Data.Rows[:limit]
 		out.Truncated = true
@@ -419,7 +456,8 @@ func (t tools) categories(ctx context.Context, in CategoryInput) (Response[Categ
 		q.Warnings = append(q.Warnings, "No matching recorded categories.")
 	}
 	out.Query = q
-	return out, nil
+	out.Chart, err = categoryChart(chartRows, group, metric, topN, q)
+	return out, err
 }
 
 func (t tools) categoryTrends(ctx context.Context, in CategoryTrendInput) (Response[[]CategoryPoint], error) {
@@ -428,7 +466,15 @@ func (t tools) categoryTrends(ctx context.Context, in CategoryTrendInput) (Respo
 	if err != nil {
 		return out, err
 	}
-	iv, err := interval(in.Interval, false)
+	topN, err := chartOptions(in.ChartOptions)
+	if err != nil {
+		return out, err
+	}
+	metric, err := chartMetric(in.ChartMetric, "prompts", "prompts", "share_percent")
+	if err != nil {
+		return out, err
+	}
+	iv, err := chartInterval(in.Interval, false, from, to, topN)
 	if err != nil {
 		return out, err
 	}
@@ -456,5 +502,6 @@ func (t tools) categoryTrends(ctx context.Context, in CategoryTrendInput) (Respo
 		q.Warnings = append(q.Warnings, "No matching recorded categories.")
 	}
 	out.Query, out.TotalRows = q, len(out.Data)
-	return out, nil
+	out.Chart, err = categoryTrendChart(out.Data, metric, topN, q, from, to, iv)
+	return out, err
 }

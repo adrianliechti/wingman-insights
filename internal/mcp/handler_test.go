@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -113,7 +114,7 @@ func connect(t *testing.T, s *store.Store, user string, groups ...string) (*mcp.
 	t.Helper()
 	// Mount as main.go does, exercising INSIGHTS_BASE_PATH-style stripping.
 	app := http.NewServeMux()
-	app.Handle("/mcp", NewHandler(s, "admins"))
+	app.Handle("/mcp", NewHandler(s, unverified("admins")))
 	mux := http.NewServeMux()
 	mux.Handle("/insights/", http.StripPrefix("/insights", app))
 	srv := httptest.NewServer(mux)
@@ -129,6 +130,12 @@ func connect(t *testing.T, s *store.Store, user string, groups ...string) (*mcp.
 	}
 	t.Cleanup(func() { session.Close() })
 	return session, a
+}
+
+type resp[T any] struct {
+	Query    QueryInfo `json:"query"`
+	Warnings []string  `json:"warnings"`
+	Data     T         `json:"data"`
 }
 
 func call[T any](t *testing.T, session *mcp.ClientSession, name string, args map[string]any) T {
@@ -151,79 +158,149 @@ func call[T any](t *testing.T, session *mcp.ClientSession, name string, args map
 	return out
 }
 
-func TestHTTPDiscoveryAndPersonalScoping(t *testing.T) {
+func TestAdminGateAndDiscovery(t *testing.T) {
 	s := fixture(t)
-	client, transport := connect(t, s, "alice")
+	post := func(adminGroup, token string) int {
+		r := httptest.NewRequest("POST", "/mcp", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		NewHandler(s, unverified(adminGroup)).ServeHTTP(w, r)
+		return w.Code
+	}
+	if got := post("admins", testToken("alice")); got != 403 {
+		t.Fatalf("token without the admin group: status=%d", got)
+	}
+	if got := post("admins", testToken("alice", "other")); got != 403 {
+		t.Fatalf("token with another group: status=%d", got)
+	}
+	if got := post("", testToken("alice", "admins")); got != 403 {
+		t.Fatalf("unset INSIGHTS_ADMIN_GROUP admitted a caller: status=%d", got)
+	}
+	if got := post("admins", ""); got != 401 {
+		t.Fatalf("missing token: status=%d", got)
+	}
+	if got := post("admins", testToken("alice", "admins")); got == 401 || got == 403 {
+		t.Fatalf("admin refused: status=%d", got)
+	}
+
+	client, transport := connect(t, s, "admin", "admins")
 	listed, err := client.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 3 {
-		t.Fatalf("personal tools = %d", len(listed.Tools))
+	if len(listed.Tools) != 2 {
+		t.Fatalf("tools = %d", len(listed.Tools))
+	}
+	if info := client.InitializeResult().ServerInfo; len(info.Icons) != 2 {
+		t.Fatalf("server icons: %+v", info.Icons)
 	}
 	for _, tool := range listed.Tools {
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 			t.Fatalf("not read only: %s", tool.Name)
 		}
+		for _, icon := range tool.Icons {
+			svg, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(icon.Source, "data:image/svg+xml;base64,"))
+			if err != nil || !strings.HasPrefix(string(svg), "<svg") || strings.Contains(string(svg), "currentColor") {
+				t.Fatalf("%s icon: %v %s", tool.Name, err, svg)
+			}
+		}
+		if len(tool.Icons) != 2 {
+			t.Fatalf("%s icons: %+v", tool.Name, tool.Icons)
+		}
 		schema := tool.InputSchema.(map[string]any)
 		props := schema["properties"].(map[string]any)
-		for _, key := range []string{"applications", "users", "departments", "locations", "providers", "models", "from", "to"} {
+		keys := []string{"applications", "users", "departments", "locations", "from", "to"}
+		if tool.Name == "get_usage" {
+			keys = append(keys, "providers", "models")
+		}
+		for _, key := range keys {
 			p, ok := props[key].(map[string]any)
 			if !ok || p["description"] == "" {
 				t.Fatalf("missing documented %s in %s: %+v", key, tool.Name, schema)
 			}
 		}
 	}
-	args := map[string]any{"users": []string{"bob"}, "interval": "day"}
-	u := call[Response[UsageData]](t, client, "get_usage", args)
-	if u.Query.Scope != "personal" || !reflect.DeepEqual(u.Query.Filters.Users, []string{"alice"}) {
-		t.Fatalf("scope: %+v", u.Query)
+
+	all := call[Response[UsageData]](t, client, "get_usage", map[string]any{"interval": "day"})
+	alice := call[Response[UsageData]](t, client, "get_usage", map[string]any{"users": []string{"alice"}, "interval": "day"})
+	if !reflect.DeepEqual(alice.Query.Filters.Users, []string{"alice"}) || all.Data.Totals.CostUSD <= alice.Data.Totals.CostUSD {
+		t.Fatalf("users filter: all=%+v alice=%+v", all.Query.Filters, alice.Query.Filters)
 	}
-	from, _ := time.Parse(time.RFC3339Nano, u.Query.From)
-	to, _ := time.Parse(time.RFC3339Nano, u.Query.To)
+	from, _ := time.Parse(time.RFC3339Nano, alice.Query.From)
+	to, _ := time.Parse(time.RFC3339Nano, alice.Query.To)
 	want, err := s.QueryUsageTotals(context.Background(), from, to, store.Filter{User: []string{"alice"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Data.Cost != want.Cost || u.Data.Tokens != want.Tokens {
-		t.Fatalf("usage=%+v, store=%+v", u.Data, want)
+	if !reflect.DeepEqual(*alice.Data.Totals, newUsage(want)) {
+		t.Fatalf("usage=%+v, store=%+v", alice.Data.Totals, want)
 	}
-	if u.Data.Tokens.Input != 800500 || u.Data.Tokens.Cached != 200000 || u.Data.Tokens.Output != 100000 || u.Data.Tokens.Reasoning != 10000 || u.Data.Tokens.Priced {
-		t.Fatalf("accounting: %+v", u.Data.Tokens)
+	got := *alice.Data.Totals
+	if got.InputTokens != 1000500 || got.CacheReadTokens != 200000 || got.OutputTokens != 100000 || got.ReasoningTokens != 10000 || got.TotalTokens != 1100500 || got.UnpricedTokens != 500 {
+		t.Fatalf("accounting: %+v", got)
 	}
-	if len(u.Data.Buckets) != 2 || len(u.Query.Warnings) == 0 {
-		t.Fatalf("missing trends/coverage: %+v", u)
+	if len(alice.Data.Points) != 2 || !slices.Contains(alice.Warnings, unpricedWarning) {
+		t.Fatalf("missing trends/coverage: %+v", alice)
 	}
 	var sum float64
-	for _, b := range u.Data.Buckets {
-		sum += b.Cost
+	for _, p := range alice.Data.Points {
+		sum += p.CostUSD
 	}
-	if math.Abs(sum-u.Data.Cost) > 1e-9 {
+	if math.Abs(sum-alice.Data.Totals.CostUSD) > 1e-6 {
 		t.Fatal("trend/totals disagree")
 	}
 	for _, group := range []string{"model", "application", "department", "location", "user"} {
-		cost := call[Response[CostData]](t, client, "get_cost_breakdown", map[string]any{"group_by": group, "users": []string{"bob"}})
-		if cost.Data.TotalCost != want.Cost || cost.Data.UnpricedTokens != 500 {
-			t.Fatalf("%s leaked other user: %+v", group, cost)
+		g := call[Response[UsageData]](t, client, "get_usage", map[string]any{"group_by": group, "users": []string{"alice"}})
+		var tokens int64
+		for _, r := range g.Data.Groups {
+			tokens += r.TotalTokens
+		}
+		if !reflect.DeepEqual(*g.Data.Totals, newUsage(want)) || tokens != 1100500 || g.Query.GroupBy != group {
+			t.Fatalf("%s ignored the user filter: %+v", group, g)
 		}
 	}
-	if r, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_categories"}); err == nil && !r.IsError {
-		t.Fatal("personal caller accessed categories")
+
+	// Same logical client, next HTTP request: the role must be re-read.
+	transport.token.Store(testToken("admin"))
+	if _, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_usage"}); err == nil {
+		t.Fatal("downgraded caller retained access")
 	}
-	// Same logical client, next HTTP request: identity and role must be re-read.
-	transport.token.Store(testToken("bob", "admins"))
-	adminUsage := call[Response[UsageData]](t, client, "get_usage", nil)
-	if adminUsage.Query.Scope != "organization" || adminUsage.Data.Cost <= u.Data.Cost {
-		t.Fatal("admin request did not use current identity")
+}
+
+// Some MCP clients refuse boolean subschemas and "type" arrays, so the
+// inferred input and output schemas must use plain typed objects throughout.
+func TestOutputSchemasArePortable(t *testing.T) {
+	client, _ := connect(t, fixture(t), "admin", "admins")
+	listed, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	transport.token.Store(testToken("bob"))
-	bob := call[Response[UsageData]](t, client, "get_usage", nil)
-	if !reflect.DeepEqual(bob.Query.Filters.Users, []string{"bob"}) || bob.Data.Tokens.Input != 2000000 || !bob.Data.Tokens.Priced {
-		t.Fatalf("request identity leaked: %+v", bob)
+	var check func(tool, path string, v any)
+	check = func(tool, path string, v any) {
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: non-object schema at %s: %v", tool, path, v)
+		}
+		if _, ok := m["type"].(string); !ok {
+			t.Fatalf("%s: missing or non-string type at %s: %v", tool, path, m["type"])
+		}
+		if props, ok := m["properties"].(map[string]any); ok {
+			for k, p := range props {
+				check(tool, path+"."+k, p)
+			}
+		}
+		if items, ok := m["items"]; ok {
+			check(tool, path+"[]", items)
+		}
 	}
-	for _, name := range []string{"get_categories", "get_category_trends", "get_adoption"} {
-		if r, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name}); err == nil && !r.IsError {
-			t.Fatalf("downgraded caller retained access to %s", name)
+	for _, tool := range listed.Tools {
+		for _, s := range []any{tool.InputSchema, tool.OutputSchema} {
+			b, _ := json.Marshal(s)
+			var schema any
+			json.Unmarshal(b, &schema)
+			check(tool.Name, "$", schema)
 		}
 	}
 }
@@ -235,7 +312,7 @@ func TestAdminCategoriesAndCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 6 {
+	if len(listed.Tools) != 2 {
 		t.Fatalf("admin tools=%d", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {
@@ -247,27 +324,29 @@ func TestAdminCategoriesAndCosts(t *testing.T) {
 		}
 	}
 	c := call[Response[CategoryData]](t, client, "get_categories", map[string]any{"limit": 1})
-	if c.Data.TotalPrompts != 9 || c.TotalRows != 2 || !c.Truncated || len(c.Data.Rows) != 1 || c.Data.Rows[0].Category != "legal" || c.Data.Rows[0].Share != 5.0/9 {
+	if c.Data.TotalPrompts != 9 || c.Data.TotalCategories != 2 || !c.Data.Truncated || len(c.Data.Categories) != 1 || c.Data.Categories[0].Category != "legal" || *c.Data.Categories[0].SharePercent != 55.56 || c.Data.Categories[0].Department != nil {
 		t.Fatalf("category counts/shares: %+v", c)
 	}
 	d := call[Response[CategoryData]](t, client, "get_categories", map[string]any{"group_by": "department"})
 	shares := map[string]float64{}
-	for _, r := range d.Data.Rows {
-		shares[r.Department] += r.Share
-		if r.Category == "software_development" && (r.Label != "Software Development" || r.Share != 4.0/6 || r.Prompts != 4) {
+	for _, r := range d.Data.Categories {
+		shares[*r.Department] += *r.SharePercent
+		if r.Category == "software_development" && (*r.SharePercent != 66.67 || r.Prompts != 4) {
 			t.Fatalf("department share=%+v", r)
 		}
 	}
-	if d.Data.TotalPrompts != 9 || shares["Engineering"] != 1 || shares["Sales"] != 1 {
+	if d.Data.TotalPrompts != 9 || math.Abs(shares["Engineering"]-100) > 0.02 || shares["Sales"] != 100 {
 		t.Fatalf("department shares: %+v", d)
 	}
 	for _, iv := range []string{"hour", "day"} {
-		trend := call[Response[[]CategoryPoint]](t, client, "get_category_trends", map[string]any{"interval": iv})
+		trend := call[Response[CategoryData]](t, client, "get_categories", map[string]any{"interval": iv})
 		var prompts int64
-		for _, p := range trend.Data {
+		var share float64
+		for _, p := range trend.Data.Points {
 			prompts += p.Prompts
+			share += *p.SharePercent
 		}
-		if prompts != 9 || len(trend.Data) != 2 || trend.Query.Interval != iv {
+		if prompts != 9 || trend.Data.TotalPrompts != 9 || len(trend.Data.Points) != 2 || trend.Query.Interval != iv || math.Abs(share-100) > 0.02 {
 			t.Fatalf("trend=%+v", trend)
 		}
 	}
@@ -276,27 +355,37 @@ func TestAdminCategoriesAndCosts(t *testing.T) {
 		t.Fatalf("category filters: %+v", filtered)
 	}
 	usage := call[Response[UsageData]](t, client, "get_usage", map[string]any{"models": []string{"gpt-5.1"}, "providers": []string{"openai"}, "users": []string{"alice"}})
-	if usage.Data.Tokens.Input != 800000 || !usage.Data.Tokens.Priced {
+	if usage.Data.Totals.InputTokens != 1000000 || usage.Data.Totals.UnpricedTokens != 0 || len(usage.Warnings) != 0 {
 		t.Fatalf("usage filters: %+v", usage)
 	}
-	cost := call[Response[CostData]](t, client, "get_cost_breakdown", map[string]any{"limit": 1})
-	if !cost.Truncated || cost.TotalRows != 2 || cost.Data.UnpricedTokens != 500 || len(cost.Data.Rows) != 1 {
+	cost := call[Response[UsageData]](t, client, "get_usage", map[string]any{"group_by": "model", "limit": 1})
+	if !cost.Data.Truncated || cost.Data.TotalGroups != 2 || cost.Data.Totals.UnpricedTokens != 500 || len(cost.Data.Groups) != 1 {
 		t.Fatalf("cost limit/coverage: %+v", cost)
 	}
-	if cost.Data.TotalCost != cost.Data.Rows[0].TotalCost {
+	if cost.Data.Totals.CostUSD != cost.Data.Groups[0].CostUSD || cost.Data.Groups[0].ID != "openai/gpt-5.1" {
 		t.Fatal("unexpected priced totals")
+	}
+	users := call[Response[UsageData]](t, client, "get_usage", map[string]any{"group_by": "user"})
+	for _, g := range users.Data.Groups {
+		if g.ID == "alice" && (g.Name != "Alice" || g.Department != "Engineering" || g.Location != "Zurich") {
+			t.Fatalf("user identity: %+v", g)
+		}
 	}
 }
 
 func TestEmptyDataAndInvalidInputs(t *testing.T) {
 	client, _ := connect(t, fixture(t), "admin", "admins")
-	for _, name := range []string{"get_usage", "get_cost_breakdown", "get_categories", "get_category_trends"} {
-		r := call[Response[json.RawMessage]](t, client, name, map[string]any{"applications": []string{"does-not-exist"}})
-		if r.TotalRows != 0 || r.Truncated || len(r.Query.Warnings) == 0 {
-			t.Fatalf("empty result: %+v", r)
-		}
-		if strings.Contains(string(r.Data), `"buckets":null`) || strings.Contains(string(r.Data), `"rows":null`) {
-			t.Fatalf("empty arrays must be []: %s", r.Data)
+	for _, args := range []map[string]any{{}, {"interval": "day"}, {"group_by": "user"}, {"group_by": "prompt_size"}, {"view": "adoption"}} {
+		for _, name := range []string{"get_usage", "get_categories"} {
+			if name == "get_categories" && (args["group_by"] != nil || args["view"] != nil) {
+				continue
+			}
+			args["applications"] = []string{"does-not-exist"}
+			r := call[Response[json.RawMessage]](t, client, name, args)
+			// The open-ended last prompt-size bin is the only legitimate null.
+			if len(r.Warnings) == 0 || strings.Contains(strings.ReplaceAll(string(r.Data), `"max_input_tokens":null`, ""), "null") {
+				t.Fatalf("%s %v empty result: %+v %s", name, args, r, r.Data)
+			}
 		}
 	}
 	for _, tc := range []struct {
@@ -309,12 +398,18 @@ func TestEmptyDataAndInvalidInputs(t *testing.T) {
 		{"get_usage", map[string]any{"from": "2020-01-01T00:00:00Z", "to": "2026-01-01T00:00:00Z"}},
 		{"get_usage", map[string]any{"interval": "minute"}},
 		{"get_usage", map[string]any{"models": []string{""}}},
-		{"get_cost_breakdown", map[string]any{"group_by": "sql"}},
-		{"get_cost_breakdown", map[string]any{"limit": -1}},
+		{"get_usage", map[string]any{"group_by": "sql"}},
+		{"get_usage", map[string]any{"group_by": "model", "limit": -1}},
+		{"get_usage", map[string]any{"group_by": "model", "interval": "day"}},
+		{"get_usage", map[string]any{"view": "sql"}},
+		{"get_usage", map[string]any{"view": "adoption", "group_by": "user"}},
+		{"get_usage", map[string]any{"view": "adoption", "interval": "minute"}},
 		{"get_categories", map[string]any{"limit": 101}},
 		{"get_categories", map[string]any{"group_by": "model"}},
 		{"get_categories", map[string]any{"models": []string{"gpt-5.1"}}},
-		{"get_category_trends", map[string]any{"interval": "minute"}},
+		{"get_categories", map[string]any{"interval": "minute"}},
+		{"get_categories", map[string]any{"interval": "day", "group_by": "department"}},
+		{"get_usage", map[string]any{"group_by": "prompt_size", "interval": "day"}},
 	} {
 		t.Run(fmt.Sprint(tc.name, tc.args), func(t *testing.T) {
 			r, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
@@ -327,7 +422,7 @@ func TestEmptyDataAndInvalidInputs(t *testing.T) {
 
 func TestTrustedTokenBoundary(t *testing.T) {
 	// nil store is safe: initialization registers tools but executes no queries.
-	h := NewHandler(nil, "admins")
+	h := NewHandler(nil, unverified("admins"))
 	for _, header := range []string{"", "Bearer garbage", "Bearer a.e30.", "Bearer a.@@@.", "Basic whatever"} {
 		r := httptest.NewRequest("POST", "/mcp", nil)
 		r.Header.Set("Authorization", header)
@@ -349,7 +444,7 @@ func TestTrustedTokenBoundary(t *testing.T) {
 		t.Fatal("trusted subject fallback failed")
 	}
 	r := httptest.NewRequest("POST", "http://insights.example/mcp", nil)
-	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Authorization", "Bearer "+testToken("alice", "admins"))
 	r.Header.Set("Origin", "https://unrelated.example")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -360,7 +455,7 @@ func TestTrustedTokenBoundary(t *testing.T) {
 
 func TestDevFallbackOnlyWhenEnabled(t *testing.T) {
 	// nil store is safe: initialization registers tools but executes no queries.
-	noFallback := NewHandler(nil, "admins")
+	noFallback := NewHandler(nil, unverified("admins"))
 	r := httptest.NewRequest("POST", "/mcp", nil)
 	w := httptest.NewRecorder()
 	noFallback.ServeHTTP(w, r)
@@ -370,7 +465,7 @@ func TestDevFallbackOnlyWhenEnabled(t *testing.T) {
 
 	// The option replaces the 401 with a fixed identity, so an anonymous caller
 	// reaches the transport instead of the auth wall.
-	h := NewHandler(nil, "admins", WithDevFallback("dev@example.com", true))
+	h := NewHandler(nil, unverified("admins"), WithDevFallback("dev@example.com", true))
 	r = httptest.NewRequest("POST", "/mcp", nil)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -402,9 +497,9 @@ func TestCORSAllowlist(t *testing.T) {
 	const origin = "https://client.example"
 
 	// Default: cross-origin browser POSTs stay rejected and no CORS is offered.
-	closed := NewHandler(nil, "admins")
+	closed := NewHandler(nil, unverified("admins"))
 	r := httptest.NewRequest("POST", "http://insights.example/mcp", nil)
-	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Authorization", "Bearer "+testToken("alice", "admins"))
 	r.Header.Set("Origin", origin)
 	w := httptest.NewRecorder()
 	closed.ServeHTTP(w, r)
@@ -414,7 +509,7 @@ func TestCORSAllowlist(t *testing.T) {
 
 	// An explicit allowlist answers preflights without credentials and echoes
 	// the origin, but still refuses origins it was not given.
-	listed := NewHandler(nil, "admins", WithAllowedOrigins(origin))
+	listed := NewHandler(nil, unverified("admins"), WithAllowedOrigins(origin))
 	r = httptest.NewRequest("OPTIONS", "http://insights.example/mcp", nil)
 	r.Header.Set("Origin", origin)
 	r.Header.Set("Access-Control-Request-Method", "POST")
@@ -438,7 +533,7 @@ func TestCORSAllowlist(t *testing.T) {
 	}
 
 	r = httptest.NewRequest("POST", "http://insights.example/mcp", nil)
-	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Authorization", "Bearer "+testToken("alice", "admins"))
 	r.Header.Set("Origin", "https://evil.example")
 	w = httptest.NewRecorder()
 	listed.ServeHTTP(w, r)
@@ -447,9 +542,9 @@ func TestCORSAllowlist(t *testing.T) {
 	}
 
 	// Wildcard admits any origin and drops the cross-origin protection.
-	open := NewHandler(nil, "admins", WithAllowedOrigins("*"))
+	open := NewHandler(nil, unverified("admins"), WithAllowedOrigins("*"))
 	r = httptest.NewRequest("POST", "http://insights.example/mcp", nil)
-	r.Header.Set("Authorization", "Bearer "+testToken("alice"))
+	r.Header.Set("Authorization", "Bearer "+testToken("alice", "admins"))
 	r.Header.Set("Origin", "https://anything.example")
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
 	w = httptest.NewRecorder()
@@ -491,7 +586,7 @@ func TestLimitsCancellationAndErrorRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]any{"from": now.Add(-2001 * time.Hour).Format(time.RFC3339), "to": now.Add(time.Minute).Format(time.RFC3339), "applications": []string{"large"}, "interval": "hour"}
-	for _, name := range []string{"get_usage", "get_category_trends"} {
+	for _, name := range []string{"get_usage", "get_categories"} {
 		r, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 		if err != nil || !r.IsError || !strings.Contains(r.Content[0].(*mcp.TextContent).Text, "2000") {
 			t.Fatalf("%s point limit: %+v %v", name, r, err)
@@ -499,7 +594,7 @@ func TestLimitsCancellationAndErrorRedaction(t *testing.T) {
 	}
 	args["interval"] = "day"
 	call[Response[UsageData]](t, client, "get_usage", args)
-	call[Response[[]CategoryPoint]](t, client, "get_category_trends", args)
+	call[Response[CategoryData]](t, client, "get_categories", args)
 
 	// Cancellation reaches the query layer, without a detached background query.
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), principalKey{}, principal{user: "alice"}))
@@ -515,4 +610,53 @@ func TestLimitsCancellationAndErrorRedaction(t *testing.T) {
 	if err != nil || !r.IsError || r.Content[0].(*mcp.TextContent).Text != "internal query error" {
 		t.Fatalf("database error disclosure: %+v %v", r, err)
 	}
+}
+
+// unverified decodes test JWTs without checking a signature so handler tests
+// can mint identities; production wires api.Handler.VerifyBearer instead.
+func unverified(adminGroup string) Verifier {
+	return func(r *http.Request) (string, bool, error) {
+		p, ok := tokenPrincipal(r.Header.Get("Authorization"), adminGroup)
+		if !ok {
+			return "", false, errors.New("invalid test token")
+		}
+		return p.user, p.admin, nil
+	}
+}
+
+func tokenPrincipal(header, adminGroup string) (principal, bool) {
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 32*1024 {
+		return principal{}, false
+	}
+	jwt := strings.Split(parts[1], ".")
+	if len(jwt) != 3 || jwt[0] == "" {
+		return principal{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(jwt[1])
+	if err != nil {
+		return principal{}, false
+	}
+	var claims struct {
+		OID    string   `json:"oid"`
+		Sub    string   `json:"sub"`
+		Groups []string `json:"groups"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return principal{}, false
+	}
+	user := strings.TrimSpace(claims.OID)
+	if user == "" {
+		user = strings.TrimSpace(claims.Sub)
+	}
+	if user == "" {
+		return principal{}, false
+	}
+	p := principal{user: user}
+	for _, group := range claims.Groups {
+		if adminGroup != "" && group == adminGroup {
+			p.admin = true
+		}
+	}
+	return p, true
 }

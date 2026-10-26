@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"insights/internal/store"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -17,8 +19,8 @@ const maxPoints = 2000
 
 // Embedded inputs keep filter descriptions in each tool's inferred JSON schema.
 type Filters struct {
-	Applications []string `json:"applications,omitempty" jsonschema:"Application IDs or directory aliases, e.g. wingman-chat. Omit for all permitted applications. Values within this field are ORed; different fields are ANDed."`
-	Users        []string `json:"users,omitempty" jsonschema:"Canonical user IDs, emails, or directory aliases. Admins only choose users; for other callers this is replaced by their token identity."`
+	Applications []string `json:"applications,omitempty" jsonschema:"Application IDs or directory aliases, e.g. wingman-chat. Omit for all applications. Values within this field are ORed; different fields are ANDed."`
+	Users        []string `json:"users,omitempty" jsonschema:"Canonical user IDs, emails, or directory aliases. Omit for all users."`
 	Departments  []string `json:"departments,omitempty" jsonschema:"Department values, e.g. Engineering. Case insensitive; uses the deployment's configured department-prefix behavior. Requires directory data."`
 	Locations    []string `json:"locations,omitempty" jsonschema:"Office location values, e.g. Zurich. Case insensitive; requires directory data."`
 }
@@ -37,105 +39,91 @@ type ModelFilters struct {
 type UsageInput struct {
 	RangeFilters
 	ModelFilters
-	ChartOptions
-	ComparePrevious bool   `json:"compare_previous,omitempty" jsonschema:"Compare with the immediately preceding equal-length window. No boundary event is counted in both periods. Cannot be combined with compare_from/compare_to."`
-	CompareFrom     string `json:"compare_from,omitempty" jsonschema:"Optional comparison start in RFC3339, e.g. last calendar month's start. Supply compare_to too; each window is limited to 90 days. Unequal windows are reported explicitly."`
-	CompareTo       string `json:"compare_to,omitempty" jsonschema:"Optional inclusive comparison end in RFC3339. Supply compare_from too. For adjacent periods end before the current from to avoid overlap."`
-	Interval        string `json:"interval,omitempty" jsonschema:"For a time-series chart use auto (recommended), hour, or day. Auto chooses hourly or daily buckets to fit the chart. Omit for totals only. Buckets align to UTC boundaries."`
-	ChartMetric     string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default), total_tokens, requests, cost_per_request_usd, input_tokens_per_request, output_tokens_per_request, tokens_per_request, cache_read_share_percent, reasoning_share_percent, or cache_savings_usd. Requests are token-bearing provider calls, not conversations. Averages and shares use pooled denominators; undefined values are null."`
-}
-
-type CostInput struct {
-	RangeFilters
-	ModelFilters
-	ChartOptions
-	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: cost_usd (default), total_tokens, or cache_savings_usd. Chart groups are ranked by this measure; the original data rows remain ranked by cost."`
-	GroupBy     string `json:"group_by,omitempty" jsonschema:"Grouping: model (default), application, department, location, or user. Non-admin results remain personal for every grouping."`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Number of ranked rows to return: 1 to 100, default 20. Totals cover all matching rows before truncation."`
+	View     string `json:"view,omitempty" jsonschema:"usage (default) for cost and tokens, or adoption for distinct active, new and returning users plus a distribution of active UTC days. adoption cannot be combined with group_by."`
+	Interval string `json:"interval,omitempty" jsonschema:"auto, hour, or day adds time-bucketed points (per model for usage). auto picks hour for windows up to 48 hours, otherwise day. Buckets align to UTC. Omit for totals only (adoption defaults to auto). Cannot be combined with group_by."`
+	GroupBy  string `json:"group_by,omitempty" jsonschema:"Rank usage by model, application, department, location, or user (sorted by cost), or prompt_size for ordered input-token size bins. Cannot be combined with interval."`
+	Limit    int    `json:"limit,omitempty" jsonschema:"With group_by (except prompt_size): number of ranked groups to return, 1 to 100, default 20. Totals cover all groups."`
 }
 
 type CategoryInput struct {
 	RangeFilters
-	ChartOptions
-	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: prompts (default) or share_percent (0 to 100). Department shares use each department's classified prompt count, including Other."`
-	GroupBy     string `json:"group_by,omitempty" jsonschema:"Grouping: category (default) for overall shares, or department for category shares within each department."`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Number of ranked category rows to return: 1 to 100, default 20. Shares and total prompts are computed before truncation."`
+	GroupBy  string `json:"group_by,omitempty" jsonschema:"category (default) for overall shares, or department for category shares within each department. Cannot be combined with interval."`
+	Interval string `json:"interval,omitempty" jsonschema:"auto, hour, or day returns prompt counts per UTC time bucket and category instead of a ranking. auto picks hour for windows up to 48 hours, otherwise day."`
+	Limit    int    `json:"limit,omitempty" jsonschema:"Number of ranked category rows to return: 1 to 100, default 20. Shares and totals cover all rows."`
 }
 
-type CategoryTrendInput struct {
-	RangeFilters
-	ChartOptions
-	ChartMetric string `json:"chart_metric,omitempty" jsonschema:"Chart measure: prompts (default) or share_percent (0 to 100 within each time bucket). Counts describe classified prompts only."`
-	Interval    string `json:"interval,omitempty" jsonschema:"Trend interval: auto (default, recommended for charts), hour, or day. Buckets align to UTC boundaries. At most 2000 topic/bucket points; use day or narrow the time range and filters if exceeded."`
-}
-
+// AppliedFilters mirrors the inputs without their schema descriptions.
 type AppliedFilters struct {
-	Filters
+	Applications     []string `json:"applications,omitempty"`
+	Users            []string `json:"users,omitempty"`
+	Departments      []string `json:"departments,omitempty"`
+	Locations        []string `json:"locations,omitempty"`
 	Providers        []string `json:"providers,omitempty"`
 	Models           []string `json:"models,omitempty"`
-	DepartmentPrefix bool     `json:"department_prefix"`
+	DepartmentPrefix bool     `json:"department_prefix,omitempty"`
 }
 
 type QueryInfo struct {
 	From     string         `json:"from"`
 	To       string         `json:"to"`
-	Scope    string         `json:"scope"`
-	Filters  AppliedFilters `json:"filters"`
+	View     string         `json:"view,omitempty"`
+	GroupBy  string         `json:"group_by,omitempty"`
 	Interval string         `json:"interval,omitempty"`
-	Warnings []string       `json:"warnings"`
+	Filters  AppliedFilters `json:"filters"`
 }
 
+// Response is the envelope of every tool. Each view fills only its own data
+// fields; empty lists are omitted.
 type Response[T any] struct {
-	Query     QueryInfo `json:"query"`
-	Data      T         `json:"data"`
-	TotalRows int       `json:"total_rows"`
-	Truncated bool      `json:"truncated"`
-	Chart     Chart     `json:"chart"`
-}
-
-type UsageBucket struct {
-	Bucket     string            `json:"bucket"`
-	Model      string            `json:"model"`
-	Cost       float64           `json:"cost_usd"`
-	Tokens     store.TokenTotals `json:"tokens"`
-	Statistics UsageStatistics   `json:"statistics"`
+	Query    QueryInfo `json:"query"`
+	Warnings []string  `json:"warnings"`
+	Data     T         `json:"data"`
 }
 
 type UsageData struct {
-	Cost       float64           `json:"cost_usd"`
-	Tokens     store.TokenTotals `json:"tokens"`
-	Buckets    []UsageBucket     `json:"buckets"`
-	Statistics UsageStatistics   `json:"statistics"`
-	Comparison *UsageComparison  `json:"comparison,omitempty"`
+	Totals      *Usage          `json:"totals,omitempty" jsonschema:"All views except prompt_size and adoption."`
+	Points      []UsagePoint    `json:"points,omitempty" jsonschema:"With interval: buckets that have data."`
+	Groups      []UsageGroup    `json:"groups,omitempty" jsonschema:"With group_by: ranked by cost."`
+	TotalGroups int             `json:"total_groups,omitempty"`
+	Truncated   bool            `json:"truncated,omitempty"`
+	PromptSizes *PromptSizeData `json:"prompt_sizes,omitempty" jsonschema:"With group_by=prompt_size."`
+	Adoption    *AdoptionData   `json:"adoption,omitempty" jsonschema:"With view=adoption."`
 }
 
-type CostData struct {
-	Currency       string          `json:"currency"`
-	GroupBy        string          `json:"group_by"`
-	TotalCost      float64         `json:"total_cost_usd"`
-	UnpricedTokens float64         `json:"unpriced_tokens"`
-	Rows           []store.CostRow `json:"rows"`
+type UsagePoint struct {
+	Time  string `json:"time"`
+	Model string `json:"model"`
+	Usage
+}
+
+type UsageGroup struct {
+	ID         string `json:"id"`
+	Name       string `json:"name,omitempty"`
+	Department string `json:"department,omitempty"`
+	Location   string `json:"location,omitempty"`
+	TokenUsage
 }
 
 type CategoryRow struct {
-	Category   string  `json:"category"`
-	Label      string  `json:"label"`
-	Department string  `json:"department"`
-	Prompts    int64   `json:"prompts"`
-	Share      float64 `json:"share"`
+	Category     string   `json:"category"`
+	Department   *string  `json:"department,omitempty"`
+	Prompts      int64    `json:"prompts"`
+	SharePercent *float64 `json:"share_percent,omitempty"`
 }
 
 type CategoryData struct {
-	GroupBy      string        `json:"group_by"`
-	TotalPrompts int64         `json:"total_prompts"`
-	Rows         []CategoryRow `json:"rows"`
+	TotalPrompts    int64           `json:"total_prompts"`
+	Categories      []CategoryRow   `json:"categories,omitempty" jsonschema:"Without interval: ranked by prompts."`
+	TotalCategories int             `json:"total_categories,omitempty"`
+	Truncated       bool            `json:"truncated,omitempty"`
+	Points          []CategoryPoint `json:"points,omitempty" jsonschema:"With interval: buckets that have data."`
 }
 
 type CategoryPoint struct {
-	Bucket   string `json:"bucket"`
-	Category string `json:"category"`
-	Label    string `json:"label"`
-	Prompts  int64  `json:"prompts"`
+	Time         string   `json:"time"`
+	Category     string   `json:"category"`
+	Prompts      int64    `json:"prompts"`
+	SharePercent *float64 `json:"share_percent,omitempty"`
 }
 
 type tools struct{ store *store.Store }
@@ -145,15 +133,20 @@ type inputError string
 
 func (e inputError) Error() string { return string(e) }
 
-func addTool[In, Out any](server *mcp.Server, name, description string, adminOnly bool, fn func(context.Context, In) (Out, error)) {
-	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
-		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (_ *mcp.CallToolResult, out Out, err error) {
+func addTool[In, Out any](server *mcp.Server, name, description string, fn func(context.Context, In) (Response[Out], error)) {
+	input, err := jsonschema.For[In](nil)
+	if err != nil {
+		panic(err)
+	}
+	output, err := jsonschema.For[Response[Out]](nil)
+	if err != nil {
+		panic(err)
+	}
+	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description, Icons: icons, InputSchema: nonNullable(input), OutputSchema: nonNullable(output), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (_ *mcp.CallToolResult, out Response[Out], err error) {
 			p, ok := ctx.Value(principalKey{}).(principal)
 			if !ok || p.user == "" {
 				return nil, out, errors.New("caller identity required")
-			}
-			if adminOnly && !p.admin {
-				return nil, out, errors.New("admin group membership required")
 			}
 			started := time.Now()
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -175,9 +168,30 @@ func addTool[In, Out any](server *mcp.Server, name, description string, adminOnl
 		})
 }
 
-func (t tools) query(ctx context.Context, in RangeFilters, models ModelFilters) (QueryInfo, time.Time, time.Time, store.Filter, error) {
-	q := QueryInfo{Warnings: []string{}}
-	to := time.Now().UTC()
+// nonNullable drops the "null" alternative inferred for slices and pointers.
+// Optional inputs are omitted rather than null, responses never contain null,
+// and some clients mishandle type arrays.
+func nonNullable(s *jsonschema.Schema) *jsonschema.Schema {
+	if s == nil {
+		return nil
+	}
+	if len(s.Types) == 2 && slices.Contains(s.Types, "null") {
+		s.Type = s.Types[0]
+		if s.Type == "null" {
+			s.Type = s.Types[1]
+		}
+		s.Types = nil
+	}
+	for _, p := range s.Properties {
+		nonNullable(p)
+	}
+	nonNullable(s.Items)
+	return s
+}
+
+func (t tools) query(in RangeFilters, models ModelFilters) (QueryInfo, time.Time, time.Time, store.Filter, error) {
+	var q QueryInfo
+	to := time.Now().UTC().Truncate(time.Second)
 	var err error
 	if in.To != "" {
 		to, err = time.Parse(time.RFC3339, in.To)
@@ -206,29 +220,43 @@ func (t tools) query(ctx context.Context, in RangeFilters, models ModelFilters) 
 			}
 		}
 	}
-	p, _ := ctx.Value(principalKey{}).(principal)
-	q.Scope = "organization"
-	if !p.admin {
-		f.User = []string{p.user}
-		q.Scope = "personal"
-	}
 	q.From, q.To = from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano)
-	q.Filters = AppliedFilters{Filters: Filters{Applications: f.App, Users: f.User, Departments: f.Department, Locations: f.Location}, Providers: f.Provider, Models: f.Models, DepartmentPrefix: f.DeptPrefix}
+	q.Filters = AppliedFilters{Applications: f.App, Users: f.User, Departments: f.Department, Locations: f.Location, Providers: f.Provider, Models: f.Models, DepartmentPrefix: f.DeptPrefix}
 	return q, from, to, f, nil
 }
 
-func interval(value string, optional bool) (string, error) {
-	if value == "" && optional {
-		return "", nil
-	}
+// resolveInterval returns a store interval ("1 hour" or "1 day"), or "" when
+// the interval is optional and omitted.
+func resolveInterval(value string, optional bool, from, to time.Time) (string, error) {
 	switch value {
-	case "", "hour":
+	case "":
+		if optional {
+			return "", nil
+		}
+		fallthrough
+	case "auto":
+		if to.Sub(from) <= 48*time.Hour {
+			return "1 hour", nil
+		}
+		return "1 day", nil
+	case "hour":
 		return "1 hour", nil
 	case "day":
 		return "1 day", nil
-	default:
-		return "", inputError("interval must be hour or day")
 	}
+	return "", inputError("interval must be auto, hour, or day")
+}
+
+// bucketWarnings flags first/last buckets that cover only part of their interval.
+func bucketWarnings(from, to time.Time, iv string) []string {
+	step := time.Hour
+	if iv == "1 day" {
+		step = 24 * time.Hour
+	}
+	if !from.Equal(from.UTC().Truncate(step)) || !to.Add(time.Nanosecond).Equal(to.UTC().Truncate(step).Add(step)) {
+		return []string{"The first or last bucket covers only part of its interval."}
+	}
+	return nil
 }
 
 func rowLimit(n int) (int, error) {
@@ -241,39 +269,47 @@ func rowLimit(n int) (int, error) {
 	return n, nil
 }
 
+const unpricedWarning = "Some usage has no catalog price; costs are incomplete (see unpriced_tokens)."
+
 func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], error) {
-	var out Response[UsageData]
-	q, from, to, f, err := t.query(ctx, in.RangeFilters, in.ModelFilters)
-	if err != nil {
-		return out, err
+	switch in.View {
+	case "", "usage":
+	case "adoption":
+		if in.GroupBy != "" {
+			return Response[UsageData]{}, inputError("view=adoption cannot be combined with group_by")
+		}
+		return t.adoption(ctx, in)
+	default:
+		return Response[UsageData]{}, inputError("view must be usage or adoption")
 	}
-	topN, err := chartOptions(in.ChartOptions)
-	if err != nil {
-		return out, err
+	if in.GroupBy != "" && in.Interval != "" {
+		return Response[UsageData]{}, inputError("group_by cannot be combined with interval")
 	}
-	metric, err := chartMetric(in.ChartMetric, "cost_usd", usageMetrics...)
-	if err != nil {
-		return out, err
+	switch in.GroupBy {
+	case "":
+	case "prompt_size":
+		return t.promptSizes(ctx, in)
+	default:
+		return t.usageGrouped(ctx, in)
 	}
-	iv, err := chartInterval(in.Interval, true, from, to, topN)
+	q, from, to, f, err := t.query(in.RangeFilters, in.ModelFilters)
 	if err != nil {
-		return out, err
+		return Response[UsageData]{}, err
 	}
-	compareFrom, compareTo, compare, err := comparisonRange(in, from, to)
+	iv, err := resolveInterval(in.Interval, true, from, to)
 	if err != nil {
-		return out, err
+		return Response[UsageData]{}, err
 	}
+	out := Response[UsageData]{Query: q, Warnings: []string{}}
 	var totals store.UsageTotals
-	out.Data = UsageData{Tokens: store.TokenTotals{Priced: true}, Buckets: []UsageBucket{}}
 	if iv == "" {
-		u, err := t.store.QueryUsageTotals(ctx, from, to, f)
-		if err != nil {
+		if totals, err = t.store.QueryUsageTotals(ctx, from, to, f); err != nil {
 			return out, err
 		}
-		out.Data.Cost, out.Data.Tokens = u.Cost, u.Tokens
-		totals = u
+		usage := newUsage(totals)
+		out.Data.Totals = &usage
 	} else {
-		q.Interval = strings.TrimPrefix(iv, "1 ")
+		out.Query.Interval = strings.TrimPrefix(iv, "1 ")
 		points, err := t.store.QueryUsageTimeseries(ctx, from, to, iv, f)
 		if err != nil {
 			return out, err
@@ -281,260 +317,249 @@ func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], e
 		if len(points) > maxPoints {
 			return out, inputError("trend exceeds 2000 points; use day or narrow the range and filters")
 		}
+		data := UsageData{}
+		totals.Tokens.Priced = true
 		for _, p := range points {
-			out.Data.Buckets = append(out.Data.Buckets, UsageBucket{Bucket: p.Bucket.UTC().Format(time.RFC3339), Model: p.Model, Cost: p.Cost, Tokens: p.Tokens, Statistics: usageStatistics(store.UsageTotals{Cost: p.Cost, Tokens: p.Tokens, Requests: p.Requests, CacheReadTokens: p.CacheReadTokens, CacheCreationTokens: p.CacheCreationTokens, UnpricedTokens: p.UnpricedTokens})})
+			u := store.UsageTotals{Cost: p.Cost, Tokens: p.Tokens, Requests: p.Requests, CacheReadTokens: p.CacheReadTokens, CacheCreationTokens: p.CacheCreationTokens, UnpricedTokens: p.UnpricedTokens}
+			data.Points = append(data.Points, UsagePoint{Time: p.Bucket.UTC().Format(time.RFC3339), Model: p.Model, Usage: newUsage(u)})
+			// Derive totals from the same snapshot as the trend, matching the
+			// personal API even while telemetry is being ingested.
+			totals.Cost += p.Cost
 			totals.Requests += p.Requests
 			totals.CacheReadTokens += p.CacheReadTokens
 			totals.CacheCreationTokens += p.CacheCreationTokens
 			totals.UnpricedTokens += p.UnpricedTokens
-			// Derive totals from the same snapshot as the trend, matching the
-			// personal API even while telemetry is being ingested.
-			out.Data.Cost += p.Cost
-			out.Data.Tokens.Input += p.Tokens.Input
-			out.Data.Tokens.Output += p.Tokens.Output
-			out.Data.Tokens.Cached += p.Tokens.Cached
-			out.Data.Tokens.Reasoning += p.Tokens.Reasoning
-			out.Data.Tokens.CacheSavings += p.Tokens.CacheSavings
-			out.Data.Tokens.Priced = out.Data.Tokens.Priced && p.Tokens.Priced
+			totals.Tokens.Input += p.Tokens.Input
+			totals.Tokens.Output += p.Tokens.Output
+			totals.Tokens.Cached += p.Tokens.Cached
+			totals.Tokens.Reasoning += p.Tokens.Reasoning
+			totals.Tokens.CacheSavings += p.Tokens.CacheSavings
+			totals.Tokens.Priced = totals.Tokens.Priced && p.Tokens.Priced
 		}
-		sort.Slice(out.Data.Buckets, func(i, j int) bool {
-			a, b := out.Data.Buckets[i], out.Data.Buckets[j]
-			if a.Bucket != b.Bucket {
-				return a.Bucket < b.Bucket
+		sort.Slice(data.Points, func(i, j int) bool {
+			a, b := data.Points[i], data.Points[j]
+			if a.Time != b.Time {
+				return a.Time < b.Time
 			}
 			return a.Model < b.Model
 		})
-	}
-	totals.Cost, totals.Tokens = out.Data.Cost, out.Data.Tokens
-	out.Data.Statistics = usageStatistics(totals)
-	if compare {
-		previous, err := t.store.QueryUsageTotals(ctx, compareFrom, compareTo, f)
-		if err != nil {
-			return out, err
-		}
-		out.Data.Comparison = compareUsage(totals, previous, compareFrom, compareTo, metric)
-		if !previous.Tokens.Priced {
-			q.Warnings = append(q.Warnings, "Comparison-period cost is incomplete because some usage has no catalog price.")
-		}
-		if to.Sub(from) != compareTo.Sub(compareFrom) && !in.ComparePrevious {
-			warning := "Comparison windows have different lengths; changes in totals are not normalized by duration."
-			q.Warnings = append(q.Warnings, warning)
-			out.Data.Comparison.Chart.Notes = append(out.Data.Comparison.Chart.Notes, warning)
+		usage := newUsage(totals)
+		data.Totals = &usage
+		out.Data = data
+		if len(points) > 0 {
+			out.Warnings = append(out.Warnings, bucketWarnings(from, to, iv)...)
 		}
 	}
-	if !out.Data.Tokens.Priced {
-		q.Warnings = append(q.Warnings, "Some usage has no catalog price; estimated cost is incomplete.")
+	if !totals.Tokens.Priced || totals.UnpricedTokens > 0 {
+		out.Warnings = append(out.Warnings, unpricedWarning)
 	}
-	if out.Data.Tokens.Input+out.Data.Tokens.Output+out.Data.Tokens.Cached == 0 {
-		q.Warnings = append(q.Warnings, "No matching recorded usage.")
+	if totals.Tokens.Input+totals.Tokens.Output+totals.Tokens.Cached == 0 {
+		out.Warnings = append(out.Warnings, "No matching usage.")
 	}
-	out.Query, out.TotalRows = q, len(out.Data.Buckets)
-	out.Chart, err = usageChart(out.Data, q, metric, topN, from, to, iv)
-	return out, err
+	return out, nil
 }
 
-func (t tools) costs(ctx context.Context, in CostInput) (Response[CostData], error) {
-	var out Response[CostData]
-	q, from, to, f, err := t.query(ctx, in.RangeFilters, in.ModelFilters)
-	if err != nil {
-		return out, err
+var costAggregators = map[string]func([]store.CostRow) []store.CostRow{
+	"model": store.AggregateCostsByModel, "application": store.AggregateCostsByApp,
+	"department": store.AggregateCostsByDepartment, "location": store.AggregateCostsByLocation, "user": store.AggregateCostsByUser,
+}
+
+func usageGroup(r store.CostRow, group string) UsageGroup {
+	g := UsageGroup{TokenUsage: tokenUsage(r.TotalCost, r.CacheSavings, int64(r.InputTokens), int64(r.CacheReadTokens), int64(r.CacheCreationTokens), int64(r.OutputTokens), int64(r.ReasoningTokens), int64(r.UnpricedTokens))}
+	switch group {
+	case "model":
+		g.ID = r.ProviderName + "/" + r.RequestModel
+	case "application":
+		g.ID, g.Name = r.AppID, r.AppName
+	case "user":
+		g.ID, g.Name, g.Department, g.Location = r.ID, r.Name, r.Department, r.Location
+	case "department":
+		g.ID = r.Department
+	case "location":
+		g.ID = r.Location
 	}
-	topN, err := chartOptions(in.ChartOptions)
-	if err != nil {
-		return out, err
+	if g.Name == g.ID {
+		g.Name = ""
 	}
-	metric, err := chartMetric(in.ChartMetric, "cost_usd", "cost_usd", "total_tokens", "cache_savings_usd")
+	return g
+}
+
+// usageGrouped ranks usage by one dimension. Totals come from the same query
+// as the ungrouped totals so both modes agree.
+func (t tools) usageGrouped(ctx context.Context, in UsageInput) (Response[UsageData], error) {
+	aggregate, ok := costAggregators[in.GroupBy]
+	if !ok {
+		return Response[UsageData]{}, inputError("group_by must be model, application, department, location, user, or prompt_size")
+	}
+	q, from, to, f, err := t.query(in.RangeFilters, in.ModelFilters)
 	if err != nil {
-		return out, err
+		return Response[UsageData]{}, err
 	}
 	limit, err := rowLimit(in.Limit)
 	if err != nil {
-		return out, err
-	}
-	group := in.GroupBy
-	if group == "" {
-		group = "model"
-	}
-	aggregators := map[string]func([]store.CostRow) []store.CostRow{
-		"model": store.AggregateCostsByModel, "application": store.AggregateCostsByApp,
-		"department": store.AggregateCostsByDepartment, "location": store.AggregateCostsByLocation, "user": store.AggregateCostsByUser,
-	}
-	aggregate, ok := aggregators[group]
-	if !ok {
-		return out, inputError("group_by must be model, application, department, location, or user")
+		return Response[UsageData]{}, err
 	}
 	rows, err := t.store.QueryCostBreakdown(ctx, from, to, f)
 	if err != nil {
-		return out, err
+		return Response[UsageData]{}, err
 	}
-	out.Data = CostData{Currency: "USD", GroupBy: group, Rows: aggregate(rows)}
-	priced := true
-	for _, r := range rows {
-		out.Data.TotalCost += r.TotalCost
-		out.Data.UnpricedTokens += r.UnpricedTokens
-		priced = priced && r.Priced
+	totals, err := t.store.QueryUsageTotals(ctx, from, to, f)
+	if err != nil {
+		return Response[UsageData]{}, err
 	}
-	// Existing aggregators sort by spend; add a deterministic key for ties.
-	sort.Slice(out.Data.Rows, func(i, j int) bool {
-		a, b := out.Data.Rows[i], out.Data.Rows[j]
-		if a.TotalCost != b.TotalCost {
-			return a.TotalCost > b.TotalCost
+	groups := []UsageGroup{}
+	for _, r := range aggregate(rows) {
+		groups = append(groups, usageGroup(r, in.GroupBy))
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].CostUSD != groups[j].CostUSD {
+			return groups[i].CostUSD > groups[j].CostUSD
 		}
-		key := func(r store.CostRow) string {
-			return strings.Join([]string{r.ProviderName, r.RequestModel, r.AppID, r.Department, r.Location, r.ID}, "\x00")
-		}
-		return key(a) < key(b)
+		return groups[i].ID < groups[j].ID
 	})
-	out.TotalRows = len(out.Data.Rows)
-	chartRows := out.Data.Rows
-	if len(out.Data.Rows) > limit {
-		out.Data.Rows = out.Data.Rows[:limit]
-		out.Truncated = true
+	u := newUsage(totals)
+	data := UsageData{Totals: &u, Groups: groups, TotalGroups: len(groups)}
+	if len(groups) > limit {
+		data.Groups, data.Truncated = groups[:limit], true
 	}
-	if !priced {
-		q.Warnings = append(q.Warnings, "Some usage has no catalog price; estimated cost is incomplete.")
+	q.GroupBy = in.GroupBy
+	out := Response[UsageData]{Query: q, Warnings: []string{}, Data: data}
+	if !totals.Tokens.Priced || totals.UnpricedTokens > 0 {
+		out.Warnings = append(out.Warnings, unpricedWarning)
 	}
-	if out.TotalRows == 0 {
-		q.Warnings = append(q.Warnings, "No matching recorded usage.")
+	if len(groups) == 0 {
+		out.Warnings = append(out.Warnings, "No matching usage.")
 	}
-	out.Query = q
-	out.Chart, err = costChart(chartRows, group, metric, topN, q)
-	return out, err
-}
-
-func categoryLabel(id string) string {
-	words := strings.Fields(strings.NewReplacer("_", " ", "-", " ").Replace(id))
-	for i, w := range words {
-		r := []rune(w)
-		if len(r) > 0 {
-			words[i] = strings.ToUpper(string(r[0])) + string(r[1:])
-		}
-	}
-	return strings.Join(words, " ")
+	return out, nil
 }
 
 func (t tools) categories(ctx context.Context, in CategoryInput) (Response[CategoryData], error) {
-	var out Response[CategoryData]
-	q, from, to, f, err := t.query(ctx, in.RangeFilters, ModelFilters{})
-	if err != nil {
-		return out, err
+	if in.Interval != "" {
+		if in.GroupBy != "" {
+			return Response[CategoryData]{}, inputError("group_by cannot be combined with interval")
+		}
+		return t.categoryTrend(ctx, in)
 	}
-	topN, err := chartOptions(in.ChartOptions)
+	q, from, to, f, err := t.query(in.RangeFilters, ModelFilters{})
 	if err != nil {
-		return out, err
-	}
-	metric, err := chartMetric(in.ChartMetric, "prompts", "prompts", "share_percent")
-	if err != nil {
-		return out, err
+		return Response[CategoryData]{}, err
 	}
 	limit, err := rowLimit(in.Limit)
 	if err != nil {
-		return out, err
+		return Response[CategoryData]{}, err
 	}
 	group := in.GroupBy
 	if group == "" {
 		group = "category"
 	}
 	if group != "category" && group != "department" {
-		return out, inputError("group_by must be category or department")
+		return Response[CategoryData]{}, inputError("group_by must be category or department")
 	}
-	out.Data = CategoryData{GroupBy: group, Rows: []CategoryRow{}}
+	rows := []CategoryRow{}
 	denominators := map[string]int64{}
 	if group == "category" {
-		rows, err := t.store.QueryClassificationSummary(ctx, from, to, f)
+		summary, err := t.store.QueryClassificationSummary(ctx, from, to, f)
 		if err != nil {
-			return out, err
+			return Response[CategoryData]{}, err
 		}
-		for _, r := range rows {
+		for _, r := range summary {
 			if r.Kind == "category" && r.Matched > 0 {
-				out.Data.Rows = append(out.Data.Rows, CategoryRow{Category: r.ID, Label: categoryLabel(r.ID), Prompts: r.Matched})
+				rows = append(rows, CategoryRow{Category: r.ID, Prompts: r.Matched})
 				denominators[""] += r.Matched
 			}
 		}
 	} else {
-		rows, err := t.store.QueryClassificationDepartmentTopics(ctx, from, to, f)
+		topics, err := t.store.QueryClassificationDepartmentTopics(ctx, from, to, f)
 		if err != nil {
-			return out, err
+			return Response[CategoryData]{}, err
 		}
-		for _, r := range rows {
+		for _, r := range topics {
 			if r.Prompts > 0 {
-				out.Data.Rows = append(out.Data.Rows, CategoryRow{Category: r.Category, Label: categoryLabel(r.Category), Department: r.Department, Prompts: r.Prompts})
-				denominators[r.Department] += r.Prompts
+				dept := r.Department
+				rows = append(rows, CategoryRow{Category: r.Category, Department: &dept, Prompts: r.Prompts})
+				denominators[dept] += r.Prompts
 			}
 		}
 	}
-	for i := range out.Data.Rows {
-		r := &out.Data.Rows[i]
-		r.Share = float64(r.Prompts) / float64(denominators[r.Department])
-		out.Data.TotalPrompts += r.Prompts
+	data := CategoryData{}
+	for i := range rows {
+		key := ""
+		if rows[i].Department != nil {
+			key = *rows[i].Department
+		}
+		rows[i].SharePercent = percent(float64(rows[i].Prompts), float64(denominators[key]))
+		data.TotalPrompts += rows[i].Prompts
 	}
-	sort.Slice(out.Data.Rows, func(i, j int) bool {
-		a, b := out.Data.Rows[i], out.Data.Rows[j]
+	dept := func(r CategoryRow) string {
+		if r.Department == nil {
+			return ""
+		}
+		return *r.Department
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
 		if a.Prompts != b.Prompts {
 			return a.Prompts > b.Prompts
 		}
-		if a.Department != b.Department {
-			return a.Department < b.Department
+		if dept(a) != dept(b) {
+			return dept(a) < dept(b)
 		}
 		return a.Category < b.Category
 	})
-	out.TotalRows = len(out.Data.Rows)
-	chartRows := out.Data.Rows
-	if len(out.Data.Rows) > limit {
-		out.Data.Rows = out.Data.Rows[:limit]
-		out.Truncated = true
+	data.Categories, data.TotalCategories = rows, len(rows)
+	if len(rows) > limit {
+		data.Categories, data.Truncated = rows[:limit], true
 	}
-	q.Warnings = append(q.Warnings, "Shares are fractions of classified prompts, not all platform requests. No category costs are inferred.")
-	if out.TotalRows == 0 {
-		q.Warnings = append(q.Warnings, "No matching recorded categories.")
+	if group == "department" {
+		q.GroupBy = group
 	}
-	out.Query = q
-	out.Chart, err = categoryChart(chartRows, group, metric, topN, q)
-	return out, err
+	out := Response[CategoryData]{Query: q, Warnings: []string{}, Data: data}
+	if len(rows) == 0 {
+		out.Warnings = append(out.Warnings, "No matching classified prompts.")
+	}
+	return out, nil
 }
 
-func (t tools) categoryTrends(ctx context.Context, in CategoryTrendInput) (Response[[]CategoryPoint], error) {
-	var out Response[[]CategoryPoint]
-	q, from, to, f, err := t.query(ctx, in.RangeFilters, ModelFilters{})
+func (t tools) categoryTrend(ctx context.Context, in CategoryInput) (Response[CategoryData], error) {
+	q, from, to, f, err := t.query(in.RangeFilters, ModelFilters{})
 	if err != nil {
-		return out, err
+		return Response[CategoryData]{}, err
 	}
-	topN, err := chartOptions(in.ChartOptions)
+	iv, err := resolveInterval(in.Interval, false, from, to)
 	if err != nil {
-		return out, err
-	}
-	metric, err := chartMetric(in.ChartMetric, "prompts", "prompts", "share_percent")
-	if err != nil {
-		return out, err
-	}
-	iv, err := chartInterval(in.Interval, false, from, to, topN)
-	if err != nil {
-		return out, err
+		return Response[CategoryData]{}, err
 	}
 	points, err := t.store.QueryClassificationTopicTimeseries(ctx, from, to, iv, f)
 	if err != nil {
-		return out, err
+		return Response[CategoryData]{}, err
 	}
 	if len(points) > maxPoints {
-		return out, inputError("trend exceeds 2000 points; use day or narrow the range and filters")
+		return Response[CategoryData]{}, inputError("trend exceeds 2000 points; use day or narrow the range and filters")
 	}
-	out.Data = []CategoryPoint{}
+	data := CategoryData{}
+	perBucket := map[string]int64{}
 	for _, p := range points {
-		out.Data = append(out.Data, CategoryPoint{Bucket: p.Bucket.UTC().Format(time.RFC3339), Category: p.Label, Label: categoryLabel(p.Label), Prompts: p.Count})
+		ts := p.Bucket.UTC().Format(time.RFC3339)
+		data.Points = append(data.Points, CategoryPoint{Time: ts, Category: p.Label, Prompts: p.Count})
+		perBucket[ts] += p.Count
+		data.TotalPrompts += p.Count
 	}
-	sort.Slice(out.Data, func(i, j int) bool {
-		a, b := out.Data[i], out.Data[j]
-		if a.Bucket != b.Bucket {
-			return a.Bucket < b.Bucket
+	for i := range data.Points {
+		data.Points[i].SharePercent = percent(float64(data.Points[i].Prompts), float64(perBucket[data.Points[i].Time]))
+	}
+	sort.Slice(data.Points, func(i, j int) bool {
+		a, b := data.Points[i], data.Points[j]
+		if a.Time != b.Time {
+			return a.Time < b.Time
 		}
 		return a.Category < b.Category
 	})
 	q.Interval = strings.TrimPrefix(iv, "1 ")
-	q.Warnings = append(q.Warnings, "Counts cover classified prompts only. Missing buckets are not filled; absent data does not prove zero activity.")
-	if len(out.Data) == 0 {
-		q.Warnings = append(q.Warnings, "No matching recorded categories.")
+	out := Response[CategoryData]{Query: q, Warnings: []string{}, Data: data}
+	if len(points) == 0 {
+		out.Warnings = append(out.Warnings, "No matching classified prompts.")
+	} else {
+		out.Warnings = append(out.Warnings, bucketWarnings(from, to, iv)...)
 	}
-	out.Query, out.TotalRows = q, len(out.Data)
-	out.Chart, err = categoryTrendChart(out.Data, metric, topN, q, from, to, iv)
-	return out, err
+	return out, nil
 }

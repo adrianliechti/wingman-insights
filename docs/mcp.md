@@ -6,25 +6,25 @@ the running service's store; no second process or database is required.
 
 ## Identity and access
 
-Supply `Authorization: Bearer <JWT>` on **every** request. For this MVP, Insights
-decodes the JWT payload and **does not verify its signature, issuer, audience, or
-expiry**. Token trust is supplied by the caller/upstream integration. There is no
-OAuth login/discovery flow or token issuance in this implementation. This is a
-temporary trusted-token integration, not a standalone authentication boundary.
+Supply `Authorization: Bearer <token>` on **every** request. Insights verifies the
+token exactly like the companion API: the signature, issuer, audience, and expiry
+are checked against `COMPANION_API_ISSUER` and `COMPANION_API_AUDIENCE`. There is
+no OAuth login/discovery flow or token issuance in this implementation; clients
+obtain a token for that audience from the identity provider themselves.
 The `oid` claim identifies the caller, falling back to `sub` if `oid` is absent.
-This value must match a telemetry user ID or a directory alias. No token or a
-missing identity returns HTTP 401. Forwarded identity/group headers are ignored.
-Existing dashboard and companion authentication remains separate, including its
-existing startup configuration requirements.
+This value must match a telemetry user ID or a directory alias. A missing, invalid,
+or expired token, or one without an identity, returns HTTP 401. The
+`X-Forwarded-User`/`-Groups` headers are ignored. With `INSIGHTS_AUTH_DISABLED=true` no token
+can be verified, so every request is refused unless the development bypass below
+is enabled.
 
-If the token's `groups` array contains the exact value of `INSIGHTS_ADMIN_GROUP`,
-the caller can query organization-wide data and use all six tools. If the
-variable is unset, nobody receives admin access. Other callers see only
-`get_usage`, `get_cost_breakdown`, and `get_prompt_sizes`; their user filter is always replaced by their
-token identity, even if they request someone else's data. Grouping by department
-or location still returns only their own costs. The dashboard's own development
-auth flags do not by themselves grant MCP access or bypass the requirement for a
-token; see [Local development](#local-development).
+MCP is admin-only, with the same rule as the dashboard's organization-wide views:
+the token's `groups` array must contain the exact value of `INSIGHTS_ADMIN_GROUP`.
+Any other valid token is refused with HTTP 403, and if the variable is unset nobody
+is admitted (a startup warning says so). Admitted callers see organization-wide
+data; the `users` filter selects users but is not a permission boundary. The
+dashboard's own development auth flags do not by themselves grant MCP access or
+bypass the requirement for a token; see [Local development](#local-development).
 
 Configure your MCP client with this HTTP URL and bearer header. For example:
 
@@ -79,12 +79,12 @@ Enabling it logs a warning naming the assumed identity.
 
 The identity defaults to `dev`, matching the dashboard's dev user. Override it
 with `INSIGHTS_MCP_DEV_USER` to impersonate a real telemetry user — useful
-because `dev` usually has no recorded usage, so personal scope returns empty
-data. `INSIGHTS_DEV_ADMIN=true` grants the anonymous caller admin scope and all
-four tools, mirroring the dashboard.
+because `dev` usually has no recorded usage. MCP requires admin, so
+`INSIGHTS_DEV_ADMIN=true` is also needed; without it the anonymous caller is
+refused with 403 (a startup warning says so), mirroring the dashboard.
 
-A valid bearer token still takes precedence when one is sent, so scope and
-admin behavior remain testable without toggling the flag:
+A valid bearer token still takes precedence when one is sent, so admin
+behavior remains testable without toggling the flag:
 
 ```sh
 INSIGHTS_MCP_ENABLED=true INSIGHTS_AUTH_DISABLED=true \
@@ -102,16 +102,19 @@ occurs.
 
 | Tool | What it returns | Options |
 | --- | --- | --- |
-| `get_usage` | Cost, tokens, provider-call counts, per-call averages, cache/reasoning shares, optional trends and period comparison | Optional `interval`: `auto`, `hour` or `day`; `compare_previous` or explicit `compare_from`/`compare_to` |
-| `get_cost_breakdown` | Ranked costs, cache savings, token partitions, unpriced tokens | `group_by`: `model` (default), `application`, `department`, `location`, `user`; `limit` |
-| `get_categories` | Winning category counts and fractional shares | Admin only; `group_by`: `category` (default) or `department`; `limit` |
-| `get_category_trends` | Winning category counts per UTC time bucket | Admin only; `interval`: `auto` (default), `hour` or `day` |
-| `get_adoption` | Distinct observed users, new/returning activity, provider-call counts, and active-day frequency | Admin only; `interval`: `auto`, `hour`, or `day`; `chart_metric` selects the view |
-| `get_prompt_sizes` | Ordered input-size bins with call counts, costs, per-call cost, shares, and unpriced coverage | `chart_metric`: `requests`, `cost_usd`, `request_share_percent`, or `cost_share_percent` |
+| `get_usage` | Cost, tokens, provider-call counts, per-call averages, cache/reasoning percentages, trends by model, ranked groups, prompt-size bins, and user adoption | `interval`: `auto`, `hour` or `day` for a trend; `group_by`: `model`, `application`, `department`, `location`, `user` (ranked by cost, with `limit`) or `prompt_size`; `view`: `usage` (default) or `adoption` |
+| `get_categories` | Classified prompt counts and shares per category, optionally per department, or counts over time | `group_by`: `category` (default) or `department`; `limit`; `interval`: `auto`, `hour` or `day` |
+
+The server and both tools advertise the Lucide `receipt` icon as embedded SVG
+data URIs, in light- and dark-theme variants.
+
+`group_by` and `interval` cannot be combined, and `view=adoption` cannot be
+combined with `group_by`. `auto` selects hourly buckets for windows up to 48
+hours, otherwise daily; buckets align to UTC.
 
 All inputs are described in each tool's JSON schema; there is no filter-list
 tool. Optional `applications`, `users`, `departments`, and `locations` arrays
-apply across the tools. Usage, cost, adoption and prompt-size tools additionally accept `providers` and
+apply to both tools. `get_usage` additionally accepts `providers` and
 `models`. Values within a field are ORed, different fields are ANDed. Application
 and user aliases resolve through the directory; department/location matching
 requires directory data. Department matching follows the deployment's prefix
@@ -119,199 +122,136 @@ setting. Provider/model values match exact IDs. There is no fuzzy label lookup
 or dynamic value enumeration; unknown values produce empty data. At most 100
 nonempty values are accepted per filter.
 
-Use RFC3339 `from` and `to` for inclusive range bounds. `to` defaults to now;
-`from` defaults to 24 hours before `to`. The maximum window is 90 days. Invalid
-or inverted ranges are rejected. Ranked results default to 20 rows, maximum 100.
-The response includes effective filters, access scope, warnings, total row count,
-and truncation. Totals/shares cover all matches before truncation. Trends are
-limited to 2,000 points; use daily buckets or narrower filters/ranges if exceeded.
-Queries have a 10-second deadline.
+Use RFC3339 `from` and `to` for inclusive range bounds. `to` defaults to now
+(whole seconds); `from` defaults to 24 hours before `to`. The maximum window is
+90 days. Invalid or inverted ranges are rejected. Ranked results default to 20
+rows, maximum 100. Trends are limited to 2,000 points; use daily buckets or
+narrower filters/ranges if exceeded. Queries have a 10-second deadline.
 
-## Creating charts
+## Response format
 
-Every tool returns an additional `chart` object alongside the existing `data`.
-Use `chart.rows` directly as a table in the client's plotting library. The server
-prepares data and chart hints; the client renders and styles the visualization.
-There is no image generation dependency, remote chart service, or HTML execution.
-
-| Chart field | Meaning |
-| --- | --- |
-| `title`, `type` | Suggested title and chart type: `bar`, `line`, or `stacked_bar` |
-| `x_axis`, `y_axis` | Labels, types (`nominal`, `temporal`, `quantitative`), and units |
-| `rows[].x`, `rows[].x_label` | Stable group ID or UTC timestamp, and its display label |
-| `rows[].series`, `rows[].series_label` | Stable legend ID and readable label |
-| `rows[].value` | Numeric plotted measure; `null` for unobserved temporal points |
-| `includes_other` | Whether groups outside the largest `top_n` were combined |
-| `missing_data`, `partial_buckets`, `notes` | Gap policy, partial interval flag, and qualifications to display with the chart |
-
-Use IDs for grouping and labels for ticks/legends. Two users with identical names
-remain distinct. Assign colors by stable series ID to keep legends consistent.
-Values stay numeric, without currency signs or formatted token
-suffixes. Use the axis unit to format them at rendering time. Bar charts should
-start at zero; horizontal bars suit long model/user/department labels. Percentage
-charts use **0 to 100**, while the original `data.rows[].share` remains a fraction.
-For department percentages, render the suggested stacked bars on a 0–100 axis.
-
-The optional `top_n` input defaults to 8 and accepts 1–20. It controls chart groups,
-independently of the existing raw-data `limit`. All remaining groups are combined
-as **Other (remaining)** so the plotted totals are preserved, even when raw data
-rows are truncated. Department comparisons apply the limit to departments and
-categories. Their Other department's percentages are calculated from pooled prompt
-counts, not averages of department percentages. Trend series are selected across
-the whole range, keeping their identity stable over time.
-
-For trends, use `interval: "auto"`. It selects hourly or daily buckets with room
-for the aligned chart grid within 2,000 points. Explicit `hour` and `day` remain
-available. The grid includes every UTC bucket intersecting the inclusive query
-range for each selected series. Missing observations are `null`, never invented
-zeroes: keep line gaps and disable connecting missing points. Only observed
-series appear; an empty query returns `rows: []`. `partial_buckets` flags range
-edges that do not cover a full bucket. Do not compare a partial bucket to a full
-one without accounting for that difference.
-
-Examples of tool arguments for common charts:
-
-```jsonc
-// get_usage: token consumption by model over time
-{ "interval": "auto", "chart_metric": "total_tokens", "top_n": 5 }
-
-// get_cost_breakdown: department spending, as ranked bars
-{ "group_by": "department", "chart_metric": "cost_usd", "top_n": 8 }
-
-// get_cost_breakdown: cache savings by model
-{ "group_by": "model", "chart_metric": "cache_savings_usd" }
-
-// get_categories: each department's topic mix, as percentage stacked bars
-{ "group_by": "department", "chart_metric": "share_percent", "top_n": 6 }
-
-// get_category_trends: changes in topic mix over time
-{ "interval": "auto", "chart_metric": "share_percent", "top_n": 5 }
-```
-
-The examples use comments to name the tool; supply only the JSON object as tool
-arguments. `get_usage` without an interval retains its totals-only behavior; its
-`total_tokens` chart shows disjoint Input/Output/Cached partitions. Cost breakdown
-charts support `cost_usd` (default), `total_tokens`, and `cache_savings_usd`.
-Usage charts also support `requests`, `cost_per_request_usd`,
-`input_tokens_per_request`, `output_tokens_per_request`, `tokens_per_request`,
-`cache_read_share_percent`, `reasoning_share_percent`, and `cache_savings_usd`.
-Other groups pool the numerators and denominators for averages/rates, rather
-than summing or averaging averages. Prompt-size and active-day distributions
-keep their natural order and are not collapsed into Other.
-
-Category charts support `prompts` (default) and `share_percent`. Category trend
-percentages are normalized within each observed bucket, including Other.
-
-Include the chart notes when presenting it. Costs remain estimates and may be
-incomplete when some models are unpriced; a plotted zero does not establish free
-usage. Classified prompt shares describe classified activity only. The original
-data, authorization filters, and accounting rules are unchanged.
-
-Example arguments:
+Every tool returns the same envelope, as structured content and as JSON text.
+Each tool declares typed `inputSchema` and `outputSchema` (covering all views); there are no
+boolean subschemas, `null` values or `type` arrays, which some MCP clients reject.
 
 ```json
-{ "from": "2026-10-01T00:00:00Z", "to": "2026-10-08T00:00:00Z", "group_by": "department" }
+{
+  "query": { "from": "…", "to": "…", "group_by": "user", "filters": { "users": ["alice"] } },
+  "warnings": ["Some usage has no catalog price; costs are incomplete (see unpriced_tokens)."],
+  "data": { "totals": { … }, "groups": [ … ], "total_groups": 2 }
+}
 ```
 
-Use those arguments with `get_cost_breakdown` for department spend, or
-`get_categories` for topic shares within each department. Token totals follow
-the existing ledger: input + output + cached is the total; reasoning is a subset
-of output. Costs and cache savings are USD estimates at stored catalog prices;
-`priced=false` and `unpriced_tokens` preserve unknown-price coverage.
+`query` echoes the effective range, the selected `view`/`group_by`/`interval`,
+and filters. `warnings` contains only conditions that apply to this result:
+unpriced usage, no matching data, or a first/last bucket covering only part of its
+interval. Show them with the answer. Definitions that always apply are in the tool
+descriptions rather than repeated in each response.
 
-Category results include observed IDs and readable labels derived from those
-IDs, not authoritative category descriptions. Counts use matched winning
-categories only, exclude risk checks, and represent classified prompts rather
-than all activity. Department shares use each department's classified prompt
-total; an empty department means unassigned. Missing trend buckets are not
-filled. No prompt content is returned and no costs are attributed to categories.
+Conventions used in all views:
+
+- Costs are `*_usd`, rounded to 6 decimals. Percentages are `*_percent` from 0 to
+  100; they and per-call averages are rounded to 2 decimals.
+- Undefined ratios (zero denominator) are **omitted**, never reported as zero.
+- `data` contains only the fields of the selected view. Top-level lists,
+  `total_*` counts and `truncated` are omitted when empty, zero or false
+  (`warnings` reports when nothing matched). Trend `points` exist only for
+  buckets with data; a missing bucket is absent telemetry, not a known zero.
+- Times are RFC3339 UTC bucket starts.
+
+### `get_usage` data
+
+| Arguments | `data` |
+| --- | --- |
+| *(none)* | `{totals}` |
+| `interval` | `{totals, points: [{time, model, …usage}]}` |
+| `group_by=model\|application\|department\|location\|user` | `{totals, groups: [{id, name?, department?, location?, …tokens}], total_groups, truncated}` |
+| `group_by=prompt_size` | `{prompt_sizes: {totals: {requests, cost_usd, unpriced_requests, unpriced_tokens}, bins: [{label, min_input_tokens, max_input_tokens, requests, cost_usd, unpriced_requests, request_percent, cost_percent, cost_per_request_usd}]}}` |
+| `view=adoption` | `{adoption: {totals: {active_users, new_users, returning_users, single_day_users, repeat_day_users, requests}, points: [{time, active_users, new_users, returning_users, requests}], frequency: [{active_days, users}]}}` |
+
+Usage figures (`totals`, each trend point) contain:
+
+- `requests`: token-bearing provider spans, using the same accounting source as
+  usage and cost. Browser observations and zero-token tool spans do not add calls.
+- `cost_usd`, `cache_savings_usd`: estimates at stored catalog prices, not
+  provider invoices. `unpriced_tokens > 0` means cost is incomplete.
+- `input_tokens` includes `cache_read_tokens` and `cache_creation_tokens`;
+  `output_tokens` includes `reasoning_tokens`; `total_tokens = input_tokens + output_tokens`.
+- `cost_per_request_usd`, `input_tokens_per_request`, `output_tokens_per_request`.
+- `cache_read_percent`: cache reads / input × 100; cache creation is not a cache
+  hit. `reasoning_percent`: reasoning / output × 100.
+
+Groups carry the same token and cost fields but no request counts or per-call
+averages. Group IDs: `provider/model` for models, the application ID, the
+canonical user ID (with resolved `name`, `department`, `location`), or the
+department/location value. An empty `id` means unassigned. Groups are ranked by
+cost; `totals` cover all groups, including those beyond `limit`.
+
+### `get_categories` data
+
+| Arguments | `data` |
+| --- | --- |
+| *(none)* | `{total_prompts, categories: [{category, prompts, share_percent}], total_categories, truncated}` |
+| `group_by=department` | as above, each row also has `department`; `share_percent` is within that department |
+| `interval` | `{total_prompts, points: [{time, category, prompts, share_percent}]}`, `share_percent` within each bucket |
+
+Category IDs come from telemetry, not authoritative descriptions. Counts use
+matched winning categories only, exclude risk checks, and represent classified
+prompts rather than all activity. An empty department means unassigned. No prompt
+content is returned and no costs are attributed to categories.
 
 Operations, anomalies, risks, raw traces, arbitrary SQL, writes, and MCP
 prompts/resources are outside this MVP.
 
 ## Answering user questions
 
-The six tools cover the following workflows. Apply `from`/`to` and the same
-filters to every call in a comparison. Admin-only views include departments
-across the organization, categories, and adoption. Personal callers can compare
-their own periods and inspect their own prompt sizes.
+The two tools cover the following workflows. Apply `from`/`to` and the same
+filters to every call in a comparison.
 
 | Question | Tool and relevant arguments |
 | --- | --- |
-| How much have I spent each day? | `get_usage`: `interval=day`, `chart_metric=cost_usd` |
-| Has spending increased since the previous period? | `get_usage`: `compare_previous=true`; compare the returned totals and changes |
-| How does this calendar month compare with last month? | `get_usage`: explicit current `from`/`to` and `compare_from`/`compare_to` for last month's bounds |
-| Which models account for most spending? | `get_cost_breakdown`: `group_by=model`, `chart_metric=cost_usd` |
-| Which applications consume the most tokens? | `get_cost_breakdown`: `group_by=application`, `chart_metric=total_tokens` |
-| How much estimated cost has caching saved? | `get_cost_breakdown`: `group_by=model`, `chart_metric=cache_savings_usd` |
-| Which departments spend the most? | `get_cost_breakdown`: `group_by=department` |
-| Is a department's spending high because of volume or model mix? | Filter that department; compare `get_usage` call/token statistics and `get_cost_breakdown` by model across both periods |
-| What do people use AI for? | `get_categories`: counts or `chart_metric=share_percent` |
-| How does topic mix differ across departments? | `get_categories`: `group_by=department`, `chart_metric=share_percent` |
-| Which topics are becoming more common? | `get_category_trends`: `interval=auto`; compare both `prompts` and `share_percent`, since volume and mix answer different questions |
-| Is spending growth accompanied by more calls or larger calls? | `get_usage`: `compare_previous=true`; inspect requests, input/output tokens per call, cache-read share and reasoning share; use the corresponding `chart_metric` for trends |
-| Are people using AI regularly or just trying it? | `get_adoption`: `chart_metric=active_days` for frequency, `new_vs_returning_users` for activity over time |
-| Are large prompts responsible for a disproportionate share of costs? | `get_prompt_sizes`: compare `request_share_percent` with `cost_share_percent` for the same bins |
+| How much has the organization spent each day? | `get_usage`: `interval=day`; sum `cost_usd` of the points per day |
+| Has spending increased since the previous period? | `get_usage`: call once per period with the same filters; compare `totals` |
+| How does this calendar month compare with last month? | `get_usage`: call once with this month's `from`/`to` and once with last month's |
+| Which models account for most spending? | `get_usage`: `group_by=model` |
+| Which applications consume the most tokens? | `get_usage`: `group_by=application`; compare `total_tokens` |
+| How much estimated cost has caching saved? | `get_usage`: `cache_savings_usd` in `totals`, or `group_by=model` per model |
+| Which departments spend the most? | `get_usage`: `group_by=department` |
+| Is a department's spending high because of volume or model mix? | Filter that department; compare `get_usage` totals and `get_usage` with `group_by=model` across both periods |
+| What do people use AI for? | `get_categories` |
+| How does topic mix differ across departments? | `get_categories`: `group_by=department` |
+| Which topics are becoming more common? | `get_categories`: `interval=auto`; compare both `prompts` and `share_percent`, since volume and mix answer different questions |
+| Is spending growth accompanied by more calls or larger calls? | `get_usage`: call once per period; compare requests, per-call tokens, `cache_read_percent` and `reasoning_percent`; add `interval` for trends |
+| Are people using AI regularly or just trying it? | `get_usage`: `view=adoption`; `frequency` for active days, `points` for new versus returning users over time |
+| Are large prompts responsible for a disproportionate share of costs? | `get_usage`: `group_by=prompt_size`; compare `request_percent` with `cost_percent` for the same bins |
 
-### Usage statistics and comparisons
-
-`get_usage.data.statistics` and each trend bucket's `statistics` include:
-
-- `requests`: token-bearing provider spans, using the same accounting source as
-  usage and cost. Browser observations and zero-token tool spans do not add calls.
-- `input_tokens_per_request`: inclusive input, including cache read/creation.
-  `output_tokens_per_request` includes reasoning. `tokens_per_request` counts
-  input + output + cached once, using the existing disjoint ledger.
-- `cost_per_request_usd`: known stored estimated cost divided by observed calls;
-  it can be incomplete when models are unpriced.
-- `cache_read_share_percent`: cache-read tokens / inclusive input × 100; cache
-  creation is not a cache hit. `reasoning_share_percent`: reasoning / output × 100.
-- `cache_read_tokens`, `cache_creation_tokens`, `unpriced_tokens`: coverage and
-  cache details to qualify interpretations.
-
-Undefined averages/shares are `null`, never zero or infinity. Existing totals,
-token fields and raw bucket fields remain available.
-
-`compare_previous=true` selects the immediately preceding equal-length window,
-ending one nanosecond before current `from`, so boundary events are not counted
-twice. Alternatively supply both `compare_from` and `compare_to` (RFC3339); do not
-combine them with `compare_previous`. Each window is limited to 90 days.
-Both windows use the caller's enforced identity and the same filters.
-
-`data.comparison` contains previous-period bounds, cost/tokens/statistics,
-`changes` for all supported usage metrics, and a two-period chart for the selected
-measure. Each change includes current/previous values, absolute change and
-percentage change. Percentage change from a zero baseline is `null`; an absolute
-change in a percentage metric is expressed in percentage points. Unequal custom
-windows are flagged: total changes are not normalized by duration.
-
-These statistics identify observed contributors to spending changes; they do
-not prove causality, quantify quality or predict savings from switching models.
-Inspect model mix with a cost-breakdown call for each period rather than attributing
-all changes in cost per call to token length.
+Percentage changes from a zero baseline are undefined, not zero. These figures
+identify observed contributors to spending changes; they do not prove causality,
+quantify quality or predict savings from switching models. Inspect model mix with
+a `group_by=model` call for each period rather than attributing all changes in
+cost per call to token length.
 
 ### Adoption and prompt-size definitions
 
-`get_adoption` deduplicates directory aliases and counts observed identities on
+`view=adoption` deduplicates directory aliases and counts observed identities on
 token-bearing provider calls. Anonymous calls and directory principals known to
 be applications are excluded. Unresolved identity kinds can remain; these are
 observed-user counts, not a count of licensed employees. New/returning status is
 based on the first matching activity in retained history under the selected
 filters, not registration or an account's lifetime history. Retention can erase
 older activity. Window totals count distinct users; bucket counts are not additive.
+`interval` defaults to `auto`.
 
 `single_day_users` and `repeat_day_users` count users active on one or multiple
 distinct UTC dates **within this window**. Neither establishes future abandonment
-or productivity. `chart_metric=active_days` returns an ordered frequency chart;
-`active_users` (default), `new_users`, `returning_users`, `new_vs_returning_users`,
-and `requests` select time-series charts. No per-user records are exposed by this tool.
+or productivity. No per-user records are exposed by this view.
 
-`get_prompt_sizes` returns all five ordered bins, with exact inclusive token
-bounds (last upper bound is `null`), counts, costs, unpriced calls/tokens, per-call
-cost and request/cost percentages. Sizes include cached input; output-only calls
-are excluded. Empty bins are known zero counts; no matching calls produces an
-empty chart and undefined shares. If all calls are unpriced, cost shares remain
-`null`. Cost shares describe **known estimated spend** and can be incomplete.
+`group_by=prompt_size` returns all five ordered bins, with exact inclusive token
+bounds (the open-ended last bin has no `max_input_tokens`), counts, costs, unpriced calls,
+per-call cost and request/cost percentages. Sizes include cached input; output-only
+calls are excluded. Empty bins are known zero counts. With no matching calls, or
+when all calls are unpriced, the corresponding percentages are omitted. Cost
+percentages describe **known estimated spend** and can be incomplete.
 
 No category costs, answer-quality scores, licensed-user adoption rates, time
 savings, or ROI are inferred. Operations and anomalies remain outside these tools.
@@ -319,17 +259,11 @@ savings, or ROI are inferred. Operations and anomalies remain outside these tool
 ## Tests
 
 `go test ./internal/mcp` exercises SDK discovery and tool calls over HTTP,
-per-request identity scoping, admin access, filters, stored accounting semantics,
-category counts/shares/trends, chart totals and units, Other aggregation,
-percentage denominators, duplicate display labels, null gaps, automatic
-intervals, invalid inputs, limits, empty data, cancellation, and generic error
-responses. Further HTTP tests cover comparison boundaries, zero baselines,
-personal scope in both periods, pooled rate denominators, observed-user identity
-deduplication, new/returning history, application/anonymous exclusions, prompt-size
-bin boundaries, cost coverage and empty distributions.
-Run `go test ./...` for backend regression coverage
-after building the embedded web assets (`npm ci && npm run build` in `web`).
-category counts/shares/trends, invalid inputs, limits, empty data, cancellation,
-the development auth bypass, the CORS allowlist, and generic error responses. Run
-`go test ./...` for backend regression coverage after building the embedded web
-assets (`npm ci && npm run build` in `web`).
+the admin gate, per-request identity, filters, stored accounting semantics,
+grouped totals, category counts/shares/trends, percentage denominators, rounding,
+portable output schemas, invalid inputs, limits, empty data, cancellation, the
+development auth bypass, the CORS allowlist, and generic error responses. Further HTTP tests cover
+observed-user identity deduplication, new/returning history, application/anonymous
+exclusions, prompt-size bin boundaries, cost coverage and empty distributions.
+Run `go test ./...` for backend regression coverage after building the embedded
+web assets (`npm ci && npm run build` in `web`).

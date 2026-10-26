@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -602,4 +603,48 @@ func TestWithAdminGate(t *testing.T) {
 			t.Fatalf("want 200, got %d", rr.Code)
 		}
 	})
+}
+
+// --- VerifyBearer (MCP) tests ---
+
+func TestVerifyBearer(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	k := newTestKey(t)
+	h := makeHandler(k.verifier)
+	check := func(header string) (string, bool, error) {
+		r := httptest.NewRequest("POST", "/mcp", nil)
+		if header != "" {
+			r.Header.Set("Authorization", header)
+		}
+		return h.VerifyBearer(r)
+	}
+
+	if user, admin, err := check("Bearer " + k.signTokenGroups(t, "aud", "alice", []string{"admins"})); err != nil || user != "alice" || !admin {
+		t.Fatalf("signed admin token: user=%q admin=%t err=%v", user, admin, err)
+	}
+	if _, admin, err := check("Bearer " + k.signTokenGroups(t, "aud", "bob", []string{"other"})); err != nil || admin {
+		t.Fatalf("signed non-admin token: admin=%t err=%v", admin, err)
+	}
+	if _, _, err := check("Bearer " + k.signToken(t, "aud", "alice", -time.Hour)); err == nil {
+		t.Fatal("expired token accepted")
+	}
+
+	// A forged token with the admin group but signed by another key.
+	forged := newTestKey(t).signTokenGroups(t, "aud", "mallory", []string{"admins"})
+	if _, _, err := check("Bearer " + forged); err == nil {
+		t.Fatal("token signed by an unknown key accepted")
+	}
+	// An unsigned token (alg none style) carrying the admin group.
+	unsigned := "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString([]byte(`{"oid":"mallory","groups":["admins"]}`)) + "."
+	if _, _, err := check("Bearer " + unsigned); err == nil {
+		t.Fatal("unsigned token accepted")
+	}
+	if _, _, err := check(""); err == nil {
+		t.Fatal("missing token accepted")
+	}
+
+	// Auth disabled must not silently admit callers; MCP owns its dev bypass.
+	if _, _, err := makeHandler(nil).VerifyBearer(httptest.NewRequest("POST", "/mcp", nil)); err == nil {
+		t.Fatal("disabled verifier admitted a caller")
+	}
 }

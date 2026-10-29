@@ -104,8 +104,9 @@ occurs.
 | --- | --- | --- |
 | `get_usage` | Cost, tokens, provider-call counts, per-call averages, cache/reasoning percentages, trends by model, ranked groups, prompt-size bins, and user adoption | `interval`: `auto`, `hour` or `day` for a trend; `group_by`: `model`, `application`, `department`, `location`, `user` (ranked by cost, with `limit`) or `prompt_size`; `view`: `usage` (default) or `adoption` |
 | `get_categories` | Classified prompt counts and shares per category, optionally per department, or counts over time | `group_by`: `category` (default) or `department`; `limit`; `interval`: `auto`, `hour` or `day` |
+| `get_activity` | Custom-agent and tool execution totals, most-used MCP tool, ranked server/tool/plugin groups, plugin skill details, and trends matching Customers → Activity | `view`: `summary` (default), `agents`, `mcp`, `plugins`, `builtin`; `group_by`: `server` or `tool` for MCP, `plugin` for plugins, `tool` for built-ins; `limit`; `interval`: `auto`, `hour`, `day` |
 
-The server and both tools advertise the Lucide `receipt` icon as embedded SVG
+The server and all tools advertise the Lucide `receipt` icon as embedded SVG
 data URIs, in light- and dark-theme variants.
 
 `group_by` and `interval` cannot be combined, and `view=adoption` cannot be
@@ -114,8 +115,8 @@ hours, otherwise daily; buckets align to UTC.
 
 All inputs are described in each tool's JSON schema; there is no filter-list
 tool. Optional `applications`, `users`, `departments`, and `locations` arrays
-apply to both tools. `get_usage` additionally accepts `providers` and
-`models`. Values within a field are ORed, different fields are ANDed. Application
+apply to all tools. `get_usage` and `get_activity` additionally accept
+`providers` and `models`. Values within a field are ORed, different fields are ANDed. Application
 and user aliases resolve through the directory; department/location matching
 requires directory data. Department matching follows the deployment's prefix
 setting. Provider/model values match exact IDs. There is no fuzzy label lookup
@@ -155,8 +156,10 @@ Conventions used in all views:
 - Undefined ratios (zero denominator) are **omitted**, never reported as zero.
 - `data` contains only the fields of the selected view. Top-level lists,
   `total_*` counts and `truncated` are omitted when empty, zero or false
-  (`warnings` reports when nothing matched). Trend `points` exist only for
+  (`warnings` reports when nothing matched). `get_usage` and `get_categories` trend `points` exist only for
   buckets with data; a missing bucket is absent telemetry, not a known zero.
+  `get_activity` explicitly zero-fills intervals for observed series; these zeros
+  mean no matching stored executions, not proof that no usage occurred.
 - Times are RFC3339 UTC bucket starts.
 
 ### `get_usage` data
@@ -200,12 +203,77 @@ matched winning categories only, exclude risk checks, and represent classified
 prompts rather than all activity. An empty department means unassigned. No prompt
 content is returned and no costs are attributed to categories.
 
-Operations, anomalies, risks, raw traces, arbitrary SQL, writes, and MCP
-prompts/resources are outside this MVP.
+Service-health operations, anomalies, risks, raw traces, arbitrary SQL, writes,
+and MCP prompts/resources remain outside these tools.
+
+### `get_activity` data
+
+This tool shares the Customers → Activity store queries and deduplication. It
+reports observed executions rather than an inventory of installed capabilities.
+
+| Arguments | `data` |
+| --- | --- |
+| *(none)* or `view=summary` | `{totals:{distinct_custom_agents, agent_runs, mcp_tool_calls, plugin_executions, builtin_tool_calls, most_used_mcp_tool?}}` |
+| `view=agents` | `{totals:{distinct_custom_agents, agent_runs}}` |
+| `view=mcp`, `plugins`, or `builtin` | `{totals:{mcp_tool_calls\|plugin_executions\|builtin_tool_calls}}`; MCP totals also include the most-used tool when present |
+| `view=mcp, group_by=server\|tool` | `{totals, groups, total_groups, truncated}` |
+| `view=plugins, group_by=plugin` | `{totals, groups:[{…,skills,total_skills,skills_truncated}], total_groups, truncated}` |
+| `view=builtin, group_by=tool` | `{totals, groups, total_groups, truncated}` |
+| `view=agents\|mcp\|plugins\|builtin, interval=auto\|hour\|day` | `{totals, points:[{time,series,executions}]}` |
+
+`summary` supports totals only; agents cannot be grouped. `group_by` and
+`interval` cannot be combined. The same date bounds, filters, limits, deadlines,
+and schema conventions apply as for the other tools. Trends exceeding 2,000
+points are rejected rather than silently truncated. For exact dashboard trend
+comparisons, use the same UTC interval; MCP `auto` follows the other MCP tools
+(hour up to 48 hours, otherwise day).
+
+Groups and the most-used tool include `id`, `name`, optional `server_id`,
+`server_name`, and `plugin_id`, plus `executions`, `succeeded`, `failed`,
+`unreported`, `avg_duration_ms`, and `last_used`. Average duration is weighted by
+raw executions, not an average of tool averages. Tool names use the dashboard’s
+readable formatting; IDs retain the original stable identity. Empty server identity means
+unidentified. Server IDs and plugin ownership keep groups separate; the latest
+server name is used. Most-used-tool metadata is returned for summary and
+non-trend MCP views. Ranking is by executions; `limit` bounds both ranked groups
+and skill details per plugin. Full totals and `total_*` counts are retained when
+lists are truncated. Plugin skills include only explicitly plugin-owned names;
+loads are part of their parent total, not additional executions to add.
+
+Agent counts include only non-plugin configured agents, excluding delegated
+chat helpers. The `first_observed` and `other_runs` trend series sum to
+`agent_runs`. First observed means an agent's earliest identified run across
+retained history; that run must match the selected filters. It is not agent
+creation. Other runs include repeats and unidentified runs; missing IDs cannot
+contribute to distinct-agent counts. Agent trends additionally return
+`first_observed_runs` and `other_runs` totals. Never sum distinct-agent counts
+across periods to calculate a unique total.
+
+MCP, plugin, and built-in trends split by server, plugin, and tool respectively.
+Only observed entities have series. Plugin-attributed executions overlap other
+views and must not be added to their totals. Failed and unreported outcomes are
+included in execution counts. Private agent/personal-skill names or IDs, user
+identities, trace references, content, and tool arguments are never returned.
+Applicable warnings describe missing agent identity, empty results, and partial
+edge intervals; show these with the answer.
+
+Examples of arguments:
+
+```json
+{"view":"mcp","group_by":"tool","limit":10}
+```
+
+```json
+{"view":"agents","interval":"day","departments":["Engineering"]}
+```
+
+```json
+{"view":"plugins","group_by":"plugin"}
+```
 
 ## Answering user questions
 
-The two tools cover the following workflows. Apply `from`/`to` and the same
+The tools cover the following workflows. Apply `from`/`to` and the same
 filters to every call in a comparison.
 
 | Question | Tool and relevant arguments |
@@ -223,6 +291,10 @@ filters to every call in a comparison.
 | Which topics are becoming more common? | `get_categories`: `interval=auto`; compare both `prompts` and `share_percent`, since volume and mix answer different questions |
 | Is spending growth accompanied by more calls or larger calls? | `get_usage`: call once per period; compare requests, per-call tokens, `cache_read_percent` and `reasoning_percent`; add `interval` for trends |
 | Are people using AI regularly or just trying it? | `get_usage`: `view=adoption`; `frequency` for active days, `points` for new versus returning users over time |
+| Which MCP servers and tools were used most? | `get_activity`: `view=mcp`, `group_by=server` or `tool` |
+| How many custom agents were used and how often? | `get_activity`: `view=agents`; add `interval=day` for first-observed versus other runs |
+| Which plugins and their skills were used? | `get_activity`: `view=plugins`, `group_by=plugin` |
+| Which built-in tools are used most? | `get_activity`: `view=builtin`, `group_by=tool` |
 | Are large prompts responsible for a disproportionate share of costs? | `get_usage`: `group_by=prompt_size`; compare `request_percent` with `cost_percent` for the same bins |
 
 Percentage changes from a zero baseline are undefined, not zero. These figures

@@ -1,0 +1,110 @@
+<div id="ops-activity-concept" aria-label="Insights Operations activity concept">
+  <style>
+    #ops-activity-concept{--oa-bg:light-dark(#fafafa,#0f1117);--oa-panel:light-dark(#fff,#191c24);--oa-text:light-dark(#2c2e35,#eceef2);--oa-muted:light-dark(#65666a,#a6abb8);--oa-line:light-dark(#e8e8e8,#2a2e39);--oa-active:light-dark(#eef1fa,#263152);--oa-blue:light-dark(#283c83,#aab9e6);--oa-success:light-dark(#07825e,#3fc79c);color:var(--oa-text);background:var(--oa-bg);font:14px/1.5 system-ui,sans-serif;border:1px solid var(--oa-line);border-radius:12px;overflow:hidden}
+    #ops-activity-concept *{box-sizing:border-box}
+    #ops-activity-concept .oa-top{background:var(--oa-panel);padding:18px 24px;display:flex;align-items:center;gap:24px;flex-wrap:wrap;border-bottom:1px solid var(--oa-line)}
+    #ops-activity-concept .oa-brand{font-weight:500;display:flex;gap:8px;align-items:center}
+    #ops-activity-concept .oa-nav{display:flex;gap:18px;flex-wrap:wrap;color:var(--oa-muted)}
+    #ops-activity-concept .oa-nav strong{color:var(--oa-blue);font-weight:500}
+    #ops-activity-concept .oa-content{padding:22px 24px}
+    #ops-activity-concept .oa-subnav{display:flex;gap:20px;border-bottom:1px solid var(--oa-line);padding-bottom:10px;color:var(--oa-muted)}
+    #ops-activity-concept .oa-subnav strong{font-weight:500;color:var(--oa-blue)}
+    #ops-activity-concept .oa-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:22px 0 16px}
+    #ops-activity-concept h2{font-size:20px;font-weight:500;margin:0}
+    #ops-activity-concept h3{font-size:14px;font-weight:500;margin:0}
+    #ops-activity-concept .oa-muted{color:var(--oa-muted)}
+    #ops-activity-concept .oa-small{font-size:12px}
+    #ops-activity-concept .oa-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}
+    #ops-activity-concept .oa-stat{background:var(--oa-panel);border:1px solid var(--oa-line);border-radius:10px;padding:16px}
+    #ops-activity-concept .oa-value{font-size:28px;line-height:1.3;font-weight:500;margin:5px 0;font-variant-numeric:tabular-nums}
+    #ops-activity-concept .oa-tools{background:var(--oa-panel);border:1px solid var(--oa-line);border-radius:10px;padding:18px}
+    #ops-activity-concept .oa-filters{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px}
+    #ops-activity-concept button{font:inherit;color:inherit}
+    #ops-activity-concept .oa-filter{padding:6px 12px;border:1px solid var(--oa-line);border-radius:6px;background:var(--oa-panel)}
+    #ops-activity-concept .oa-filter[aria-pressed=true]{background:var(--oa-active);color:var(--oa-blue);border-color:var(--oa-active)}
+    #ops-activity-concept table{border-collapse:collapse;width:100%;table-layout:fixed}
+    #ops-activity-concept th{font-weight:400;color:var(--oa-muted);font-size:12px;text-align:left;padding:10px 8px;border-bottom:1px solid var(--oa-line)}
+    #ops-activity-concept td{padding:13px 8px;border-bottom:1px solid var(--oa-line);vertical-align:top;overflow-wrap:anywhere}
+    #ops-activity-concept th:first-child{width:40%}
+    #ops-activity-concept th:nth-child(2){width:22%}
+    #ops-activity-concept th:nth-child(3){width:13%}
+    #ops-activity-concept th:nth-child(4){width:13%}
+    #ops-activity-concept .oa-number{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    #ops-activity-concept .oa-name{background:transparent;border:0;padding:0;text-align:left;color:var(--oa-blue);font-weight:500;text-decoration:underline;text-underline-offset:3px}
+    #ops-activity-concept .oa-result{color:var(--oa-success)}
+    #ops-activity-concept .oa-detail{padding:15px 8px 3px}
+    #ops-activity-concept .oa-detail[hidden]{display:none}
+    #ops-activity-concept .oa-detail p{margin:6px 0}
+    #ops-activity-concept .oa-footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px}
+    #ops-activity-concept details{margin-top:18px;color:var(--oa-muted);font-size:12px}
+    #ops-activity-concept summary{width:fit-content}
+    #ops-activity-concept .oa-coverage{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 20px;margin-top:12px}
+    #ops-activity-concept .oa-preview{margin-top:18px;color:var(--oa-muted);font-size:12px}
+    @media(max-width:600px){#ops-activity-concept .oa-top,#ops-activity-concept .oa-content{padding:16px}#ops-activity-concept .oa-nav{gap:12px;font-size:12px}#ops-activity-concept .oa-stats{gap:8px}#ops-activity-concept .oa-stat{padding:12px}#ops-activity-concept .oa-tools{padding:12px}#ops-activity-concept .oa-coverage{grid-template-columns:1fr}#ops-activity-concept th:nth-child(4),#ops-activity-concept td:nth-child(4){display:none}#ops-activity-concept th:first-child{width:40%}#ops-activity-concept th:nth-child(2){width:25%}#ops-activity-concept th:nth-child(3){width:15%}#ops-activity-concept th:last-child{width:20%}#ops-activity-concept th,#ops-activity-concept td{padding-left:3px;padding-right:3px}}
+    @media(max-width:380px){#ops-activity-concept .oa-stats{grid-template-columns:1fr}#ops-activity-concept .oa-stat{display:grid;grid-template-columns:1fr auto;align-items:center;gap:0 12px}#ops-activity-concept .oa-stat .oa-value{grid-column:2;grid-row:1 / 3;margin:0}#ops-activity-concept .oa-stat .oa-small{grid-column:1}#ops-activity-concept .oa-nav{display:none}}
+    @media(pointer:coarse){#ops-activity-concept .oa-filter,#ops-activity-concept .oa-name,#ops-activity-concept summary{min-height:44px}}
+  </style>
+  <div class="oa-top">
+    <div class="oa-brand"><i data-lucide="receipt" aria-hidden="true"></i> Insights</div>
+    <div class="oa-nav" aria-label="Dashboard navigation"><span>Personal</span><span>Overview</span><span>Customers</span><span>FinOps</span><strong>Operations</strong></div>
+  </div>
+  <div class="oa-content">
+    <div class="oa-subnav" aria-label="Operations views"><span>Metrics</span><strong aria-current="page">Activity</strong><span>Traces</span></div>
+    <div class="oa-heading"><h2>AI activity</h2><span class="oa-muted oa-small">29 Oct 2026 · 08:54–09:10 · Zurich</span></div>
+    <div class="oa-stats">
+      <div class="oa-stat"><div class="oa-muted">Agent runs</div><div class="oa-value">1</div><div class="oa-muted oa-small">Observed delegations</div></div>
+      <div class="oa-stat"><div class="oa-muted">Skill loads</div><div class="oa-value">1</div><div class="oa-muted oa-small">Name not reported</div></div>
+      <div class="oa-stat"><div class="oa-muted">Connector calls</div><div class="oa-value">2</div><div class="oa-muted oa-small">Internet · 1 connector</div></div>
+    </div>
+    <section class="oa-tools" aria-label="Observed capability usage">
+      <h3>What was used</h3>
+      <div class="oa-filters" role="group" aria-label="Activity type">
+        <button class="oa-filter cursor-interaction" type="button" aria-pressed="true" data-filter="all">All</button>
+        <button class="oa-filter cursor-interaction" type="button" aria-pressed="false" data-filter="agent">Agents</button>
+        <button class="oa-filter cursor-interaction" type="button" aria-pressed="false" data-filter="skill">Skills</button>
+        <button class="oa-filter cursor-interaction" type="button" aria-pressed="false" data-filter="connector">Connectors</button>
+      </div>
+      <table aria-label="Activity grouped by capability">
+        <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col" class="oa-number">Calls</th><th scope="col" class="oa-number">Avg time</th><th scope="col" class="oa-number">Errors</th></tr></thead>
+        <tbody>
+          <tr data-type="agent"><td><button class="oa-name cursor-interaction" type="button" data-detail="agent" aria-expanded="false" aria-controls="oa-selected-detail">Web agent</button><div class="oa-small oa-muted">Internet</div></td><td>Agent run</td><td class="oa-number">1</td><td class="oa-number">28.0 s</td><td class="oa-number">0</td></tr>
+          <tr data-type="skill"><td><button class="oa-name cursor-interaction" type="button" data-detail="skill" aria-expanded="false" aria-controls="oa-selected-detail">Unidentified skill</button><div class="oa-small oa-muted">load_skill</div></td><td>Skill load</td><td class="oa-number">1</td><td class="oa-number">2 ms</td><td class="oa-number">0</td></tr>
+          <tr data-type="connector"><td><button class="oa-name cursor-interaction" type="button" data-detail="fetch" aria-expanded="false" aria-controls="oa-selected-detail">Web fetch</button><div class="oa-small oa-muted">Internet</div></td><td>Connector</td><td class="oa-number">1</td><td class="oa-number">1.4 s</td><td class="oa-number">0</td></tr>
+          <tr data-type="connector"><td><button class="oa-name cursor-interaction" type="button" data-detail="search" aria-expanded="false" aria-controls="oa-selected-detail">Web search</button><div class="oa-small oa-muted">Internet</div></td><td>Connector</td><td class="oa-number">1</td><td class="oa-number">2.6 s</td><td class="oa-number">0</td></tr>
+        </tbody>
+      </table>
+      <div id="oa-selected-detail" class="oa-detail" aria-live="polite" hidden></div>
+      <div class="oa-footer oa-small"><span id="oa-filter-count" class="oa-muted" aria-live="polite">4 observed calls</span><span class="oa-result">4 of 4 succeeded</span></div>
+    </section>
+    <details><summary class="cursor-interaction">Data coverage · identities incomplete</summary><div class="oa-coverage"><span>Agent runs: recognisable; stable IDs absent</span><span>Skill loads: recorded; skill names absent</span><span>Users: identity not reported</span><span>Plugins: attribution not reported</span></div></details>
+    <div class="oa-preview">Concept · based on the analysed local snapshot · 26 traces / 49 spans</div>
+  </div>
+  <script>
+    (()=>{
+      const root=document.getElementById('ops-activity-concept');
+      const detail=root.querySelector('#oa-selected-detail');
+      const saved=window.openai?.widgetState;
+      const state={filter:saved?.privateContent?.filter||'all',selected:saved?.privateContent?.selected||null};
+      const info={agent:['Web agent','1 successful delegation · 3 model iterations · 28.0 seconds','Used Web fetch and Web search. The agent work is recorded in a separate trace; its parent trace is not linked.'],skill:['Skill load','1 successful load · 09:10:19 Zurich','The skill name is not recorded. This measures a load, rather than each later application of the skill.'],fetch:['Web fetch','1 successful connector call · 08:55:24 Zurich','Internet connector · inside the delegated web-agent run.'],search:['Web search','1 successful connector call · 08:55:30 Zurich','Internet connector · inside the delegated web-agent run.']};
+      const types={agent:'agent',skill:'skill',fetch:'connector',search:'connector'};
+      function render(){
+        if(!['all','agent','skill','connector'].includes(state.filter))state.filter='all';
+        root.querySelectorAll('[data-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.filter===state.filter)));
+        let visible=0;
+        root.querySelectorAll('tr[data-type]').forEach(row=>{row.hidden=state.filter!=='all'&&row.dataset.type!==state.filter;if(!row.hidden)visible++;});
+        root.querySelector('#oa-filter-count').textContent=visible+' observed '+(visible===1?'call':'calls');
+        if(state.selected&&state.filter!=='all'&&types[state.selected]!==state.filter)state.selected=null;
+        root.querySelectorAll('[data-detail]').forEach(b=>b.setAttribute('aria-expanded',String(b.dataset.detail===state.selected)));
+        detail.replaceChildren();
+        const selected=info[state.selected];detail.hidden=!selected;
+        if(selected){selected.forEach((text,i)=>{const element=document.createElement(i===0?'h3':'p');element.textContent=text;if(i===2)element.className='oa-muted oa-small';detail.append(element);});}
+      }
+      function persist(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{view:'Operations / Activity',filter:state.filter,selected:state.selected},privateContent:{...state}}).catch(()=>{});}
+      root.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{state.filter=b.dataset.filter;render();persist();}));
+      root.querySelectorAll('[data-detail]').forEach(b=>b.addEventListener('click',()=>{state.selected=state.selected===b.dataset.detail?null:b.dataset.detail;render();persist();}));
+      window.addEventListener('openai:set_globals',event=>{const savedState=event.detail?.globals?.widgetState?.privateContent;if(savedState){state.filter=savedState.filter||'all';state.selected=savedState.selected||null;render();}});
+      render();
+      if(globalThis.Tweak){const options={showCoverage:true};const tweak=new Tweak({container:root,onChange:()=>{root.querySelector('details').hidden=!options.showCoverage;}});tweak.addToggle(options,'showCoverage',{label:'Show data coverage'});}
+    })();
+  </script>
+</div>

@@ -7,6 +7,7 @@ import { Bar, Line, ChartLegend, Doughnut, PALETTE, chartOptions, useChartBlue, 
 import { fmtTokens, fmtModelName } from '../lib/format'
 import { priceTier, tierRate, type ModelRate } from '../lib/costs'
 import { format } from 'date-fns'
+import { calendarChartRange } from '../lib/chartBuckets'
 import { BarChart3, LineChart, Lightbulb, Coins, MessageSquareDashed } from 'lucide-react'
 
 // ChartType toggles the estimated-cost chart between grouped bars and a trend line.
@@ -363,25 +364,6 @@ function ContextChart({ rows, loading }: { rows: ContextBucketRow[] | null; load
   )
 }
 
-// latestBucketStart returns the first of exactly `count` clock-hour or local
-// calendar-day buckets ending in the current bucket. Thus a 7-day selection
-// always shows seven labelled daily bars (including today), rather than eight
-// when a rolling 7×24h range touches parts of both its start and end dates.
-function latestBucketStart(to: string, count: number, hourly: boolean): string {
-  // `to` is the exclusive end of the selected range. Stepping back a
-  // millisecond selects the bucket that actually contains the range's end;
-  // it also handles custom ranges that finish exactly at midnight cleanly.
-  const d = new Date(new Date(to).getTime() - 1)
-  if (hourly) {
-    d.setMinutes(0, 0, 0)
-    d.setTime(d.getTime() - (count - 1) * 3600e3)
-  } else {
-    d.setHours(0, 0, 0, 0)
-    d.setDate(d.getDate() - (count - 1))
-  }
-  return d.toISOString()
-}
-
 // fillCostSeries keeps every interval in the selected chart range, including
 // ones for which the API has no matching spans. Without this, Chart.js receives
 // only non-empty buckets, which makes a quiet hour or day disappear rather than
@@ -429,9 +411,7 @@ export function Personal() {
   // The cost chart uses one full set of clock-hour or calendar-day buckets,
   // including the current partial bucket. Selecting 24h/7d therefore produces
   // exactly 24 hourly/7 daily labels, respectively.
-  const hourly = spanMs <= 26 * 3600e3
-  const bucketCount = Math.max(1, Math.ceil(spanMs / (hourly ? 3600e3 : 24 * 3600e3)))
-  const alignedFrom = latestBucketStart(to, bucketCount, hourly)
+  const { hourly, from: alignedFrom } = calendarChartRange(to, spanMs)
   const usage = useApi<UsageResponse>('/api/personal/usage', {
     from: alignedFrom,
     to,

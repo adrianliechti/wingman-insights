@@ -404,6 +404,31 @@ func TestAPIMeRequiresForwardedIdentityNotAdminGroup(t *testing.T) {
 	}
 }
 
+func TestActivityRequiresForwardedAdmin(t *testing.T) {
+	t.Setenv("INSIGHTS_ADMIN_GROUP", "admins")
+	h := makeHandler(newTestKey(t).verifier)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	for _, tc := range []struct {
+		user, group string
+		status      int
+	}{
+		{"", "", http.StatusUnauthorized},
+		{"alice", "users", http.StatusForbidden},
+	} {
+		for _, path := range []string{"/api/ops/activity", "/api/ops/activity-summary", "/api/ops/plugin-activity", "/api/ops/mcp-server-activity", "/api/ops/custom-activity", "/api/ops/custom-agent-timeseries", "/api/ops/activity-timeseries", "/api/ops/activity-breakdown-timeseries"} {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("X-Forwarded-User", tc.user)
+			req.Header.Set("X-Forwarded-Groups", tc.group)
+			mux.ServeHTTP(rr, req)
+			if rr.Code != tc.status {
+				t.Fatalf("%s status = %d, want %d", path, rr.Code, tc.status)
+			}
+		}
+	}
+}
+
 // --- bearerToken tests ---
 
 func TestBearerToken(t *testing.T) {

@@ -95,13 +95,13 @@ const toolColumns: DataTableColumns<ToolStatRow> = [
   },
 ]
 
-// Operations has two views, selected by the `view` search param and switched
-// from the header submenu (see nav.ts): the aggregate service-health metrics,
-// and the per-request trace explorer that used to be its own nav entry. Only
-// the active view is mounted, so the other one's queries are never issued.
+// Only the active view is mounted, so inactive views issue no queries.
 export function Operations() {
   const { search } = useDash()
-  return resolveView(opsViews, search.view) === 'traces' ? <Traces /> : <OperationsMetrics />
+  switch (resolveView(opsViews, search.view)) {
+    case 'traces': return <Traces />
+    default: return <OperationsMetrics />
+  }
 }
 
 function OperationsMetrics() {

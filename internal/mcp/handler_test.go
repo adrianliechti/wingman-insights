@@ -190,7 +190,7 @@ func TestAdminGateAndDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 2 {
+	if len(listed.Tools) != 3 {
 		t.Fatalf("tools = %d", len(listed.Tools))
 	}
 	if info := client.InitializeResult().ServerInfo; len(info.Icons) != 2 {
@@ -312,7 +312,7 @@ func TestAdminCategoriesAndCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 2 {
+	if len(listed.Tools) != 3 {
 		t.Fatalf("admin tools=%d", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {

@@ -18,7 +18,7 @@ export interface DashSearch {
   location?: string[]
   provider?: string[]
   models?: string[]
-  // view selects between a page's tabs (currently Operations: metrics/traces).
+  // view selects between a page's tabs.
   // It lives in the URL like every other piece of view state, so a tab can be
   // linked and bookmarked, and the browser's back button steps through it.
   view?: string

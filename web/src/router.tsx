@@ -86,7 +86,14 @@ const pages: {
   { path: '/overview', component: Overview },
   { path: '/customers', component: Customers },
   { path: '/finops', component: Finops },
-  { path: '/operations', component: Operations },
+  {
+    path: '/operations', component: Operations,
+    beforeLoad: ({ search }) => {
+      if (search.view === 'activity') {
+        throw redirect({ to: '/customers', search: { ...search, view: 'activity' }, replace: true })
+      }
+    },
+  },
   // Pages that became sub-views of a section (see nav.ts) keep their old paths
   // as redirects, so existing links and bookmarks still work and carry the
   // current range and filters across. component never renders — beforeLoad

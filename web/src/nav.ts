@@ -23,7 +23,7 @@ export interface NavItem {
   readonly views?: readonly NavView[]
 }
 
-// Operations: aggregate service health, and the per-request drill-down.
+// Operations: service health and trace drill-down.
 export const opsViews = [
   { id: 'metrics', label: 'Metrics' },
   { id: 'traces', label: 'Traces' },
@@ -34,6 +34,7 @@ export type OpsView = (typeof opsViews)[number]['id']
 // consumption looks abnormal.
 export const customerViews = [
   { id: 'engagement', label: 'Engagement' },
+  { id: 'activity', label: 'Activity' },
   { id: 'classification', label: 'Classification' },
   { id: 'anomalies', label: 'Anomalies' },
 ] as const

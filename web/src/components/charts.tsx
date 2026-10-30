@@ -81,7 +81,7 @@ const GRID = 'rgba(150, 140, 131, 0.2)' // LGT Warmgrey, faint
 
 // Chart.js legends render poorly (hollow rings, no spacing); ChartLegend
 // below replaces them, so the built-in legend is always off.
-export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: boolean; yMin?: number }) {
+export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: boolean; yMin?: number; yStepSize?: number; showTotal?: boolean }) {
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -101,6 +101,13 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
         boxHeight: 6,
         boxPadding: 4,
         callbacks: {
+          footer: extra?.showTotal ? (items: { parsed: unknown }[]) => {
+            const total = items.reduce((sum, item) => {
+              const value = typeof item.parsed === 'object' && item.parsed !== null && 'y' in item.parsed ? item.parsed.y : item.parsed
+              return sum + Number(value ?? 0)
+            }, 0)
+            return `Total: ${extra.yFmt ? extra.yFmt(total) : total}`
+          } : undefined,
           label: (ctx: any) => {
             const v = Number(ctx.parsed.y ?? ctx.parsed)
             const text = extra?.yFmt ? extra.yFmt(v) : v.toFixed(2)
@@ -122,6 +129,7 @@ export function chartOptions(extra?: { yFmt?: (v: number) => string; stacked?: b
         // which would render a healthy error rate as "-1.00%".
         min: extra?.yMin,
         ticks: {
+          stepSize: extra?.yStepSize,
           color: TICK,
           font: { size: 11 },
           callback: extra?.yFmt ? (v: any) => extra.yFmt!(Number(v)) : undefined,
@@ -160,7 +168,7 @@ export function SegToggle<T extends string>({
           key={g}
           onClick={() => onChange(g)}
           aria-pressed={value === g}
-          className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+            className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
             value === g
               ? 'bg-indigo-600 text-white'
               : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
@@ -232,6 +240,7 @@ export function groupSeries(
   const hasPartial = partialCount > 0
   return {
     buckets,
+    partial,
     hasPartial,
     partialCount,
     labels: buckets.map((b) => fmtBucket(b, spanMs)),
@@ -273,10 +282,10 @@ export function groupSeries(
 
 // PartialNote captions a chart whose edge intervals are incomplete, naming how
 // many intervals are affected so a snapshot's clipped edges are quantified.
-export function PartialNote({ count }: { count: number }) {
+export function PartialNote({ count, style = 'dashed' }: { count: number; style?: 'dashed' | 'dimmed' }) {
   return (
     <p className="mt-1.5 text-right text-[10px] text-gray-400 dark:text-gray-500">
-      dashed = {count} incomplete interval{count === 1 ? '' : 's'}
+      {style} = {count} incomplete interval{count === 1 ? '' : 's'}
     </p>
   )
 }
@@ -289,8 +298,13 @@ export function TimeseriesPanel({
   height = 'h-64',
   loading,
   legend = true,
+  legendAlways = false,
   stacked = false,
+  showTotal = false,
   yMin,
+  yStepSize,
+  kind = 'line',
+  range,
 }: {
   points: TimeseriesPoint[] | null
   spanMs: number
@@ -299,8 +313,13 @@ export function TimeseriesPanel({
   height?: string
   loading?: boolean
   legend?: boolean
+  legendAlways?: boolean
   stacked?: boolean
+  showTotal?: boolean
   yMin?: number
+  yStepSize?: number
+  kind?: 'line' | 'bar'
+  range?: { from: string; to: string }
 }) {
   const { from, to } = useDash()
   // Nothing on screen yet: a shimmering stand-in. A refetch over an existing
@@ -308,16 +327,26 @@ export function TimeseriesPanel({
   // doesn't blank every panel on the page.
   if (loading && (!points || points.length === 0)) return <PanelLoading height={height} />
   if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
-  const { labels, datasets, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from, to })
+  const { labels, datasets, partial, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from: range?.from ?? from, to: range?.to ?? to })
   return (
     <Stale when={loading}>
-      {legend && datasets.length > 1 && (
+      {legend && (legendAlways || datasets.length > 1) && (
         <ChartLegend items={datasets.map((d) => ({ label: d.label, color: d.borderColor }))} />
       )}
       <div className={height}>
-        <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked, yMin })} />
+        {kind === 'bar' ? (
+          <Bar data={{ labels, datasets: datasets.map((series) => ({
+            label: series.label,
+            data: series.data,
+            backgroundColor: partial.map((incomplete) => series.borderColor + (incomplete ? '70' : 'cc')),
+            borderColor: series.borderColor,
+            borderWidth: 1,
+          })) }} options={chartOptions({ yFmt, stacked, yMin, yStepSize, showTotal })} />
+        ) : (
+          <Line data={{ labels, datasets }} options={chartOptions({ yFmt, stacked, yMin, yStepSize, showTotal })} />
+        )}
       </div>
-      {hasPartial && <PartialNote count={partialCount} />}
+      {hasPartial && <PartialNote count={partialCount} style={kind === 'bar' ? 'dimmed' : 'dashed'} />}
     </Stale>
   )
 }

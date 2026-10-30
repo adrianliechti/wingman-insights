@@ -6,3 +6,4 @@
 # `go build ./cmd/...` drops each command's binary in the repo root.
 /insights
 /demogen
+/.env

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import {
   createSortedRowModel,
   flexRender,
@@ -50,6 +50,13 @@ export function DataTable<T extends RowData>({
   onRowClick,
   initialLimit,
   loading,
+  renderExpandedRow,
+  verticalAlign = 'middle',
+  columnWidths,
+  minWidth,
+  expandedRowClassName = 'px-3 py-4',
+  nested = false,
+  rowClassName,
 }: {
   data: T[]
   columns: DataTableColumns<T>
@@ -64,6 +71,13 @@ export function DataTable<T extends RowData>({
   // rows before there is anything to show, dimmed existing rows during a
   // refetch. Optional, so callers that never refetch can ignore it.
   loading?: boolean
+  renderExpandedRow?: (row: T) => ReactNode
+  verticalAlign?: 'top' | 'middle'
+  columnWidths?: readonly string[]
+  minWidth?: number
+  expandedRowClassName?: string
+  nested?: boolean
+  rowClassName?: (row: T) => string
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSort ?? [])
   const [limit, setLimit] = useState(initialLimit)
@@ -83,13 +97,14 @@ export function DataTable<T extends RowData>({
   return (
     <Stale when={loading}>
       <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
+      <table className={`w-full ${nested ? 'text-xs' : 'text-sm'} ${columnWidths ? 'table-fixed' : ''}`} style={minWidth ? { minWidth } : undefined}>
+        {columnWidths && <colgroup>{columnWidths.map((width, index) => <col key={index} style={{ width }} />)}</colgroup>}
+        <thead className={nested ? 'sr-only' : undefined}>
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id} className="border-b border-gray-200 dark:border-gray-800">
               {hg.headers.map((header) => {
                 const sorted = header.column.getIsSorted()
-                const canSort = header.column.getCanSort()
+                const canSort = !nested && header.column.getCanSort()
                 const align = header.column.columnDef.meta?.align === 'right' ? 'justify-end text-right' : 'text-left'
                 return (
                   <th key={header.id} className="px-3 py-2">
@@ -118,25 +133,36 @@ export function DataTable<T extends RowData>({
           ))}
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
-          {rows.map((row) => (
-            <tr
-              key={row.id}
-              onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-              className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30 ${onRowClick ? 'cursor-pointer' : ''}`}
-            >
-              {/* getAllCells rather than getVisibleCells: column visibility is
-                  not one of the registered features, so every cell is visible
-                  and the core accessor is the one available. */}
-              {row.getAllCells().map((cell) => {
-                const align = cell.column.columnDef.meta?.align === 'right' ? 'text-right' : 'text-left'
-                return (
-                  <td key={cell.id} className={`px-3 py-2.5 tabular-nums text-gray-700 dark:text-gray-300 ${align}`}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const expanded = renderExpandedRow?.(row.original)
+            return (
+              <Fragment key={row.id}>
+                <tr
+                  onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                  className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30 ${onRowClick ? 'cursor-pointer' : ''} ${rowClassName?.(row.original) ?? ''}`}
+                >
+                  {/* getAllCells rather than getVisibleCells: column visibility is
+                      not one of the registered features, so every cell is visible
+                      and the core accessor is the one available. */}
+                  {row.getAllCells().map((cell) => {
+                    const align = cell.column.columnDef.meta?.align === 'right' ? 'text-right' : 'text-left'
+                    return (
+                      <td key={cell.id} className={`px-3 py-2.5 tabular-nums text-gray-700 dark:text-gray-300 ${align} ${verticalAlign === 'top' ? 'align-top' : 'align-middle'}`}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    )
+                  })}
+                </tr>
+                {expanded != null && (
+                  <tr>
+                    <td colSpan={row.getAllCells().length} className={`bg-gray-50/70 dark:bg-gray-800/20 ${expandedRowClassName}`}>
+                      {expanded}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
       {hidden > 0 && (

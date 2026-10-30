@@ -116,6 +116,50 @@ export interface ToolStatRow {
   error_count: number
 }
 
+export interface ActivityRow {
+  type: 'agent' | 'skill' | 'connector' | 'mcp_server' | 'builtin' | 'tool' | 'plugin' | 'custom_agent' | 'custom_skill'
+  name: string
+  server: string
+  count: number
+  success_count: number
+  error_count: number
+  avg_duration: number
+  last_seen: string
+  trace_id: string
+  trace_name: string
+  with_user: number
+  with_agent_id: number
+  with_skill_name: number
+  with_plugin: number
+  entity_id: string
+  agent_kind: string
+  plugin_id: string
+  users: number
+  conversations: number
+  with_connector: number
+}
+
+export interface ActivitySummary {
+  agents: number
+  configured_agents: number
+  custom_agent_runs: number
+  identified_custom_agent_runs: number
+  agent_runs: number
+  identified_agent_runs: number
+  skills: number
+  skill_loads: number
+  identified_skill_loads: number
+  connectors: number
+  connector_calls: number
+  identified_connector_calls: number
+  builtin_calls: number
+  plugins: number
+  plugin_calls: number
+  users: number
+  calls: number
+  identified_calls: number
+}
+
 export interface BudgetResponse {
   budget: number
   month_to_date: number

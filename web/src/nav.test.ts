@@ -4,6 +4,7 @@ import { NAV, customerViews, opsViews, resolveView, viewSearch } from './nav'
 describe('resolveView', () => {
   it('picks the named view', () => {
     expect(resolveView(opsViews, 'traces')).toBe('traces')
+    expect(resolveView(customerViews, 'activity')).toBe('activity')
     expect(resolveView(customerViews, 'anomalies')).toBe('anomalies')
   })
 
@@ -16,6 +17,7 @@ describe('resolveView', () => {
     expect(resolveView(opsViews, 'bogus')).toBe('metrics')
     // A view of another section is just as unknown here.
     expect(resolveView(opsViews, 'anomalies')).toBe('metrics')
+    expect(resolveView(opsViews, 'activity')).toBe('metrics')
   })
 })
 

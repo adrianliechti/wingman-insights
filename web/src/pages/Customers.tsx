@@ -18,6 +18,7 @@ import { fmtCost, fmtTokens, fmtTime, pctChange } from '../lib/format'
 import { customerViews, resolveView } from '../nav'
 import { Classification } from './Classification'
 import { Anomalies } from './Anomalies'
+import { Activity } from './Activity'
 
 const SEGMENT_COLORS: Record<string, string> = {
   power: CHART.blue,
@@ -173,14 +174,13 @@ const TOKEN_AVG_SPECS = {
   output: { label: 'Avg output / request', color: CHART.turquoise },
 }
 
-// Customers has three views, selected by the `view` search param and switched
-// from the header submenu (see nav.ts): engagement (who uses the platform),
-// classification (what they use it for) and anomalies (where their consumption
-// looks abnormal). Only the active view is mounted, so the other views' queries
-// are never issued.
+// Customer views share the header submenu (see nav.ts). Only the active view
+// is mounted, so the other views' queries are never issued.
 export function Customers() {
   const { search } = useDash()
   switch (resolveView(customerViews, search.view)) {
+    case 'activity':
+      return <Activity />
     case 'classification':
       return <Classification />
     case 'anomalies':

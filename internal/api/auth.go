@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -133,34 +134,70 @@ func (h *Handler) withForwardedAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+type tokenClaims struct {
+	OID    string   `json:"oid"`
+	Sub    string   `json:"sub"`
+	Groups []string `json:"groups"`
+}
+
+var (
+	errMissingToken  = errors.New("missing bearer token")
+	errAuthDisabled  = errors.New("token verification is disabled")
+	errMissingUserID = errors.New("token carries no oid or sub")
+)
+
+// verifyToken checks the request's bearer token against the configured OIDC
+// issuer and audience (signature, expiry, iss, aud) and returns its claims.
+func (h *Handler) verifyToken(r *http.Request) (tokenClaims, error) {
+	var claims tokenClaims
+	if h.verifier == nil {
+		return claims, errAuthDisabled
+	}
+	rawToken := bearerToken(r)
+	if rawToken == "" {
+		return claims, errMissingToken
+	}
+	token, err := h.verifier.Verify(r.Context(), rawToken)
+	if err != nil {
+		return claims, err
+	}
+	if err := token.Claims(&claims); err != nil {
+		return claims, fmt.Errorf("claims: %w", err)
+	}
+	return claims, nil
+}
+
+// VerifyBearer authenticates a direct bearer-token caller with the same OIDC
+// verification and admin-group rule as the companion API. The identity is the
+// oid claim, falling back to sub. It fails when auth is disabled, so callers
+// must opt into any development bypass themselves.
+func (h *Handler) VerifyBearer(r *http.Request) (user string, admin bool, err error) {
+	claims, err := h.verifyToken(r)
+	if err != nil {
+		return "", false, err
+	}
+	user = strings.TrimSpace(claims.OID)
+	if user == "" {
+		user = strings.TrimSpace(claims.Sub)
+	}
+	if user == "" {
+		return "", false, errMissingUserID
+	}
+	return user, isAdmin(claims.Groups), nil
+}
+
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var oid string
 		var admin bool
 
 		if h.verifier != nil {
-			rawToken := bearerToken(r)
-
-			if rawToken == "" {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			token, err := h.verifier.Verify(r.Context(), rawToken)
+			claims, err := h.verifyToken(r)
 
 			if err != nil {
-				log.Printf("auth: %v", err)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			var claims struct {
-				OID    string   `json:"oid"`
-				Groups []string `json:"groups"`
-			}
-
-			if err := token.Claims(&claims); err != nil {
-				log.Printf("auth: claims: %v", err)
+				if !errors.Is(err, errMissingToken) {
+					log.Printf("auth: %v", err)
+				}
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}

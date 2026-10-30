@@ -163,7 +163,7 @@ function SpanDetail({ span }: { span: SpanRow }) {
 
 // TraceView renders the span tree (middle column) and the selected span's detail
 // (right column) as two grid cells, sharing the span selection.
-function TraceView({ trace }: { trace: TraceSummary }) {
+export function TraceView({ trace }: { trace: Pick<TraceSummary, 'trace_id' | 'name'> }) {
   const [spans, setSpans] = useState<SpanRow[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 

@@ -64,7 +64,7 @@ func WithAllowedOrigins(origins ...string) Option {
 type Verifier func(*http.Request) (user string, admin bool, err error)
 
 // NewHandler serves MCP to callers that verify passes. In production verify is
-// the dashboard's OIDC check (api.Handler.VerifyBearer).
+// an OIDC check configured by api.Handler.MCPVerifierFromEnv.
 func NewHandler(s *store.Store, verify Verifier, opts ...Option) http.Handler {
 	var cfg handlerConfig
 	for _, opt := range opts {

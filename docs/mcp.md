@@ -8,15 +8,28 @@ the running service's store; no second process or database is required.
 
 Supply `Authorization: Bearer <token>` on **every** request. Insights verifies the
 token exactly like the companion API: the signature, issuer, audience, and expiry
-are checked against `COMPANION_API_ISSUER` and `COMPANION_API_AUDIENCE`. There is
+are checked against `INSIGHTS_MCP_ISSUER` and `INSIGHTS_MCP_AUDIENCE`. Each unset
+value defaults to `COMPANION_API_ISSUER` or `COMPANION_API_AUDIENCE`, respectively.
+For example, to use a separate identity provider or API audience for MCP:
+
+```sh
+INSIGHTS_MCP_ENABLED=true
+INSIGHTS_MCP_ISSUER=https://login.example.com/your-tenant/v2.0
+INSIGHTS_MCP_AUDIENCE=api://insights-mcp
+INSIGHTS_ADMIN_GROUP=insights_admin
+```
+
+The admin group stays shared with the dashboard; there is no MCP-specific group.
+An incomplete configuration or failed OIDC discovery stops startup. There is
 no OAuth login/discovery flow or token issuance in this implementation; clients
 obtain a token for that audience from the identity provider themselves.
 The `oid` claim identifies the caller, falling back to `sub` if `oid` is absent.
 This value must match a telemetry user ID or a directory alias. A missing, invalid,
 or expired token, or one without an identity, returns HTTP 401. The
-`X-Forwarded-User`/`-Groups` headers are ignored. With `INSIGHTS_AUTH_DISABLED=true` no token
-can be verified, so every request is refused unless the development bypass below
-is enabled.
+`X-Forwarded-User`/`-Groups` headers are ignored. With `INSIGHTS_AUTH_DISABLED=true`,
+MCP can still verify tokens when MCP-specific OIDC settings are supplied.
+Without overrides it reuses the disabled companion verifier and refuses every
+request unless the development bypass below is enabled.
 
 MCP is admin-only, with the same rule as the dashboard's organization-wide views:
 the token's `groups` array must contain the exact value of `INSIGHTS_ADMIN_GROUP`.
@@ -62,10 +75,9 @@ INSIGHTS_MCP_ALLOWED_ORIGINS=https://client.example,https://other.example
 ```
 
 The value `*` admits any origin and disables the cross-origin protection
-altogether, logging a warning at startup. Because tokens are trusted without
-verification, `*` means any website a user visits can call this endpoint with
-whatever identity it chooses — only use it where the network is the real
-boundary, and never together with `INSIGHTS_MCP_AUTH_DISABLED`, which would let
+altogether, logging a warning at startup. Browser callers still require a valid
+token and admin group membership. Never combine `*` with
+`INSIGHTS_MCP_AUTH_DISABLED`, which would let
 any page read organization-wide data anonymously.
 
 ## Local development

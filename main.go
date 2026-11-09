@@ -130,7 +130,11 @@ func main() {
 		if os.Getenv("INSIGHTS_ADMIN_GROUP") == "" && os.Getenv("INSIGHTS_MCP_AUTH_DISABLED") != "true" {
 			log.Print("mcp: INSIGHTS_ADMIN_GROUP is unset; MCP requires the admin group, so every request will be refused")
 		}
-		app.Handle("/mcp", mcpserver.NewHandler(s, h.VerifyBearer, mcpOpts...))
+		verify, err := h.MCPVerifierFromEnv(context.Background())
+		if err != nil {
+			log.Fatal(err)
+		}
+		app.Handle("/mcp", mcpserver.NewHandler(s, verify, mcpOpts...))
 	}
 
 	app.Handle("/", newSPAHandler(basePath))

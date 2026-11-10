@@ -19,14 +19,14 @@ const maxPoints = 2000
 
 // Embedded inputs keep filter descriptions in each tool's inferred JSON schema.
 type Filters struct {
-	Applications []string `json:"applications,omitempty" jsonschema:"Application IDs or directory aliases, e.g. wingman-chat. Omit for all applications. Values within this field are ORed; different fields are ANDed."`
-	Users        []string `json:"users,omitempty" jsonschema:"Canonical user IDs, emails, or directory aliases. Omit for all users."`
+	Applications []string `json:"applications,omitempty" jsonschema:"Calling application IDs or directory aliases. Omit for all applications. To find observed IDs and names, use get_usage with group_by=application for the desired period; do not guess IDs from display names. This filter applies to every view. Values within a field are ORed; different fields are ANDed."`
+	Users        []string `json:"users,omitempty" jsonschema:"Canonical user IDs, emails, or directory aliases. Omit for all users, including when an application is selected. The authenticated caller is not automatically used as a user filter."`
 	Departments  []string `json:"departments,omitempty" jsonschema:"Department values, e.g. Engineering. Case insensitive; uses the deployment's configured department-prefix behavior. Requires directory data."`
 	Locations    []string `json:"locations,omitempty" jsonschema:"Office location values, e.g. Zurich. Case insensitive; requires directory data."`
 }
 
 type RangeFilters struct {
-	From string `json:"from,omitempty" jsonschema:"Inclusive range start in RFC3339, e.g. 2026-10-01T00:00:00Z. Defaults to 24 hours before to. Maximum window: 90 days."`
+	From string `json:"from,omitempty" jsonschema:"Inclusive range start in RFC3339, e.g. 2026-10-01T00:00:00Z. Defaults to 24 hours before to. Maximum window: 90 days; split longer periods into non-overlapping windows. Use explicit bounds for comparisons and keep them fixed between pages."`
 	To   string `json:"to,omitempty" jsonschema:"Inclusive range end in RFC3339. Defaults to the current UTC time."`
 	Filters
 }
@@ -41,8 +41,9 @@ type UsageInput struct {
 	ModelFilters
 	View     string `json:"view,omitempty" jsonschema:"usage (default) for cost and tokens, or adoption for distinct active, new and returning users plus a distribution of active UTC days. adoption cannot be combined with group_by."`
 	Interval string `json:"interval,omitempty" jsonschema:"auto, hour, or day adds time-bucketed points (per model for usage). auto picks hour for windows up to 48 hours, otherwise day. Buckets align to UTC. Omit for totals only (adoption defaults to auto). Cannot be combined with group_by."`
-	GroupBy  string `json:"group_by,omitempty" jsonschema:"Rank usage by model, application, department, location, or user (sorted by cost), or prompt_size for ordered input-token size bins. Cannot be combined with interval."`
+	GroupBy  string `json:"group_by,omitempty" jsonschema:"model, application, department, location, or user for ranked costs; user and department match the FinOps cost tables. application also returns observed application IDs and names for filtering. prompt_size returns ordered input-token size bins. Cannot be combined with interval."`
 	Limit    int    `json:"limit,omitempty" jsonschema:"With group_by (except prompt_size): number of ranked groups to return, 1 to 100, default 20. Totals cover all groups."`
+	Offset   int    `json:"offset,omitempty" jsonschema:"With ranked group_by: nonnegative number of groups to skip, default 0. Use next_offset from the previous response with the same date range, filters, group_by and limit."`
 }
 
 type CategoryInput struct {
@@ -69,6 +70,8 @@ type QueryInfo struct {
 	View     string         `json:"view,omitempty"`
 	GroupBy  string         `json:"group_by,omitempty"`
 	Interval string         `json:"interval,omitempty"`
+	Limit    int            `json:"limit,omitempty"`
+	Offset   int            `json:"offset,omitempty"`
 	Filters  AppliedFilters `json:"filters"`
 }
 
@@ -86,6 +89,7 @@ type UsageData struct {
 	Groups      []UsageGroup    `json:"groups,omitempty" jsonschema:"With group_by: ranked by cost."`
 	TotalGroups int             `json:"total_groups,omitempty"`
 	Truncated   bool            `json:"truncated,omitempty"`
+	NextOffset  *int            `json:"next_offset,omitempty" jsonschema:"Present when more ranked groups follow this page. Pass as offset to retrieve the next page."`
 	PromptSizes *PromptSizeData `json:"prompt_sizes,omitempty" jsonschema:"With group_by=prompt_size."`
 	Adoption    *AdoptionData   `json:"adoption,omitempty" jsonschema:"With view=adoption."`
 }
@@ -97,10 +101,10 @@ type UsagePoint struct {
 }
 
 type UsageGroup struct {
-	ID         string `json:"id"`
-	Name       string `json:"name,omitempty"`
-	Department string `json:"department,omitempty"`
-	Location   string `json:"location,omitempty"`
+	ID         string `json:"id" jsonschema:"Group identity. For users: canonical directory ID, falling back to raw email then raw user ID. Empty means unassigned."`
+	Name       string `json:"name,omitempty" jsonschema:"Resolved display name, when available."`
+	Department string `json:"department,omitempty" jsonschema:"For users: current directory department, when available; not the department at the time of usage."`
+	Location   string `json:"location,omitempty" jsonschema:"For users: current directory location, when available; not the location at the time of usage."`
 	TokenUsage
 }
 
@@ -149,7 +153,7 @@ func addTool[In, Out any](server *mcp.Server, name, description string, fn func(
 				return nil, out, errors.New("caller identity required")
 			}
 			started := time.Now()
-			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			out, err = fn(ctx, in)
 			log.Printf("mcp: user=%q tool=%s duration=%s success=%t", p.user, name, time.Since(started), err == nil)
@@ -272,6 +276,12 @@ func rowLimit(n int) (int, error) {
 const unpricedWarning = "Some usage has no catalog price; costs are incomplete (see unpriced_tokens)."
 
 func (t tools) usage(ctx context.Context, in UsageInput) (Response[UsageData], error) {
+	if in.Offset < 0 {
+		return Response[UsageData]{}, inputError("offset must be nonnegative")
+	}
+	if in.Offset != 0 && (in.GroupBy == "" || in.GroupBy == "prompt_size" || in.View == "adoption") {
+		return Response[UsageData]{}, inputError("offset requires a ranked group_by")
+	}
 	switch in.View {
 	case "", "usage":
 	case "adoption":
@@ -419,10 +429,13 @@ func (t tools) usageGrouped(ctx context.Context, in UsageInput) (Response[UsageD
 	})
 	u := newUsage(totals)
 	data := UsageData{Totals: &u, Groups: groups, TotalGroups: len(groups)}
-	if len(groups) > limit {
-		data.Groups, data.Truncated = groups[:limit], true
+	start := min(in.Offset, len(groups))
+	end := start + min(limit, len(groups)-start)
+	data.Groups = groups[start:end]
+	if end < len(groups) {
+		data.Truncated, data.NextOffset = true, &end
 	}
-	q.GroupBy = in.GroupBy
+	q.GroupBy, q.Limit, q.Offset = in.GroupBy, limit, in.Offset
 	out := Response[UsageData]{Query: q, Warnings: []string{}, Data: data}
 	if !totals.Tokens.Priced || totals.UnpricedTokens > 0 {
 		out.Warnings = append(out.Warnings, unpricedWarning)

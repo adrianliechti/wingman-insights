@@ -156,7 +156,7 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      45 * time.Second, // leaves time to return a 30-second MCP query
 		IdleTimeout:       120 * time.Second,
 	}
 

@@ -42,22 +42,33 @@ func (s *Store) QueryAdoption(ctx context.Context, from, to time.Time, interval 
 	out := AdoptionReport{Buckets: []AdoptionBucket{}, Frequency: []AdoptionFrequency{}}
 	clause, args := f.spansClause()
 	args = append([]any{from, to, interval}, args...)
-	r := dirResolve("genai_spans", "user_id", "user_email")
+	// Collapse repeated calls before resolving aliases and calculating distinct
+	// users. Pre-window rows share a NULL bucket but retain their earliest time,
+	// which is all first-seen classification needs from retained history.
+	r := dirResolve("raw_activity", "user_id", "user_email")
 	rows, err := s.db.QueryContext(ctx, `
 	WITH bounds AS (SELECT CAST(? AS TIMESTAMP) AS from_ts, CAST(? AS TIMESTAMP) AS to_ts, CAST(? AS INTERVAL) AS width),
-	history AS (
-	 SELECT `+r.ID+` AS principal, genai_spans.time AS ts
-	 FROM genai_spans`+r.Join+` CROSS JOIN bounds
+	raw_activity AS (
+	 SELECT user_id, user_email,
+	 CASE WHEN genai_spans.time >= bounds.from_ts THEN time_bucket(bounds.width, genai_spans.time) END AS bucket,
+	 MIN(genai_spans.time) AS first_ts, COUNT(*) AS requests
+	 FROM genai_spans CROSS JOIN bounds
 	 WHERE (input_tokens>0 OR output_tokens>0) AND genai_spans.time<=bounds.to_ts
 	 AND COALESCE(NULLIF(user_id,''),NULLIF(user_email,''),'')<>''
-	 AND COALESCE(`+r.Kind+`,'') <> 'application'`+clause+`
-	), first_seen AS (SELECT principal, MIN(ts) AS first_ts FROM history GROUP BY principal),
+	 `+clause+`
+	 GROUP BY user_id, user_email, bucket
+	), history AS (
+	 SELECT `+r.ID+` AS principal, raw_activity.bucket, raw_activity.first_ts, raw_activity.requests
+	 FROM raw_activity`+r.Join+`
+	 WHERE COALESCE(`+r.Kind+`,'') <> 'application'
+	), first_seen AS (SELECT principal, MIN(first_ts) AS first_ts FROM history GROUP BY principal),
 	activity AS (
-	 SELECT h.principal, h.ts, fs.first_ts, time_bucket(bounds.width,h.ts) AS bucket, bounds.from_ts
+	 SELECT h.principal, h.bucket, fs.first_ts, bounds.from_ts, SUM(h.requests) AS requests
 	 FROM history h JOIN first_seen fs ON h.principal=fs.principal CROSS JOIN bounds
-	 WHERE h.ts>=bounds.from_ts
+	 WHERE h.bucket IS NOT NULL
+	 GROUP BY h.principal, h.bucket, fs.first_ts, bounds.from_ts
 	), per_user AS (
-	 SELECT principal, COUNT(*) AS requests, COUNT(DISTINCT CAST(ts AS DATE)) AS days,
+	 SELECT principal, SUM(requests) AS requests, COUNT(DISTINCT CAST(bucket AS DATE)) AS days,
 	 BOOL_OR(first_ts>=from_ts) AS is_new FROM activity GROUP BY principal
 	)
 	SELECT 'summary' AS kind, CAST(NULL AS TIMESTAMP) AS bucket, 0 AS days,
@@ -66,9 +77,9 @@ func (s *Store) QueryAdoption(ctx context.Context, from, to time.Time, interval 
 	 COALESCE(SUM(CASE WHEN days=1 THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN days>1 THEN 1 ELSE 0 END),0)
 	FROM per_user
 	UNION ALL
-	SELECT 'bucket', bucket, 0, COUNT(DISTINCT principal),
-	 COUNT(DISTINCT CASE WHEN first_ts>=GREATEST(bucket,from_ts) THEN principal END),
-	 COUNT(DISTINCT CASE WHEN first_ts<GREATEST(bucket,from_ts) THEN principal END), COUNT(*), 0, 0
+	SELECT 'bucket', bucket, 0, COUNT(*),
+	 COUNT(CASE WHEN first_ts>=GREATEST(bucket,from_ts) THEN 1 END),
+	 COUNT(CASE WHEN first_ts<GREATEST(bucket,from_ts) THEN 1 END), SUM(requests), 0, 0
 	FROM activity GROUP BY bucket
 	UNION ALL
 	SELECT 'frequency', CAST(NULL AS TIMESTAMP), days, COUNT(*), 0,0,0,0,0 FROM per_user GROUP BY days

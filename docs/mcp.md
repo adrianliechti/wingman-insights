@@ -138,8 +138,17 @@ nonempty values are accepted per filter.
 Use RFC3339 `from` and `to` for inclusive range bounds. `to` defaults to now
 (whole seconds); `from` defaults to 24 hours before `to`. The maximum window is
 90 days. Invalid or inverted ranges are rejected. Ranked results default to 20
-rows, maximum 100. Trends are limited to 2,000 points; use daily buckets or
-narrower filters/ranges if exceeded. Queries have a 10-second deadline.
+rows, maximum 100 per response. Ranked `get_usage` groups support `offset` pagination
+(default 0). `data.next_offset` is present when another page exists; pass it as
+`offset` on the next call. `truncated` means more groups follow this page.
+`total_groups` and `totals` cover all matching groups, even on an empty page
+beyond the end. Groups sort by cost descending, then ID ascending for ties.
+Keep an explicit `from`/`to`, filters, `group_by`, and `limit` unchanged between
+pages. Each call reads current data; ingestion or directory updates can change
+rankings between calls. Pagination is not available for trends, adoption,
+prompt-size bins, or the other tools. Trends are limited to 2,000 points; use daily buckets or
+narrower filters/ranges if exceeded. Queries have a 30-second deadline; client
+and reverse-proxy timeouts must allow additional time for the response.
 
 ## Response format
 
@@ -201,6 +210,16 @@ averages. Group IDs: `provider/model` for models, the application ID, the
 canonical user ID (with resolved `name`, `department`, `location`), or the
 department/location value. An empty `id` means unassigned. Groups are ranked by
 cost; `totals` cover all groups, including those beyond `limit`.
+
+Example: retrieve all cost-per-user rows in pages of 100. First call:
+
+```json
+{"group_by":"user","limit":100,"offset":0,"from":"2026-10-01T00:00:00Z","to":"2026-10-31T23:59:59Z"}
+```
+
+If `data.next_offset` is `100`, repeat with `"offset":100`. Stop when
+`next_offset` is absent. Use `"group_by":"department"` for department costs.
+`query.limit` and `query.offset` (omitted at zero) echo the effective page.
 
 ### `get_categories` data
 

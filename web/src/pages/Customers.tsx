@@ -218,27 +218,35 @@ function CustomerEngagement() {
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <div className="lg:col-span-2">
         <StatStrip
-          loading={userCount.loading || interactions.loading || sessions.loading}
-          firstLoad={userCount.firstLoad}
           stats={[
             {
               label: 'Users',
               value: String(userCount.data?.count ?? '—'),
               sub: 'With an LLM interaction in range',
+              loading: userCount.loading,
+              firstLoad: userCount.firstLoad,
             },
             {
               label: 'Interactions',
               value: fmtTokens(interactions.data?.count ?? 0),
               sub: 'LLM calls in range',
+              loading: interactions.loading,
+              firstLoad: interactions.firstLoad,
               delta: { pct: pctChange(interactionsPrev.data?.count ?? 0, interactions.data?.count ?? 0), positiveIsGood: true },
             },
             {
               label: 'Sessions',
               value: fmtTokens(sessions.data?.sessions ?? 0),
               sub: `${(sessions.data?.avg_per_user ?? 0).toFixed(2)} per user`,
+              loading: sessions.loading,
+              firstLoad: sessions.firstLoad,
               delta: { pct: pctChange(sessionsPrev.data?.sessions ?? 0, sessions.data?.sessions ?? 0), positiveIsGood: true },
             },
-            { label: 'Avg interactions / user', value: avgInteractionsPerUser.toFixed(2), sub: 'In range' },
+            {
+              label: 'Avg interactions / user', value: avgInteractionsPerUser.toFixed(2), sub: 'In range',
+              loading: userCount.loading || interactions.loading,
+              firstLoad: userCount.firstLoad || interactions.firstLoad,
+            },
           ]}
         />
       </div>

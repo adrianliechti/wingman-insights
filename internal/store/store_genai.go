@@ -266,27 +266,26 @@ func (s *Store) QueryTopConsumers(ctx context.Context, from, to time.Time, limit
 
 func (s *Store) QueryActiveUsers(ctx context.Context, at time.Time, f Filter) (*ActiveUsersRow, error) {
 	clause, fargs := f.genaiClause()
-	dir := dirResolve("genai_metrics", "enduser_id", "enduser_email")
-	// Single scan over the widest (30d/MAU) window; DAU and WAU are carved out of
-	// the same scan with conditional COUNT(DISTINCT ...) rather than re-scanning
-	// per window. Counting distinct resolved identities means a user appearing
-	// under several OTel ids still counts once.
-	q := `SELECT
-			COUNT(DISTINCT CASE WHEN genai_metrics.time >= ? THEN ` + dir.ID + ` END) as dau,
-			COUNT(DISTINCT CASE WHEN genai_metrics.time >= ? THEN ` + dir.ID + ` END) as wau,
-			COUNT(DISTINCT ` + dir.ID + `) as mau
-		  FROM genai_metrics` + dir.Join + `
-		  WHERE enduser_id IS NOT NULL AND enduser_id != ''
-		    AND genai_metrics.time >= ? AND genai_metrics.time <= ?` + clause
-	// Placeholder order: DAU cutoff, WAU cutoff, MAU window lower bound, upper bound,
-	// then the filter clause args.
-	args := []any{
-		at.Add(-24 * time.Hour),
-		at.Add(-7 * 24 * time.Hour),
-		at.Add(-30 * 24 * time.Hour),
-		at,
-	}
-	args = append(args, fargs...)
+	dir := dirResolve("raw", "enduser_id", "enduser_email")
+	// Only the latest matching event per identity is needed for nested DAU,
+	// WAU and MAU windows. Collapse raw identities before the directory joins,
+	// then merge aliases using the current directory, preserving ID precedence.
+	q := `WITH raw AS (
+		SELECT enduser_id, enduser_email, MAX(time) AS last_ts
+		FROM genai_metrics
+		WHERE enduser_id IS NOT NULL AND enduser_id != ''
+		  AND time >= ? AND time <= ?` + clause + `
+		GROUP BY enduser_id, enduser_email
+	), resolved AS (
+		SELECT ` + dir.ID + ` AS principal, MAX(last_ts) AS last_ts
+		FROM raw` + dir.Join + `
+		GROUP BY principal
+	)
+	SELECT COUNT(*) FILTER (WHERE last_ts >= ?),
+	       COUNT(*) FILTER (WHERE last_ts >= ?), COUNT(*)
+	FROM resolved`
+	args := append([]any{at.Add(-30 * 24 * time.Hour), at}, fargs...)
+	args = append(args, at.Add(-24*time.Hour), at.Add(-7*24*time.Hour))
 	row := s.db.QueryRowContext(ctx, q, args...)
 
 	r := &ActiveUsersRow{}

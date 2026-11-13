@@ -323,14 +323,17 @@ type UserStatRow struct {
 func (s *Store) QueryUserStatsCount(ctx context.Context, from, to time.Time, f Filter) (int64, error) {
 	clause, fargs := f.spansClause()
 	args := append([]any{from, to}, fargs...)
-	r := dirResolve("genai_spans", "user_id", "user_email")
+	r := dirResolve("raw", "user_id", "user_email")
 	var count int64
 	err := s.db.QueryRowContext(ctx, `
+		WITH raw AS (
+			SELECT DISTINCT user_id, user_email FROM genai_spans
+			WHERE (input_tokens > 0 OR output_tokens > 0)
+			  AND user_id IS NOT NULL AND user_id != ''
+			  AND time >= ? AND time <= ?`+clause+`
+		)
 		SELECT COUNT(DISTINCT `+r.ID+`)
-		FROM genai_spans`+r.Join+`
-		WHERE (input_tokens > 0 OR output_tokens > 0)
-		  AND user_id IS NOT NULL AND user_id != ''
-		  AND genai_spans.time >= ? AND genai_spans.time <= ?`+clause, args...).Scan(&count)
+		FROM raw`+r.Join, args...).Scan(&count)
 	return count, err
 }
 

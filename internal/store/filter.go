@@ -131,12 +131,12 @@ func attrClause(idCol, emailCol, col string, values []string, prefix bool) (stri
 		}
 		pred = "(" + strings.Join(preds, " OR ") + ")"
 	}
-	// EXISTS references pred once, so args need no duplication (unlike an
-	// idCol/emailCol pair of "IN (subquery)" checks, which would each need
-	// their own copy of the same args to match the repeated subquery).
-	c := " AND EXISTS (SELECT 1 FROM directory WHERE " + pred +
-		" AND (lower(" + idCol + ") = alias OR lower(" + emailCol + ") = alias))"
-	return c, args
+	// Independent membership tests avoid a correlated OR join over telemetry
+	// rows. Either alias may match, including when ID and email resolve to
+	// different directory records; do not replace this with preferred-ID logic.
+	sub := "SELECT alias FROM directory WHERE " + pred
+	c := " AND (lower(" + idCol + ") IN (" + sub + ") OR lower(" + emailCol + ") IN (" + sub + "))"
+	return c, append(args, args...)
 }
 
 // likeEscape escapes the LIKE metacharacters so a literal value (e.g. a code

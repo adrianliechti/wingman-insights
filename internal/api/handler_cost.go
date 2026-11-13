@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"insights/internal/store"
 )
@@ -34,16 +35,29 @@ func aggregateCostRows(rows []store.CostRow, groupBy, dflt string) []store.CostR
 	return rows // "none"
 }
 
+func (h *Handler) queryCostRows(r *http.Request, from, to time.Time, dflt string) ([]store.CostRow, error) {
+	groupBy := r.URL.Query().Get("group_by")
+	switch groupBy {
+	case "model", "department", "location":
+		return h.store.QueryCostSummary(r.Context(), from, to, groupBy, h.parseFilter(r))
+	}
+	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
+	if err != nil {
+		return nil, err
+	}
+	return aggregateCostRows(rows, groupBy, dflt), nil
+}
+
 // costs returns priced token usage. group_by=user (default) | model | app |
 // department | location | none (none = full user × model breakdown).
 func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
+	rows, err := h.queryCostRows(r, from, to, "user")
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, aggregateCostRows(rows, r.URL.Query().Get("group_by"), "user"))
+	writeJSON(w, rows)
 }
 
 // costReport streams a cost breakdown as a CSV download. By default it is the
@@ -53,13 +67,12 @@ func (h *Handler) costs(w http.ResponseWriter, r *http.Request) {
 // to their grouping empty.
 func (h *Handler) costReport(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	rows, err := h.store.QueryCostBreakdown(r.Context(), from, to, h.parseFilter(r))
+	rows, err := h.queryCostRows(r, from, to, "none")
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	groupBy := r.URL.Query().Get("group_by")
-	rows = aggregateCostRows(rows, groupBy, "none")
 
 	name := "cost-report"
 	switch groupBy {

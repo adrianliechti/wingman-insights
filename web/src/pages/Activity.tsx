@@ -45,9 +45,9 @@ function countLabel(count: number, label: string) {
 }
 
 export function Activity() {
-  const { to, spanMs } = useDash()
-  const chartRange = calendarChartRange(to, spanMs)
-  const period = { from: chartRange.from, to: new Date(new Date(to).getTime() - 1).toISOString() }
+  const { from, to, spanMs } = useDash()
+  const chartRange = calendarChartRange(from, to)
+  const period = { from, to }
   const [chartType, setChartType] = useState<ChartType>('agents')
   const activity = useApi<ActivityRow[]>('/api/ops/activity', period)
   const overview = useApi<ActivitySummary>('/api/ops/activity-summary', period)

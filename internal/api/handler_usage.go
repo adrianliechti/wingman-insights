@@ -43,10 +43,13 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Has("interval") {
 		// The bucketed view carries per-model cost and tokens; the window totals
 		// are just their sum, so a single scan serves both — no separate totals
-		// query. Buckets are aligned to the window start (from), which the client
-		// sends as the viewer's local midnight, so daily bars land on local-day
-		// boundaries instead of splitting across UTC midnight.
-		points, err := h.store.QueryUsageTimeseriesFrom(r.Context(), from, to, parseInterval(r), from, f)
+		// query. An optional origin aligns chart buckets independently of the
+		// exact query bounds; existing clients retain alignment to from.
+		origin := from
+		if parsed, err := time.Parse(time.RFC3339, r.URL.Query().Get("origin")); err == nil {
+			origin = parsed
+		}
+		points, err := h.store.QueryUsageTimeseriesFrom(r.Context(), from, to, parseInterval(r), origin, f)
 		if err != nil {
 			writeErr(w, err)
 			return

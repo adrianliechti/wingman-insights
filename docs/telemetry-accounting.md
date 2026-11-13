@@ -61,10 +61,12 @@ selected view. Missing IDs cannot contribute; changing the range or filters does
 not reset an existing agent's first-observed date. Creation events are not
 recorded by the current client, so first observed is not labeled as creation.
 All views use stacked bars per interval, with the same bucket layout as
-Personal: 24 hourly bars for 24h, then one local calendar-day
-bar per selected day (3/7/14/30). The current partial interval is included and
-quiet intervals remain visible. Activity summaries and tables use the same
-aligned window as the chart. Hourly execution points are aggregated by local
+Personal: clock-hour bars for 24h, then local calendar-day bars for longer
+windows. The selected range is an exact rolling window ending now, independent
+of user activity. Both partial edge intervals are included, so a 24h window
+ending at 11:45 covers 25 clock-hour buckets. Quiet intervals remain visible.
+Activity summaries and tables use the same exact bounds as the chart.
+Hourly execution points are aggregated by local
 date for daily bars so daylight-saving changes do not shift recorded usage to
 another day. Only the selected chart category is fetched.
 The chart uses the same segmented

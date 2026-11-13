@@ -1,27 +1,43 @@
 import { format } from 'date-fns'
 import type { TimeseriesPoint } from '../types'
 
-// Personal and Activity share exactly N clock-hour/calendar-day labels,
-// including the current partial interval. The end of the window is exclusive.
-export function calendarChartRange(to: string, spanMs: number) {
+export function chartInterval(spanMs: number) {
+  if (spanMs <= 6 * 3600e3) return { interval: '15 minute', widthMs: 15 * 60e3 }
+  if (spanMs <= 48 * 3600e3) return { interval: '1 hour', widthMs: 3600e3 }
+  if (spanMs <= 14 * 24 * 3600e3) return { interval: '6 hour', widthMs: 6 * 3600e3 }
+  return { interval: '1 day', widthMs: 24 * 3600e3 }
+}
+
+// Match the API's UTC-aligned buckets, including quiet and partial intervals.
+export function chartBuckets(from: string, to: string, spanMs: number): string[] {
+  const { widthMs } = chartInterval(spanMs)
+  const start = Math.floor(new Date(from).getTime() / widthMs) * widthMs
+  const end = new Date(to).getTime()
+  const buckets: string[] = []
+  for (let time = start; time < end; time += widthMs) buckets.push(new Date(time).toISOString())
+  return buckets
+}
+
+// Personal and Activity share clock-hour/calendar-day labels covering the
+// exact selected window. Partial intervals at either edge are included.
+export function calendarChartRange(from: string, to: string) {
+  const end = new Date(to).getTime()
+  const spanMs = end - new Date(from).getTime()
   const hourly = spanMs <= 26 * 3600e3
-  const count = Math.max(1, Math.ceil(spanMs / (hourly ? 3600e3 : 24 * 3600e3)))
-  const start = new Date(new Date(to).getTime() - 1)
+  const start = new Date(from)
   if (hourly) {
     start.setMinutes(0, 0, 0)
-    start.setTime(start.getTime() - (count - 1) * 3600e3)
   } else {
     start.setHours(0, 0, 0, 0)
-    start.setDate(start.getDate() - (count - 1))
   }
   const buckets: string[] = []
   const cursor = new Date(start)
-  for (let i = 0; i < count; i++) {
+  while (cursor.getTime() < end) {
     buckets.push(cursor.toISOString())
     if (hourly) cursor.setTime(cursor.getTime() + 3600e3)
     else cursor.setDate(cursor.getDate() + 1)
   }
-  return { from: start.toISOString(), to, hourly, buckets }
+  return { from, to, hourly, buckets }
 }
 
 // Aggregate hourly execution counts into local calendar days. Fetching hourly

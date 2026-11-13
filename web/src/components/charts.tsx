@@ -11,9 +11,10 @@ import {
 } from 'chart.js'
 import { Line, Bar, Doughnut, Pie } from 'react-chartjs-2'
 import { fmtBucket } from '../lib/format'
+import { chartBuckets } from '../lib/chartBuckets'
 import type { TimeseriesPoint } from '../types'
 import { useDash } from '../dash'
-import { PanelLoading, PanelMessage, Stale } from './Panel'
+import { PanelLoading, Stale } from './Panel'
 import { useSyncExternalStore } from 'react'
 
 ChartJS.register(
@@ -220,20 +221,24 @@ function partialBuckets(buckets: string[], from?: string, to?: string): boolean[
 }
 
 // groupSeries pivots timeseries points (one row per bucket × label) into
-// chart.js datasets, one per label. When opts.from/opts.to are supplied, the
-// leading/trailing partial intervals are drawn dashed and dimmed.
+// chart.js datasets, one per label. The selected range supplies the time axis
+// independently of activity; leading/trailing partial intervals are dimmed.
 export function groupSeries(
-  points: TimeseriesPoint[],
+  points: TimeseriesPoint[] | null,
   spanMs: number,
   specs?: Record<string, SeriesSpec>,
-  opts?: { stacked?: boolean; from?: string; to?: string },
+  opts?: { stacked?: boolean; from?: string; to?: string; buckets?: string[] },
 ) {
-  const buckets = [...new Set(points.map((p) => p.bucket))].sort()
+  points ??= []
+  const buckets = opts?.buckets ?? (opts?.from && opts?.to
+    ? chartBuckets(opts.from, opts.to, spanMs)
+    : [...new Set(points.map((p) => new Date(p.bucket).toISOString()))].sort())
   const labels = specs ? Object.keys(specs) : [...new Set(points.map((p) => p.label ?? ''))]
   const series = new Map<string, Map<string, number>>(labels.map((l) => [l, new Map()]))
   for (const p of points) {
     const m = series.get(p.label ?? '')
-    if (m) m.set(p.bucket, (m.get(p.bucket) ?? 0) + p.value)
+    const bucket = new Date(p.bucket).toISOString()
+    if (m) m.set(bucket, (m.get(bucket) ?? 0) + p.value)
   }
   const partial = partialBuckets(buckets, opts?.from, opts?.to)
   const partialCount = partial.filter(Boolean).length
@@ -319,15 +324,14 @@ export function TimeseriesPanel({
   yMin?: number
   yStepSize?: number
   kind?: 'line' | 'bar'
-  range?: { from: string; to: string }
+  range?: { from: string; to: string; buckets?: string[] }
 }) {
   const { from, to } = useDash()
   // Nothing on screen yet: a shimmering stand-in. A refetch over an existing
   // chart keeps the chart and marks it stale instead, so changing a filter
   // doesn't blank every panel on the page.
   if (loading && (!points || points.length === 0)) return <PanelLoading height={height} />
-  if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
-  const { labels, datasets, partial, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from: range?.from ?? from, to: range?.to ?? to })
+  const { labels, datasets, partial, hasPartial, partialCount } = groupSeries(points, spanMs, specs, { stacked, from: range?.from ?? from, to: range?.to ?? to, buckets: range?.buckets })
   return (
     <Stale when={loading}>
       {legend && (legendAlways || datasets.length > 1) && (

@@ -370,8 +370,7 @@ function ContextChart({ rows, loading }: { rows: ContextBucketRow[] | null; load
 // rendering as a zero-height bar with its time label.
 function fillCostSeries(
   totals: Map<string, number>,
-  from: string,
-  to: string,
+  buckets: string[],
   hourly: boolean,
 ): { bucket: string; value: number }[] {
   // Daily buckets are keyed by their local calendar date. The server's
@@ -384,38 +383,21 @@ function fillCostSeries(
     valuesByBucket.set(key, (valuesByBucket.get(key) ?? 0) + value)
   }
 
-  const end = new Date(to).getTime()
-  const cursor = new Date(from)
-  const series: { bucket: string; value: number }[] = []
-  while (cursor.getTime() < end) {
-    series.push({
-      bucket: cursor.toISOString(),
-      value: valuesByBucket.get(keyFor(cursor.toISOString())) ?? 0,
-    })
-    if (hourly) {
-      cursor.setTime(cursor.getTime() + 3600e3)
-    } else {
-      // Advance calendar days in local time so labels remain one day apart
-      // when the selected range crosses a daylight-saving transition.
-      cursor.setDate(cursor.getDate() + 1)
-    }
-  }
-  return series
+  return buckets.map((bucket) => ({ bucket, value: valuesByBucket.get(keyFor(bucket)) ?? 0 }))
 }
 
 export function Personal() {
-  const { to, spanMs } = useDash()
+  const { from, to } = useDash()
   const [costChartType, setCostChartType] = useState<ChartType>('bar')
   const [modelExpanded, setModelExpanded] = useState(false)
 
-  // The cost chart uses one full set of clock-hour or calendar-day buckets,
-  // including the current partial bucket. Selecting 24h/7d therefore produces
-  // exactly 24 hourly/7 daily labels, respectively.
-  const { hourly, from: alignedFrom } = calendarChartRange(to, spanMs)
+  // Keep the exact rolling window while aligning the chart to clock hours.
+  // Fetch hourly even for daily charts so local dates stay correct across DST.
+  const { hourly, buckets: chartBuckets } = calendarChartRange(from, to)
+  const alignedFrom = chartBuckets[0] ?? from
   const usage = useApi<UsageResponse>('/api/personal/usage', {
-    from: alignedFrom,
-    to,
-    interval: hourly ? '1 hour' : '1 day',
+    origin: alignedFrom,
+    interval: '1 hour',
   })
   const contextHist = useApi<ContextBucketRow[]>('/api/personal/context-histogram')
 
@@ -429,7 +411,7 @@ export function Personal() {
   for (const b of buckets) {
     costTotals.set(b.bucket, (costTotals.get(b.bucket) ?? 0) + b.cost)
   }
-  const costSeries = fillCostSeries(costTotals, alignedFrom, to, hourly)
+  const costSeries = fillCostSeries(costTotals, chartBuckets, hourly)
 
   // Per-model usage (token volume) and cost share, folded from the same buckets.
   const byModel = new Map<string, { tokens: number; cost: number; inputCost: number; outputCost: number; inputTokens: number; outputTokens: number }>()

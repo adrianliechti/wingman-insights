@@ -1,7 +1,7 @@
 import { useApi, useDash } from '../dash'
 import type { AnomalyPoint, TimeseriesPoint } from '../types'
 import { ChartLegend, Line, PartialNote, chartOptions, groupSeries, CHART } from './charts'
-import { Panel, PanelLoading, PanelMessage } from './Panel'
+import { Panel, PanelLoading } from './Panel'
 import { fmtTokens } from '../lib/format'
 
 // The token.usage metric only carries input/output per the OTel semconv;
@@ -24,13 +24,11 @@ export function TokenChart({ className }: { className?: string }) {
   let content
   if (loading) {
     content = <PanelLoading />
-  } else if (points.length === 0) {
-    content = <PanelMessage>No data</PanelMessage>
   } else {
     const { buckets, labels, datasets, hasPartial, partialCount } = groupSeries(points, spanMs, TOKEN_SPECS, { from, to })
     const flagged = (anomalies.data ?? []).filter((a) => a.score >= 3)
     const markerData = buckets.map((b) => {
-      const hits = flagged.filter((a) => a.bucket === b)
+      const hits = flagged.filter((a) => new Date(a.bucket).getTime() === new Date(b).getTime())
       return hits.length ? Math.max(...hits.map((a) => a.tokens)) : null
     })
     const allDatasets: any[] = [...datasets]

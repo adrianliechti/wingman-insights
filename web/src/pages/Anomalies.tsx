@@ -11,6 +11,7 @@ import { TokenChart } from '../components/TokenChart'
 import { Heatmap } from '../components/Heatmap'
 import { ChartLegend, Line, chartOptions, groupSeries, CHART } from '../components/charts'
 import { fmtCost, fmtTime, fmtTokens } from '../lib/format'
+import { chartBuckets } from '../lib/chartBuckets'
 
 const fmtMetric = (metric: string, v: number) => (metric === 'cost' ? fmtCost(v) : fmtTokens(v))
 
@@ -40,12 +41,12 @@ function Severity({ score }: { score: number }) {
 // flagged ≥ 3σ — the spend counterpart to the token TokenChart.
 function SpikeLine({ points, yFmt, color, label }: { points: ScorePoint[] | null; yFmt: (v: number) => string; color: string; label: string }) {
   const { spanMs, from, to } = useDash()
-  if (!points || points.length === 0) return <PanelMessage>No data</PanelMessage>
+  points ??= []
   const ts: TimeseriesPoint[] = points.map((p) => ({ bucket: p.bucket, value: p.value, count: 0, label }))
   const { buckets, labels, datasets } = groupSeries(ts, spanMs, { [label]: { label, color, fill: true } }, { from, to })
   const flagged = points.filter((p) => p.score >= 3)
   const markers = buckets.map((b) => {
-    const hits = flagged.filter((p) => p.bucket === b)
+    const hits = flagged.filter((p) => new Date(p.bucket).getTime() === new Date(b).getTime())
     return hits.length ? Math.max(...hits.map((p) => p.value)) : null
   })
   const ds: any[] = [...datasets]
@@ -136,6 +137,7 @@ const DIMS = [
 ]
 
 export function Anomalies() {
+  const { from, to, spanMs } = useDash()
   const [heatDim, setHeatDim] = useState('user')
   const setFilter = useFilterNav()
   const feed = useApi<AnomalyFeedRow[]>('/api/genai/anomaly-feed')
@@ -183,7 +185,7 @@ export function Anomalies() {
 
   // Spike heatmap from the feed: entity × bucket, cell tinted by max z-score.
   const dimRows = rows.filter((r) => r.dimension === heatDim)
-  const heatBuckets = [...new Set(dimRows.map((r) => r.bucket))].sort()
+  const heatBuckets = chartBuckets(from, to, spanMs)
   const heatEntities = (() => {
     const byEntity = new Map<string, number>()
     for (const r of dimRows) byEntity.set(r.group_key, Math.max(byEntity.get(r.group_key) ?? 0, r.score))
@@ -193,7 +195,7 @@ export function Anomalies() {
   // whichever row happens to come last.
   const heatScore = new Map<string, number>()
   for (const r of dimRows) {
-    const k = r.group_key + '\0' + r.bucket
+    const k = r.group_key + '\0' + new Date(r.bucket).toISOString()
     heatScore.set(k, Math.max(heatScore.get(k) ?? 0, r.score))
   }
   const heatLabel = new Map(dimRows.map((r) => [r.group_key, r.name || r.group_key])) // name for users

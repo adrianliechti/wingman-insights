@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { apiGet } from './api'
 import type { Params } from './api'
 import type { Me } from './types'
+import { chartInterval } from './lib/chartBuckets'
 
 export type RangeKey = '24h' | '3d' | '7d' | '14d' | '30d'
 
@@ -82,11 +83,7 @@ export function resolveRange(search: DashSearch) {
     from = new Date(now.getTime() - (RANGE_MS[range] ?? RANGE_MS['24h']))
   }
   const spanMs = Math.max(to.getTime() - from.getTime(), 60e3)
-  const interval =
-    spanMs <= 6 * 3600e3 ? '15 minute'
-    : spanMs <= 48 * 3600e3 ? '1 hour'
-    : spanMs <= 14 * 24 * 3600e3 ? '6 hour'
-    : '1 day'
+  const { interval } = chartInterval(spanMs)
   return { from: from.toISOString(), to: to.toISOString(), interval, spanMs }
 }
 
